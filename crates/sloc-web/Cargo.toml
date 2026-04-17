@@ -1,0 +1,20 @@
+[package]
+name = "sloc-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+askama.workspace = true
+axum.workspace = true
+serde.workspace = true
+tokio.workspace = true
+sloc-config = { path = "../sloc-config" }
+sloc-core = { path = "../sloc-core" }
+sloc-report = { path = "../sloc-report" }

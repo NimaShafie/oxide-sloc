@@ -1,0 +1,15 @@
+target/
+Cargo.lock
+*.log
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.env
+result.json
+result.html
+result.pdf
+
+/target/

@@ -1,0 +1,24 @@
+[package]
+name = "oxidesloc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "oxidesloc"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing-subscriber.workspace = true
+sloc-config = { path = "../sloc-config" }
+sloc-core = { path = "../sloc-core" }
+sloc-report = { path = "../sloc-report" }
+sloc-web = { path = "../sloc-web" }

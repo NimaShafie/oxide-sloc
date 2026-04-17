@@ -1,0 +1,22 @@
+[package]
+name = "sloc-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+encoding_rs.workspace = true
+globset.workspace = true
+ignore.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+sloc-config = { path = "../sloc-config" }
+sloc-languages = { path = "../sloc-languages" }

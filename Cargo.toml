@@ -1,0 +1,41 @@
+[workspace]
+members = [
+  "crates/sloc-config",
+  "crates/sloc-languages",
+  "crates/sloc-core",
+  "crates/sloc-report",
+  "crates/sloc-web",
+  "crates/sloc-cli",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "AGPL-3.0-or-later"
+version = "0.1.0"
+authors = ["Nima Shafie"]
+repository = "https://github.com/NimaShafie/oxide-sloc"
+homepage = "https://github.com/NimaShafie/oxide-sloc"
+documentation = "https://github.com/NimaShafie/oxide-sloc"
+rust-version = "1.78"
+
+[workspace.dependencies]
+anyhow = "1"
+askama = "0.12"
+axum = { version = "0.7", features = ["form", "json", "macros"] }
+chrono = { version = "0.4", features = ["serde", "clock"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+encoding_rs = "0.8"
+globset = "0.4"
+ignore = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[workspace.metadata.oxidesloc]
+product_name = "oxide-sloc"

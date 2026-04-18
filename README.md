@@ -35,7 +35,38 @@ This public repository is the main codebase for the project. A paid offering can
 
 ## Current status
 
-This repository is an early workspace scaffold. The analysis core, HTML report path, and localhost web UI shell are present, but the project still needs compile validation, packaging polish, parser-backed adapters, and release engineering.
+This repository is an early but runnable Rust workspace.
+
+Working today:
+- CLI analysis
+- local web UI on localhost
+- HTML report generation
+- PDF export through a locally installed Chromium-based browser
+- mixed-line policy handling
+- Python docstring policy handling
+
+Currently supported languages:
+- C
+- C++
+- C#
+- Python
+- Shell
+- PowerShell
+
+Important:
+If you run oxide-sloc against this Rust workspace itself, most files will currently be skipped because Rust, TOML, Markdown, YAML, and similar repository files are not yet supported.
+
+Important note:
+If you run oxide-sloc against this Rust workspace itself, you will currently see most files skipped as unsupported, because Rust/TOML/Markdown/YAML analysis is not implemented yet.
+
+## Minimal local verification
+
+Create a tiny sample directory with supported file types, then run:
+
+cargo run -p oxidesloc -- analyze tmp-sloc --plain
+cargo run -p oxidesloc -- analyze tmp-sloc --per-file
+cargo run -p oxidesloc -- analyze tmp-sloc --json-out out/tmp.json --html-out out/tmp.html
+cargo run -p oxidesloc -- serve
 
 ## Repository layout
 
@@ -62,12 +93,6 @@ This repository is an early workspace scaffold. The analysis core, HTML report p
 |-- SECURITY.md
 `-- sloc.example.toml
 ```
-
-## Why the repo looked messy when extracted
-
-If source files are downloaded individually outside the crate tree, an operating system may rename them to `lib.rs`, `lib (1).rs`, `lib (2).rs`, and so on. Those are duplicate downloads, not the intended repository layout.
-
-The clean source of truth is the Rust workspace, where each file belongs under its crate path in `crates/.../src/`.
 
 ## Licensing approach
 

@@ -43,12 +43,27 @@ pub fn write_html(run: &AnalysisRun, output_path: &Path) -> Result<()> {
 
 pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
     let browser = discover_browser().context(
-        "no supported Chromium-based browser found; set SLOC_BROWSER or install Chrome/Chromium/Edge",
+        "no supported Chromium-based browser found; set SLOC_BROWSER/BROWSER or install Chrome, Chromium, Edge, Brave, Vivaldi, or Opera",
     )?;
 
     let absolute_html = html_path
         .canonicalize()
         .with_context(|| format!("failed to canonicalize {}", html_path.display()))?;
+
+    let absolute_pdf = if pdf_path.is_absolute() {
+        pdf_path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("failed to resolve current working directory")?
+            .join(pdf_path)
+    };
+
+    if let Some(parent) = absolute_pdf.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!("failed to create PDF output directory {}", parent.display())
+        })?;
+    }
+
     let file_url = file_url(&absolute_html);
 
     let try_new_headless = Command::new(&browser)
@@ -56,7 +71,7 @@ pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
             "--headless=new",
             "--disable-gpu",
             "--allow-file-access-from-files",
-            &format!("--print-to-pdf={}", pdf_path.display()),
+            &format!("--print-to-pdf={}", absolute_pdf.display()),
             &file_url,
         ])
         .status();
@@ -68,7 +83,7 @@ pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
                 "--headless",
                 "--disable-gpu",
                 "--allow-file-access-from-files",
-                &format!("--print-to-pdf={}", pdf_path.display()),
+                &format!("--print-to-pdf={}", absolute_pdf.display()),
                 &file_url,
             ])
             .status()
@@ -87,12 +102,13 @@ pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
 
     Ok(())
 }
-
 fn discover_browser() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("SLOC_BROWSER") {
-        let candidate = PathBuf::from(path);
-        if candidate.exists() {
-            return Some(candidate);
+    for var_name in ["SLOC_BROWSER", "BROWSER"] {
+        if let Ok(path) = std::env::var(var_name) {
+            let candidate = PathBuf::from(path);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
         }
     }
 
@@ -103,6 +119,11 @@ fn discover_browser() -> Option<PathBuf> {
         "google-chrome-stable",
         "microsoft-edge",
         "msedge",
+        "brave",
+        "brave-browser",
+        "vivaldi",
+        "opera",
+        "opera-stable",
     ];
 
     for name in names {
@@ -111,7 +132,49 @@ fn discover_browser() -> Option<PathBuf> {
         }
     }
 
+    #[cfg(windows)]
+    {
+        for candidate in windows_browser_candidates() {
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
     None
+}
+
+#[cfg(windows)]
+fn windows_browser_candidates() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    let program_files = std::env::var_os("ProgramFiles");
+    let program_files_x86 = std::env::var_os("ProgramFiles(x86)");
+    let local_app_data = std::env::var_os("LocalAppData");
+
+    for base in [program_files, program_files_x86].into_iter().flatten() {
+        let base = PathBuf::from(base);
+
+        paths.push(base.join("Google/Chrome/Application/chrome.exe"));
+        paths.push(base.join("Microsoft/Edge/Application/msedge.exe"));
+        paths.push(base.join("BraveSoftware/Brave-Browser/Application/brave.exe"));
+        paths.push(base.join("Vivaldi/Application/vivaldi.exe"));
+        paths.push(base.join("Opera/launcher.exe"));
+        paths.push(base.join("Opera GX/launcher.exe"));
+    }
+
+    if let Some(base) = local_app_data {
+        let base = PathBuf::from(base);
+
+        paths.push(base.join("Google/Chrome/Application/chrome.exe"));
+        paths.push(base.join("Microsoft/Edge/Application/msedge.exe"));
+        paths.push(base.join("BraveSoftware/Brave-Browser/Application/brave.exe"));
+        paths.push(base.join("Vivaldi/Application/vivaldi.exe"));
+        paths.push(base.join("Programs/Opera/launcher.exe"));
+        paths.push(base.join("Programs/Opera GX/launcher.exe"));
+    }
+
+    paths
 }
 
 fn which_in_path(exe: &str) -> Option<PathBuf> {

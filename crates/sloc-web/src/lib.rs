@@ -12,9 +12,9 @@ use axum::{
     http::{header, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
-    Router,
+    Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use sloc_config::{AppConfig, MixedLinePolicy};
@@ -42,6 +42,7 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         .route("/healthz", get(healthz))
         .route("/analyze", post(analyze_handler))
         .route("/preview", get(preview_handler))
+        .route("/pick-directory", get(pick_directory_handler))
         .route("/runs/:run_id/:artifact", get(artifact_handler))
         .with_state(AppState {
             base_config: config,
@@ -60,9 +61,7 @@ pub async fn serve(config: AppConfig) -> Result<()> {
 }
 
 async fn index() -> impl IntoResponse {
-    let template = IndexTemplate {
-        cwd: display_path(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
-    };
+    let template = IndexTemplate {};
 
     Html(
         template
@@ -92,6 +91,31 @@ struct AnalyzeForm {
 #[derive(Debug, Deserialize)]
 struct PreviewQuery {
     path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PickDirectoryQuery {
+    kind: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PickDirectoryResponse {
+    selected_path: Option<String>,
+    cancelled: bool,
+}
+
+async fn pick_directory_handler(Query(query): Query<PickDirectoryQuery>) -> impl IntoResponse {
+    let title = match query.kind.as_deref() {
+        Some("output") => "Select output directory",
+        _ => "Select project directory",
+    };
+
+    let picked = rfd::FileDialog::new().set_title(title).pick_folder();
+
+    Json(PickDirectoryResponse {
+        selected_path: picked.as_ref().map(|p| display_path(p)),
+        cancelled: picked.is_none(),
+    })
 }
 
 async fn preview_handler(Query(query): Query<PreviewQuery>) -> impl IntoResponse {
@@ -456,39 +480,54 @@ fn build_preview_html(root: &Path) -> Result<String> {
         ));
     }
 
+    let cwd = display_path(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let selected = display_path(root);
+    let languages = detect_languages_in_preview(root)?;
+
     let mut out = String::new();
-    let workspace_candidate = root.join(".gitmodules").exists();
+    out.push_str(r#"<div class="explorer-wrap">"#);
 
-    out.push_str(r#"<div class="preview-head">"#);
-    out.push_str(&format!(
-        r#"<div><strong>Working OxideSLOC directory</strong><div class="preview-code">{}</div></div>"#,
-        escape_html(
-            &display_path(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-        )
-    ));
-    out.push_str(&format!(
-        r#"<div style="margin-top:10px"><strong>Selected project path</strong><div class="preview-code">{}</div></div>"#,
-        escape_html(&display_path(root))
-    ));
-    out.push_str("</div>");
+    out.push_str(r#"<div class="explorer-toolbar">"#);
+    out.push_str(r#"<div class="explorer-title-group">"#);
+    out.push_str(r#"<div class="explorer-title">Project preview explorer</div>"#);
+    out.push_str(r#"<div class="explorer-subtitle">Server-side heuristic preview of likely scanned, skipped, and unsupported content.</div>"#);
+    out.push_str(r#"</div>"#);
 
-    out.push_str(r#"<div class="preview-legend">"#);
+    out.push_str(r#"<div class="preview-legend better-spacing">"#);
     out.push_str(r#"<span class="badge badge-scan">likely scanned</span>"#);
     out.push_str(r#"<span class="badge badge-skip">skipped by default</span>"#);
     out.push_str(r#"<span class="badge badge-unsupported">unsupported</span>"#);
-    out.push_str("</div>");
+    out.push_str(r#"</div></div>"#);
 
-    if workspace_candidate {
-        out.push_str(
-            r#"<div class="preview-note preview-note-warn"><strong>Workspace hint:</strong> a <code>.gitmodules</code> file was detected here. This path looks like a good candidate for future workspace/submodule mode, where each submodule becomes its own project report.</div>"#,
-        );
+    out.push_str(r#"<div class="explorer-meta-grid">"#);
+    out.push_str(&format!(
+        r#"<div class="explorer-meta-card"><div class="meta-label">Working oxide-sloc directory</div><div class="preview-code">{}</div></div>"#,
+        escape_html(&cwd)
+    ));
+    out.push_str(&format!(
+        r#"<div class="explorer-meta-card"><div class="meta-label">Selected project path</div><div class="preview-code">{}</div></div>"#,
+        escape_html(&selected)
+    ));
+    out.push_str(r#"</div>"#);
+
+    if !languages.is_empty() {
+        out.push_str(r#"<div class="explorer-language-strip"><div class="meta-label">Detected languages in preview</div><div class="language-pill-row">"#);
+        for language in languages {
+            out.push_str(&format!(
+                r#"<span class="language-pill">{}</span>"#,
+                escape_html(language)
+            ));
+        }
+        out.push_str(r#"</div></div>"#);
     }
 
     out.push_str(
-        r#"<div class="preview-note">This preview is heuristic. It highlights what the current build is most likely to scan by default, but final results still depend on ignore rules, globs, generated/minified detection, and supported language analyzers.</div>"#,
+        r#"<div class="preview-note">This preview is heuristic. It shows what the current build is most likely to scan by default, but final results still depend on ignore rules, globs, generated or minified detection, and supported analyzers.</div>"#,
     );
 
-    out.push_str(r#"<div class="tree-shell"><pre class="tree">"#);
+    out.push_str(r#"<div class="file-explorer-shell">"#);
+    out.push_str(r#"<div class="file-explorer-header"><span>Name</span><span>Status</span></div>"#);
+    out.push_str(r#"<div class="file-explorer-tree"><pre class="tree">"#);
 
     let root_name = root
         .file_name()
@@ -503,8 +542,8 @@ fn build_preview_html(root: &Path) -> Result<String> {
 
     let mut budget = PreviewBudget {
         shown: 0,
-        max_entries: 220,
-        max_depth: 4,
+        max_entries: 240,
+        max_depth: 5,
     };
     render_tree(root, 0, &mut budget, &mut out)?;
 
@@ -514,9 +553,79 @@ fn build_preview_html(root: &Path) -> Result<String> {
         );
     }
 
-    out.push_str("</pre></div>");
+    out.push_str("</pre></div></div></div>");
 
     Ok(out)
+}
+
+fn detect_languages_in_preview(root: &Path) -> Result<Vec<&'static str>> {
+    let mut found = Vec::new();
+    let mut budget = 0usize;
+    detect_languages_walk(root, &mut found, &mut budget)?;
+    Ok(found)
+}
+
+fn detect_languages_walk(
+    root: &Path,
+    found: &mut Vec<&'static str>,
+    budget: &mut usize,
+) -> Result<()> {
+    if *budget > 300 {
+        return Ok(());
+    }
+
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(()),
+    };
+
+    for entry in entries.flatten() {
+        if *budget > 300 {
+            break;
+        }
+        *budget += 1;
+
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+
+        if path.is_dir() {
+            if matches!(name.as_str(), ".git" | "target" | "node_modules") {
+                continue;
+            }
+            let _ = detect_languages_walk(&path, found, budget);
+            continue;
+        }
+
+        let language = if name.ends_with(".c") || name.ends_with(".h") {
+            Some("C")
+        } else if name.ends_with(".cpp")
+            || name.ends_with(".cxx")
+            || name.ends_with(".cc")
+            || name.ends_with(".hpp")
+            || name.ends_with(".hh")
+            || name.ends_with(".hxx")
+        {
+            Some("C++")
+        } else if name.ends_with(".cs") {
+            Some("C#")
+        } else if name.ends_with(".py") {
+            Some("Python")
+        } else if name.ends_with(".sh") {
+            Some("Shell")
+        } else if name.ends_with(".ps1") || name.ends_with(".psm1") || name.ends_with(".psd1") {
+            Some("PowerShell")
+        } else {
+            None
+        };
+
+        if let Some(language) = language {
+            if !found.contains(&language) {
+                found.push(language);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 struct PreviewBudget {
@@ -675,802 +784,197 @@ struct LanguageSummaryRow {
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>OxideSLOC local web UI</title>
+  <title>oxide-sloc local web UI</title>
   <style>
     :root {
-      --bg: #eeebe6;
-      --surface: #fcfbf9;
-      --surface-2: #f5f1eb;
-      --surface-3: #ece5dd;
-      --line: #d8d0c7;
-      --line-strong: #c8beb2;
-      --text: #2b241f;
-      --muted: #675d54;
-      --muted-2: #84776b;
-      --nav: #8a3f20;
-      --nav-2: #5f2713;
+      --bg: #efe9e2;
+      --surface: #fcfaf7;
+      --surface-2: #f7f0e8;
+      --surface-3: #efe3d5;
+      --line: #dfcfbf;
+      --line-strong: #cfb29c;
+      --text: #2f241c;
+      --muted: #6f6257;
+      --muted-2: #917f71;
+      --nav: #9a4c28;
+      --nav-2: #6f3119;
       --accent: #2563eb;
       --accent-2: #1d4ed8;
-      --success-bg: #e8f7ec;
-      --success-text: #1f7a3f;
-      --warn-bg: #fff3db;
-      --warn-text: #8a5a00;
+      --oxide: #b85d33;
+      --oxide-2: #8f4220;
+      --success-bg: #eaf9ee;
+      --success-text: #1c8746;
+      --warn-bg: #fff2d8;
+      --warn-text: #926000;
       --danger-bg: #fdeaea;
-      --danger-text: #a53a3a;
-      --shadow: 0 8px 24px rgba(47, 34, 25, 0.08);
-      --radius: 10px;
+      --danger-text: #b33b3b;
+      --shadow: 0 12px 28px rgba(73, 45, 28, 0.08);
+      --shadow-strong: 0 18px 34px rgba(73, 45, 28, 0.12);
+      --radius: 14px;
     }
 
     body.dark-theme {
-      --bg: #1a1411;
-      --surface: #241b17;
-      --surface-2: #2c221d;
-      --surface-3: #332822;
-      --line: #4f4037;
-      --line-strong: #665248;
-      --text: #f3ede8;
-      --muted: #c6b8ad;
-      --muted-2: #a89587;
-      --nav: #a54d27;
-      --nav-2: #6d2f17;
-      --accent: #5b8cff;
-      --accent-2: #3f6fe6;
-      --success-bg: #183425;
-      --success-text: #8ee0a6;
-      --warn-bg: #3a2b12;
-      --warn-text: #f2cb76;
-      --danger-bg: #3c1f1f;
-      --danger-text: #ff9e9e;
-      --shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+      --bg: #1b1511;
+      --surface: #261c17;
+      --surface-2: #2d221d;
+      --surface-3: #372922;
+      --line: #524238;
+      --line-strong: #6c5649;
+      --text: #f5ece6;
+      --muted: #c7b7aa;
+      --muted-2: #aa9485;
+      --nav: #b85d33;
+      --nav-2: #7a371b;
+      --accent: #6f9bff;
+      --accent-2: #4a78ee;
+      --oxide: #d37a4c;
+      --oxide-2: #b35428;
+      --success-bg: #163927;
+      --success-text: #8fe2a8;
+      --warn-bg: #3c2d11;
+      --warn-text: #f3cb75;
+      --danger-bg: #3d1f1f;
+      --danger-text: #ff9f9f;
+      --shadow: 0 14px 28px rgba(0,0,0,0.28);
+      --shadow-strong: 0 22px 38px rgba(0,0,0,0.34);
     }
 
     * { box-sizing: border-box; }
-
-    html, body {
-      margin: 0;
-      min-height: 100vh;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      color: var(--text);
-      background: var(--bg);
-    }
-
-    body {
-      overflow-x: hidden;
-    }
-
-    .top-nav {
-      background: linear-gradient(180deg, var(--nav), var(--nav-2));
-      color: #fff;
-      border-bottom: 1px solid rgba(255,255,255,0.08);
-      box-shadow: 0 2px 8px rgba(0,0,0,0.18);
-    }
-
-    .top-nav-inner {
-      max-width: 1440px;
-      margin: 0 auto;
-      padding: 0 20px;
-      min-height: 58px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 18px;
-    }
-
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      min-width: 0;
-    }
-
-    .brand-mark {
-      width: 12px;
-      height: 12px;
-      border-radius: 2px;
-      background: linear-gradient(135deg, #d36a3a, #8a3f20);
-      box-shadow: 0 0 0 3px rgba(211, 106, 58, 0.18);
-      flex: 0 0 auto;
-    }
-
-    .brand-text {
-      min-width: 0;
-    }
-
-    .brand-title {
-      font-size: 18px;
-      font-weight: 800;
-      letter-spacing: -0.02em;
-      margin: 0;
-      color: #fff;
-    }
-
-    .brand-subtitle {
-      margin: 2px 0 0;
-      font-size: 12px;
-      color: rgba(255,255,255,0.72);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .nav-status {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: flex-end;
-      gap: 10px;
-    }
-
-    .nav-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      min-height: 34px;
-      padding: 0 12px;
-      border-radius: 999px;
-      border: 1px solid rgba(255,255,255,0.12);
-      background: rgba(255,255,255,0.06);
-      color: #fff;
-      font-size: 12px;
-      font-weight: 700;
-    }
-
-    .theme-toggle {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 36px;
-      height: 36px;
-      padding: 0;
-      border-radius: 999px;
-      border: 1px solid rgba(255,255,255,0.16);
-      background: rgba(255,255,255,0.08);
-      color: #fff;
-      cursor: pointer;
-      transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
-    }
-
-    .theme-toggle:hover {
-      background: rgba(255,255,255,0.14);
-      border-color: rgba(255,255,255,0.26);
-      transform: translateY(-1px);
-    }
-
-    .theme-toggle svg {
-      width: 18px;
-      height: 18px;
-      stroke: currentColor;
-      fill: none;
-      stroke-width: 1.8;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-    }
-
-    .theme-toggle .icon-sun {
-      display: none;
-    }
-
-    body.dark-theme .theme-toggle .icon-moon {
-      display: none;
-    }
-
-    body.dark-theme .theme-toggle .icon-sun {
-      display: block;
-    }
-
-    body.dark-theme input[type="text"],
-    body.dark-theme textarea,
-    body.dark-theme select,
-    body.dark-theme .toggle-list,
-    body.dark-theme .preview-box,
-    body.dark-theme .tree-shell,
-    body.dark-theme .preview-code,
-    body.dark-theme .code-block,
-    body.dark-theme code {
-      background: #201814;
-      color: var(--text);
-    }
-
-    body.dark-theme .top-nav {
-      border-bottom: 1px solid rgba(255,255,255,0.10);
-    }
-
-    body.dark-theme .card-header {
-      background: linear-gradient(180deg, #2b211c, #241c17);
-    }
-
-    body.dark-theme button.secondary {
-      background: #2b211c;
-      color: var(--text);
-      border-color: var(--line-strong);
-    }
-
-    body.dark-theme .preview-box,
-    body.dark-theme .tree-shell,
-    body.dark-theme .preview-code,
-    body.dark-theme .code-block {
-      border-color: var(--line);
-    }
-
-    body.dark-theme .entry-dir {
-      color: #f0e6df;
-    }
-
-    body.dark-theme .entry-more {
-      color: var(--muted-2);
-    }
-
-    .nav-pill code {
-      background: rgba(255,255,255,0.08);
-      border: 1px solid rgba(255,255,255,0.08);
-      color: #fff;
-    }
-
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 999px;
-      background: #22c55e;
-      box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.14);
-      flex: 0 0 auto;
-    }
-
-    .page {
-      max-width: 1440px;
-      margin: 0 auto;
-      padding: 20px;
-    }
-
-    .subnav {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 18px;
-      color: var(--muted-2);
-      font-size: 13px;
-    }
-
-    .subnav strong {
-      color: var(--text);
-    }
-
-    .summary-grid {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 14px;
-      margin-bottom: 18px;
-    }
-
-    .summary-card {
-      background: var(--surface);
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      padding: 16px 18px;
-    }
-
-    .summary-label {
-      margin-bottom: 8px;
-      font-size: 11px;
-      font-weight: 800;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: var(--muted-2);
-    }
-
-    .summary-value {
-      font-size: 14px;
-      color: var(--text);
-      line-height: 1.5;
-      word-break: break-word;
-    }
-
-    .main-grid {
-      display: grid;
-      grid-template-columns: minmax(700px, 1.2fr) minmax(380px, 0.8fr);
-      gap: 18px;
-      align-items: start;
-    }
-
-    .card {
-      background: var(--surface);
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      overflow: hidden;
-    }
-
-    .card-header {
-      padding: 14px 18px;
-      border-bottom: 1px solid var(--line);
-      background: linear-gradient(180deg, #fbfcfe, #f3f6fa);
-    }
-
-    .card-title {
-      margin: 0;
-      font-size: 18px;
-      font-weight: 800;
-      letter-spacing: -0.02em;
-      color: var(--text);
-    }
-
-    .card-subtitle {
-      margin: 5px 0 0;
-      font-size: 13px;
-      color: var(--muted);
-      line-height: 1.5;
-    }
-
-    .card-body {
-      padding: 18px;
-    }
-
-    .section {
-      margin-bottom: 18px;
-      padding-bottom: 18px;
-      border-bottom: 1px solid var(--line);
-    }
-
-    .section:last-child {
-      margin-bottom: 0;
-      padding-bottom: 0;
-      border-bottom: none;
-    }
-
-    .section-title {
-      margin: 0 0 12px;
-      font-size: 13px;
-      font-weight: 800;
-      color: var(--text);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-
-    .field-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 14px;
-    }
-
-    .field {
-      min-width: 0;
-    }
-
-    label {
-      display: block;
-      margin: 0 0 7px;
-      font-size: 13px;
-      font-weight: 700;
-      color: var(--text);
-    }
-
-    input[type="text"],
-    textarea,
-    select {
-      width: 100%;
-      min-width: 0;
-      padding: 11px 12px;
-      border-radius: 8px;
-      border: 1px solid var(--line-strong);
-      background: #fff;
-      color: var(--text);
-      font-size: 14px;
-      line-height: 1.4;
-      box-sizing: border-box;
-      transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
-    }
-
-    input[type="text"]:focus,
-    textarea:focus,
-    select:focus {
-      outline: none;
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
-    }
-
-    textarea {
-      resize: vertical;
-      min-height: 112px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    }
-
-    .hint {
-      margin-top: 7px;
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.5;
-    }
-
-    .toggle-list {
-      display: grid;
-      gap: 10px;
-      padding: 14px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--surface-2);
-    }
-
-    .checkbox {
-      display: flex;
-      align-items: flex-start;
-      gap: 10px;
-      color: var(--text);
-      font-size: 14px;
-      line-height: 1.45;
-    }
-
-    .checkbox input {
-      margin-top: 2px;
-      width: 16px;
-      height: 16px;
-      accent-color: var(--accent);
-      flex: 0 0 auto;
-    }
-
-    .action-bar {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 10px;
-      padding-top: 4px;
-    }
-
-    button {
-      appearance: none;
-      border: 1px solid transparent;
-      border-radius: 8px;
-      min-height: 40px;
-      padding: 0 14px;
-      font-size: 14px;
-      font-weight: 700;
-      cursor: pointer;
-      transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
-    }
-
-    button:hover {
-      transform: translateY(-1px);
-    }
-
-    button.primary {
-      background: linear-gradient(180deg, var(--accent), var(--accent-2));
-      color: #fff;
-      box-shadow: 0 6px 16px rgba(37, 99, 235, 0.22);
-    }
-
-    button.secondary {
-      background: #fff;
-      color: var(--text);
-      border-color: var(--line-strong);
-    }
-
-    button:disabled {
-      opacity: 0.75;
-      cursor: progress;
-    }
-
-    .right-stack {
-      display: grid;
-      gap: 18px;
-    }
-
-    .info-table {
-      display: grid;
-      gap: 10px;
-    }
-
-    .info-row {
-      display: grid;
-      gap: 6px;
-    }
-
-    .info-row strong {
-      font-size: 12px;
-      color: var(--muted-2);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-
-    .code-block {
-      padding: 10px 12px;
-      border-radius: 8px;
-      border: 1px solid var(--line);
-      background: #f8fafc;
-      color: #111827;
-      font-size: 12px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      overflow-wrap: anywhere;
-      word-break: break-word;
-    }
-
-    .badge-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin: 12px 0;
-    }
-
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      min-height: 28px;
-      padding: 0 10px;
-      border-radius: 999px;
-      font-size: 12px;
-      font-weight: 700;
-      border: 1px solid transparent;
-    }
-
-    .badge-scan {
-      background: var(--success-bg);
-      color: var(--success-text);
-      border-color: #b9e2c4;
-    }
-
-    .badge-skip {
-      background: var(--warn-bg);
-      color: var(--warn-text);
-      border-color: #f0ddb0;
-    }
-
-    .badge-unsupported {
-      background: var(--danger-bg);
-      color: var(--danger-text);
-      border-color: #efc2c2;
-    }
-
-    .badge-dir {
-      background: #edf3ff;
-      color: #315ea8;
-      border-color: #cad9f5;
-    }
-
-    .note {
-      margin: 10px 0 0;
-      padding: 12px;
-      border-radius: 8px;
-      border: 1px solid var(--line);
-      background: var(--surface-2);
-      color: var(--muted);
-      font-size: 13px;
-      line-height: 1.55;
-    }
-
-    .note.warn {
-      background: var(--warn-bg);
-      border-color: #f0ddb0;
-      color: var(--warn-text);
-    }
-
-    .preview-box {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #fbfcfe;
-      min-height: 560px;
-      padding: 14px;
-    }
-
-    .preview-head strong {
-      display: block;
-      margin-bottom: 6px;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: var(--muted-2);
-    }
-
-    .preview-code {
-      margin-top: 4px;
-      padding: 10px 12px;
-      border-radius: 8px;
-      border: 1px solid var(--line);
-      background: #fff;
-      color: #111827;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      overflow-wrap: anywhere;
-      word-break: break-word;
-      font-size: 12px;
-    }
-
-    .preview-legend {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin: 12px 0;
-    }
-
-    .preview-note {
-      margin: 10px 0;
-      padding: 12px;
-      border-radius: 8px;
-      background: var(--surface-2);
-      border: 1px solid var(--line);
-      color: var(--muted);
-      font-size: 13px;
-      line-height: 1.55;
-    }
-
-    .preview-note-warn {
-      background: var(--warn-bg);
-      border-color: #f0ddb0;
-      color: var(--warn-text);
-    }
-
-    .tree-shell {
-      margin-top: 12px;
-      border-radius: 8px;
-      border: 1px solid var(--line);
-      background: #fff;
-      padding: 12px;
-      max-height: 460px;
-      overflow: auto;
-    }
-
-    .tree {
-      margin: 0;
-      color: #1f2937;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 12px;
-      line-height: 1.65;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-
-    .entry-dir {
-      color: #334155;
-      font-weight: 700;
-    }
-
-    .entry-scan {
-      color: #1f7a3f;
-    }
-
-    .entry-skip {
-      color: #8a5a00;
-    }
-
-    .entry-unsupported {
-      color: #a53a3a;
-    }
-
-    .entry-more {
-      color: var(--muted-2);
-      font-style: italic;
-    }
-
-    .preview-error {
-      color: #a53a3a;
-      background: var(--danger-bg);
-      border: 1px solid #efc2c2;
-      padding: 12px;
-      border-radius: 8px;
-      font-size: 13px;
-      line-height: 1.5;
-    }
-
-    .roadmap-list {
-      display: grid;
-      gap: 10px;
-      margin: 0;
-      padding: 0;
-      list-style: none;
-    }
-
-    .roadmap-list li {
-      padding-left: 14px;
-      position: relative;
-      color: var(--text);
-      font-size: 14px;
-      line-height: 1.55;
-    }
-
-    .roadmap-list li::before {
-      content: "";
-      position: absolute;
-      top: 8px;
-      left: 0;
-      width: 6px;
-      height: 6px;
-      border-radius: 999px;
-      background: var(--accent);
-    }
-
-    .loading {
-      position: fixed;
-      inset: 0;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      background: rgba(17, 24, 39, 0.34);
-      z-index: 1000;
-    }
-
-    .loading.active {
-      display: flex;
-    }
-
-    .loading-card {
-      width: min(520px, calc(100vw - 40px));
-      border: 1px solid var(--line-strong);
-      border-radius: 12px;
-      background: #fff;
-      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
-      padding: 22px;
-      text-align: center;
-    }
-
-    .spinner {
-      width: 44px;
-      height: 44px;
-      margin: 0 auto 14px;
-      border-radius: 999px;
-      border: 4px solid #dbe3ef;
-      border-top-color: var(--accent);
-      animation: spin 0.9s linear infinite;
-    }
-
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
-
-    .progress-bar {
-      width: 100%;
-      height: 8px;
-      margin-top: 14px;
-      border-radius: 999px;
-      background: #e7edf6;
-      overflow: hidden;
-    }
-
-    .progress-bar span {
-      display: block;
-      width: 42%;
-      height: 100%;
-      border-radius: 999px;
-      background: linear-gradient(90deg, var(--accent), #6b8cff);
-      animation: pulseBar 1.4s ease-in-out infinite;
-    }
-
-    @keyframes pulseBar {
-      0%   { transform: translateX(-35%); width: 25%; }
-      50%  { transform: translateX(130%); width: 44%; }
-      100% { transform: translateX(250%); width: 25%; }
-    }
-
-    code {
-      display: inline-block;
-      max-width: 100%;
-      overflow-wrap: anywhere;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      background: #eff4fa;
-      border: 1px solid #d7dee9;
-      padding: 2px 6px;
-      border-radius: 6px;
-    }
-
-    @media (max-width: 1180px) {
-      .main-grid {
-        grid-template-columns: 1fr;
-      }
-    }
-
-    @media (max-width: 860px) {
-      .summary-grid,
-      .field-grid {
-        grid-template-columns: 1fr;
-      }
-
-      .top-nav-inner {
-        padding-top: 10px;
-        padding-bottom: 10px;
-        align-items: flex-start;
-        flex-direction: column;
-      }
-
-      .nav-status {
-        justify-content: flex-start;
-      }
-    }
+    html, body { margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); }
+    body { overflow-x: hidden; transition: background 0.18s ease, color 0.18s ease; }
+    .top-nav { position: sticky; top: 0; z-index: 30; background: linear-gradient(180deg, var(--nav), var(--nav-2)); border-bottom: 1px solid rgba(255,255,255,0.12); box-shadow: 0 4px 14px rgba(0,0,0,0.18); }
+    .top-nav-inner { max-width: 1460px; margin: 0 auto; padding: 10px 24px; min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand-mark { width: 14px; height: 14px; border-radius: 4px; background: linear-gradient(135deg, #e9a06e, var(--oxide-2)); box-shadow: 0 0 0 3px rgba(255,255,255,0.10); }
+    .brand-title { margin: 0; color: #fff; font-size: 17px; font-weight: 800; }
+    .brand-subtitle { color: rgba(255,255,255,0.8); font-size: 12px; }
+    .nav-status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .nav-pill, .theme-toggle { display: inline-flex; align-items: center; gap: 8px; min-height: 38px; padding: 0 14px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.18); color: #fff; background: rgba(255,255,255,0.08); font-size: 12px; font-weight: 700; box-shadow: inset 0 1px 0 rgba(255,255,255,0.08); }
+    .nav-pill code { color: #fff; background: rgba(0,0,0,0.28); border: 1px solid rgba(255,255,255,0.10); padding: 3px 8px; border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .theme-toggle { width: 38px; justify-content: center; padding: 0; cursor: pointer; transition: transform 0.15s ease, background 0.15s ease; }
+    .theme-toggle:hover { transform: translateY(-1px); background: rgba(255,255,255,0.16); }
+    .theme-toggle svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; }
+    .theme-toggle .icon-sun { display:none; }
+    body.dark-theme .theme-toggle .icon-sun { display:block; }
+    body.dark-theme .theme-toggle .icon-moon { display:none; }
+    .status-dot { width: 8px; height: 8px; border-radius: 999px; background: #26d768; box-shadow: 0 0 0 4px rgba(38,215,104,0.14); }
+    .page { max-width: 1460px; margin: 0 auto; padding: 18px 24px 40px; }
+    .subnav { display:flex; align-items:center; gap:8px; margin-bottom: 14px; color: var(--muted-2); font-size: 13px; }
+    .subnav strong { color: var(--text); }
+    .summary-grid { display:grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 14px; margin-bottom: 18px; }
+    .summary-card, .card, .step-nav, .explainer-card, .review-card, .workspace-card, .artifact-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, transform 0.18s ease; }
+    .summary-card:hover, .workspace-card:hover, .explainer-card:hover, .artifact-card:hover, .review-card:hover { box-shadow: var(--shadow-strong); border-color: var(--line-strong); transform: translateY(-2px); }
+    .card:hover, .step-nav:hover { box-shadow: var(--shadow-strong); border-color: var(--line-strong); }
+    .summary-card { padding: 18px 18px 16px; position: relative; overflow: hidden; }
+    .summary-card::before { content:""; position:absolute; inset:0 auto 0 0; width:4px; background: linear-gradient(180deg, var(--oxide), var(--oxide-2)); }
+    .summary-label, .section-kicker, .meta-label, .field-help-title { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-2); }
+    .summary-value { margin-top: 10px; font-size: 17px; font-weight: 700; color: var(--text); line-height: 1.4; }
+    .summary-body { margin-top: 8px; color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .coverage-pills { display:flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+    .coverage-pill, .language-pill, .soft-chip { display:inline-flex; align-items:center; min-height: 32px; padding: 0 12px; border-radius: 999px; border:1px solid var(--line); background: var(--surface-2); color: var(--text); font-size: 13px; font-weight: 700; }
+    .layout { display:grid; grid-template-columns: 260px 1fr 420px; gap: 18px; align-items:start; }
+    .step-nav { padding: 14px; position: sticky; top: 88px; }
+    .step-nav h3 { margin: 6px 4px 14px; font-size: 15px; }
+    .step-button { width:100%; display:flex; align-items:center; gap:12px; border:none; background:transparent; border-radius: 12px; padding: 12px 12px; color: var(--text); cursor:pointer; text-align:left; font-size:15px; font-weight:700; transition: background 0.15s ease, transform 0.15s ease; }
+    .step-button:hover { background: var(--surface-2); }
+    .step-button.active { background: rgba(37,99,235,0.09); box-shadow: inset 0 0 0 1px rgba(37,99,235,0.18); color: var(--accent-2); }
+    .step-num { width:22px; height:22px; border-radius:999px; display:inline-flex; align-items:center; justify-content:center; background: var(--surface-3); color: var(--text); font-size:12px; font-weight:800; flex:0 0 auto; }
+    .step-button.active .step-num { background: rgba(37,99,235,0.18); color: var(--accent-2); }
+    .card-header { padding: 22px 22px 18px; border-bottom:1px solid var(--line); background: linear-gradient(180deg, rgba(255,255,255,0.30), transparent), var(--surface); }
+    .card-title-row { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+    .card-title { margin:0; font-size: 22px; font-weight: 850; letter-spacing: -0.03em; }
+    .card-subtitle { margin: 10px 0 0; color: var(--muted); font-size: 16px; line-height: 1.65; max-width: 920px; }
+    .card-body { padding: 22px; }
+    .wizard-step { display:none; }
+    .wizard-step.active { display:block; }
+    .section { margin-bottom: 22px; padding-bottom: 22px; border-bottom:1px solid var(--line); }
+    .section:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: none; }
+    .field-grid { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .field-grid.three { grid-template-columns: 1fr 1fr 1fr; }
+    .field-grid.sidebarish { grid-template-columns: 1.2fr .8fr; }
+    .field { min-width:0; }
+    label { display:block; margin:0 0 8px; font-size: 14px; font-weight: 800; color: var(--text); }
+    input[type="text"], textarea, select { width:100%; min-width:0; border-radius: 10px; border:1px solid var(--line-strong); background: #fff; color: var(--text); font-size: 15px; padding: 12px 14px; transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, background 0.15s ease; }
+    body.dark-theme input[type="text"], body.dark-theme textarea, body.dark-theme select, body.dark-theme code, body.dark-theme .preview-code { background: #201813; color: var(--text); }
+    input[type="text"]:hover, textarea:hover, select:hover { border-color: var(--accent); }
+    input[type="text"]:focus, textarea:focus, select:focus { outline:none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.13); transform: translateY(-1px); }
+    textarea { min-height: 128px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .hint { margin-top: 8px; color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .input-group { display:grid; grid-template-columns: 1fr auto auto auto; gap: 8px; align-items:center; }
+    .input-group.compact { grid-template-columns: 1fr auto auto; }
+    .full-output-row { display:grid; grid-template-columns: 1fr; gap: 16px; }
+    .mini-button, button.primary, button.secondary, .artifact-toggle { min-height: 42px; border-radius: 10px; border:1px solid var(--line-strong); background: var(--surface-2); color: var(--text); padding: 0 14px; font-size: 14px; font-weight: 800; cursor: pointer; transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease; }
+    .mini-button:hover, button.primary:hover, button.secondary:hover, .artifact-toggle:hover { transform: translateY(-1px); box-shadow: 0 10px 18px rgba(0,0,0,0.08); }
+    .mini-button.oxide { color: var(--oxide-2); background: rgba(184,93,51,0.08); border-color: rgba(184,93,51,0.22); }
+    .mini-button.primary-lite { background: rgba(37,99,235,0.08); color: var(--accent-2); border-color: rgba(37,99,235,0.20); }
+    button.primary { background: linear-gradient(180deg, var(--accent), var(--accent-2)); color:#fff; border-color: transparent; }
+    button.secondary { background: var(--surface); }
+    .wizard-actions { display:flex; justify-content:space-between; align-items:center; gap: 12px; margin-top: 22px; padding-top: 18px; border-top:1px solid var(--line); }
+    .wizard-actions .left, .wizard-actions .right { display:flex; gap: 10px; flex-wrap:wrap; }
+    .field-help-grid { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
+    .explainer-card { padding: 16px; }
+    .explainer-body { margin-top: 10px; color: var(--muted); font-size: 14px; line-height: 1.62; }
+    .code-sample { margin-top: 10px; padding: 12px 14px; border-radius: 10px; border:1px solid var(--line); background: var(--surface-2); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; font-size: 13px; color: var(--text); }
+    .toggle-card { border:1px solid var(--line); border-radius: 12px; background: var(--surface-2); padding: 16px; }
+    .checkbox { display:flex; align-items:flex-start; gap: 10px; font-size: 15px; font-weight:700; }
+    .checkbox input { width: 16px; height: 16px; margin-top: 3px; accent-color: var(--accent); }
+    .artifact-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
+    .artifact-card { position:relative; padding: 16px; cursor:pointer; }
+    .artifact-card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(37,99,235,0.18), var(--shadow-strong); }
+    .artifact-card .marker { position:absolute; top: 12px; right: 12px; width: 22px; height: 22px; border-radius: 999px; border:2px solid var(--line-strong); display:flex; align-items:center; justify-content:center; font-size: 12px; color: transparent; }
+    .artifact-card.selected .marker { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .artifact-icon { width: 42px; height: 42px; border-radius: 12px; background: var(--surface-2); border:1px solid var(--line); display:flex; align-items:center; justify-content:center; font-size: 22px; font-weight: 900; }
+    .artifact-card h4 { margin: 12px 0 6px; font-size: 16px; }
+    .artifact-card p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.6; }
+    .artifact-tags { display:flex; flex-wrap:wrap; gap: 8px; margin-top: 14px; }
+    .review-grid { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
+    .review-card { padding: 16px; background: linear-gradient(180deg, rgba(255,255,255,0.22), transparent), var(--surface); }
+    .review-card h4 { margin: 0 0 8px; font-size: 17px; }
+    .review-card p, .review-card li { color: var(--muted); font-size: 14px; line-height: 1.62; }
+    .review-card ul { padding-left: 18px; margin: 0; }
+    .workspace-stack { display:grid; gap: 16px; }
+    .workspace-card { padding: 18px; }
+    .workspace-title { margin:0; font-size: 18px; font-weight: 850; }
+    .workspace-subtitle { margin: 8px 0 0; color: var(--muted); font-size: 15px; line-height: 1.6; }
+    .explorer-wrap { display:grid; gap: 14px; }
+    .explorer-toolbar { display:flex; justify-content:space-between; gap: 12px; align-items:flex-start; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+    .explorer-title { font-size: 18px; font-weight: 850; }
+    .explorer-subtitle { margin-top: 6px; color: var(--muted); font-size: 14px; line-height: 1.55; max-width: 290px; }
+    .preview-legend { display:flex; flex-wrap:wrap; gap: 10px; }
+    .better-spacing { align-items:flex-start; justify-content:flex-end; }
+    .badge { display:inline-flex; align-items:center; min-height: 30px; padding: 0 12px; border-radius: 999px; font-size: 13px; font-weight: 800; border:1px solid transparent; }
+    .badge-scan { background: var(--success-bg); color: var(--success-text); border-color: #bce6c8; }
+    .badge-skip { background: var(--warn-bg); color: var(--warn-text); border-color: #eed9a4; }
+    .badge-unsupported { background: var(--danger-bg); color: var(--danger-text); border-color: #f1c3c3; }
+    .badge-dir { background: #e8eeff; color: #365caa; border-color: #cad7f3; }
+    body.dark-theme .badge-dir { background:#223058; color:#bfd0ff; border-color:#3b4f87; }
+    .explorer-meta-grid { display:grid; grid-template-columns: 1fr; gap: 12px; }
+    .explorer-meta-card, .preview-note { padding: 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface-2); }
+    .preview-code, code { display:block; margin-top: 8px; padding: 10px 12px; border-radius: 10px; border:1px solid var(--line); background: #fff; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; overflow-wrap:anywhere; }
+    code { display:inline-block; margin-top:0; padding:2px 7px; }
+    .explorer-language-strip { padding: 14px; border-radius: 12px; border:1px solid var(--line); background: var(--surface-2); }
+    .language-pill-row { display:flex; flex-wrap:wrap; gap: 8px; margin-top: 10px; }
+    .file-explorer-shell { border:1px solid var(--line); border-radius: 14px; overflow:hidden; background: var(--surface); }
+    .file-explorer-header { display:grid; grid-template-columns: 1fr auto; gap: 10px; padding: 11px 14px; background: linear-gradient(180deg, var(--surface-2), transparent); border-bottom:1px solid var(--line); font-size: 12px; font-weight: 800; color: var(--muted-2); text-transform: uppercase; letter-spacing: 0.08em; }
+    .file-explorer-tree { max-height: 500px; overflow:auto; padding: 14px; }
+    .tree { margin:0; color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; line-height: 1.9; white-space: pre-wrap; word-break: break-word; }
+    .entry-dir { color: var(--text); font-weight: 800; }
+    .entry-scan { color: var(--success-text); }
+    .entry-skip { color: var(--warn-text); }
+    .entry-unsupported { color: var(--danger-text); }
+    .entry-more { color: var(--muted-2); font-style: italic; }
+    .preview-error { color: var(--danger-text); background: var(--danger-bg); border:1px solid #efc2c2; padding: 12px; border-radius: 12px; }
+    .loading { position: fixed; inset: 0; display:none; align-items:center; justify-content:center; background: rgba(17,24,39,0.28); z-index: 100; }
+    .loading.active { display:flex; }
+    .loading-card { width: min(540px, calc(100vw - 40px)); border-radius: 18px; border: 1px solid var(--line); background: var(--surface); box-shadow: 0 20px 40px rgba(0,0,0,0.18); padding: 24px; text-align:center; }
+    .spinner { width:44px; height:44px; margin:0 auto 16px; border-radius:999px; border:4px solid rgba(0,0,0,0.10); border-top-color: var(--accent); animation: spin .9s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg);} }
+    .progress-bar { width:100%; height:8px; margin-top:14px; background: var(--surface-3); border-radius:999px; overflow:hidden; }
+    .progress-bar span { display:block; width:42%; height:100%; background: linear-gradient(90deg, var(--accent), #6b8cff); animation: pulseBar 1.4s ease-in-out infinite; }
+    @keyframes pulseBar { 0% { transform: translateX(-35%); width:25%; } 50% { transform: translateX(130%); width:44%; } 100% { transform: translateX(250%); width:25%; } }
+    .hidden { display:none !important; }
+    @media (max-width: 1280px) { .layout { grid-template-columns: 230px 1fr; } .workspace-column { grid-column: 1 / -1; } }
+    @media (max-width: 980px) { .summary-grid, .field-grid, .artifact-grid, .review-grid { grid-template-columns: 1fr; } .layout { grid-template-columns: 1fr; } .step-nav { position:static; } .top-nav-inner { flex-direction: column; align-items:flex-start; } .input-group { grid-template-columns: 1fr 1fr; } .input-group.compact { grid-template-columns: 1fr 1fr; } .better-spacing { justify-content:flex-start; } }
   </style>
 </head>
 <body>
@@ -1478,28 +982,15 @@ struct LanguageSummaryRow {
     <div class="top-nav-inner">
       <div class="brand">
         <div class="brand-mark"></div>
-        <div class="brand-text">
+        <div>
           <div class="brand-title">OxideSLOC</div>
           <div class="brand-subtitle">Local analysis workbench</div>
         </div>
       </div>
-
       <div class="nav-status">
         <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme" title="Toggle theme">
-          <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 1 0 9.8 9.8z"></path>
-          </svg>
-          <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
-            <circle cx="12" cy="12" r="4"></circle>
-            <path d="M12 2v2"></path>
-            <path d="M12 20v2"></path>
-            <path d="M2 12h2"></path>
-            <path d="M20 12h2"></path>
-            <path d="M4.9 4.9l1.4 1.4"></path>
-            <path d="M17.7 17.7l1.4 1.4"></path>
-            <path d="M4.9 19.1l1.4-1.4"></path>
-            <path d="M17.7 6.3l1.4-1.4"></path>
-          </svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 1 0 9.8 9.8z"></path></svg>
+          <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="M4.9 4.9l1.4 1.4"></path><path d="M17.7 17.7l1.4 1.4"></path><path d="M4.9 19.1l1.4-1.4"></path><path d="M17.7 6.3l1.4-1.4"></path></svg>
         </button>
         <div class="nav-pill"><span class="status-dot"></span>Server online</div>
         <div class="nav-pill">Endpoint <code>127.0.0.1:4317</code></div>
@@ -1521,167 +1012,306 @@ struct LanguageSummaryRow {
     <div class="subnav">
       <span>Workbench</span>
       <span>/</span>
-      <strong>Configure scan</strong>
+      <strong id="breadcrumb-title">Guided scan setup</strong>
     </div>
 
     <div class="summary-grid">
       <section class="summary-card">
-        <div class="summary-label">Supported analyzers</div>
-        <div class="summary-value">C, C++, C#, Python, Shell, PowerShell</div>
+        <div class="summary-label">Analyzer coverage</div>
+        <div class="summary-body">Grouped coverage for this build instead of a raw language list.</div>
+        <div class="coverage-pills">
+          <span class="coverage-pill">Systems: C, C++</span>
+          <span class="coverage-pill">Managed: C#</span>
+          <span class="coverage-pill">Scripting: Python, Shell, PowerShell</span>
+        </div>
       </section>
       <section class="summary-card">
         <div class="summary-label">Default sample target</div>
         <div class="summary-value"><code>samples/basic</code></div>
+        <div class="summary-body">Quick path for testing the full flow before scanning a larger project.</div>
       </section>
       <section class="summary-card">
-        <div class="summary-label">Working directory</div>
-        <div class="summary-value"><code>{{ cwd }}</code></div>
+        <div class="summary-label">Current report title</div>
+        <div class="summary-value" id="live-report-title">samples/basic</div>
+        <div class="summary-body">This title follows the selected folder by default and updates exported artifacts.</div>
       </section>
     </div>
 
-    <div class="main-grid">
+    <div class="layout">
+      <aside class="step-nav">
+        <h3>Guided scan setup</h3>
+        <button type="button" class="step-button active" data-step-target="1"><span class="step-num">1</span><span>Select project</span></button>
+        <button type="button" class="step-button" data-step-target="2"><span class="step-num">2</span><span>Counting rules</span></button>
+        <button type="button" class="step-button" data-step-target="3"><span class="step-num">3</span><span>Outputs and reports</span></button>
+        <button type="button" class="step-button" data-step-target="4"><span class="step-num">4</span><span>Review and run</span></button>
+      </aside>
+
       <section class="card">
         <div class="card-header">
-          <h1 class="card-title">Scan configuration</h1>
-          <p class="card-subtitle">Configure the target path, counting behavior, include and exclude rules, and which artifacts should be saved for this run.</p>
+          <div class="card-title-row">
+            <div>
+              <h1 class="card-title">Guided scan configuration</h1>
+              <p class="card-subtitle">Split setup into steps so each group of options has room for examples, explanations, and stronger customization.</p>
+            </div>
+          </div>
         </div>
         <div class="card-body">
           <form method="post" action="/analyze" id="analyze-form">
-            <div class="section">
-              <div class="section-title">Target</div>
-              <div class="field">
-                <label for="path">Project path</label>
-                <input id="path" name="path" type="text" value="samples/basic" placeholder="/path/to/repository" required />
-                <div class="hint">This localhost UI uses a server-side preview instead of embedding the platform file explorer.</div>
-              </div>
-            </div>
-
-            <div class="section">
-              <div class="section-title">Run metadata</div>
-              <div class="field-grid">
+            <div class="wizard-step active" data-step="1">
+              <div class="section">
+                <div class="section-kicker">Step 1</div>
+                <h2>Select project and preview scope</h2>
+                <p class="card-subtitle">Choose the target folder, apply include and exclude filters, and preview what the current build is likely to scan.</p>
                 <div class="field">
-                  <label for="output_dir">Output directory</label>
-                  <input id="output_dir" name="output_dir" type="text" value="out/web" placeholder="out/web" />
-                  <div class="hint">Each run creates its own folder underneath this base directory.</div>
-                </div>
-                <div class="field">
-                  <label for="report_title">Report title</label>
-                  <input id="report_title" name="report_title" type="text" value="OxideSLOC Report" placeholder="OxideSLOC Report" />
+                  <label for="path">Project path</label>
+                  <div class="input-group">
+                    <input id="path" name="path" type="text" value="samples/basic" placeholder="/path/to/repository" required />
+                    <button type="button" class="mini-button oxide" id="browse-path">Browse</button>
+                    <button type="button" class="mini-button" id="use-sample-path">Use sample</button>
+                    <button type="button" class="mini-button primary-lite" id="refresh-preview-inline">Preview</button>
+                  </div>
+                  <div class="hint">Browse opens the native folder picker through the Rust backend, so you do not need to type local paths manually.</div>
                 </div>
               </div>
-            </div>
 
-            <div class="section">
-              <div class="section-title">Counting behavior</div>
-              <div class="field-grid">
-                <div class="field">
-                  <label for="mixed_line_policy">Mixed-line policy</label>
-                  <select id="mixed_line_policy" name="mixed_line_policy">
-                    <option value="code_only">Code only</option>
-                    <option value="code_and_comment">Code and comment</option>
-                    <option value="comment_only">Comment only</option>
-                    <option value="separate_mixed_category">Separate mixed category</option>
-                  </select>
-                </div>
-                <div class="field">
-                  <label>Python docstrings</label>
-                  <div class="toggle-list">
-                    <label class="checkbox">
-                      <input id="python_docstrings_as_comments" name="python_docstrings_as_comments" type="checkbox" checked />
-                      <span>Count Python docstrings as comments</span>
-                    </label>
+              <div class="section">
+                <div class="field-grid">
+                  <div class="field">
+                    <label for="include_globs">Include globs</label>
+                    <textarea id="include_globs" name="include_globs" placeholder="examples:&#10;src/**/*.py&#10;scripts/*.sh"></textarea>
+                    <div class="hint">Use line-separated or comma-separated patterns to explicitly include paths. This narrows selection, but unsupported languages still need analyzer support.</div>
+                  </div>
+                  <div class="field">
+                    <label for="exclude_globs">Exclude globs</label>
+                    <textarea id="exclude_globs" name="exclude_globs" placeholder="examples:&#10;vendor/**&#10;**/*.min.js"></textarea>
+                    <div class="hint">Use this to trim vendor trees, generated output, minified files, or other classes of content from the scan.</div>
                   </div>
                 </div>
               </div>
-            </div>
 
-            <div class="section">
-              <div class="section-title">Path filters</div>
-              <div class="field-grid">
-                <div class="field">
-                  <label for="include_globs">Include globs</label>
-                  <textarea id="include_globs" name="include_globs" placeholder="examples:&#10;src/**/*.py&#10;scripts/*.sh"></textarea>
-                  <div class="hint">Use line-separated or comma-separated patterns to explicitly include paths. Unsupported languages still need analyzer support.</div>
-                </div>
-                <div class="field">
-                  <label for="exclude_globs">Exclude globs</label>
-                  <textarea id="exclude_globs" name="exclude_globs" placeholder="examples:&#10;vendor/**&#10;**/*.min.js"></textarea>
-                  <div class="hint">Use this to trim generated code, vendor directories, build outputs, or file classes from a run.</div>
+              <div class="wizard-actions">
+                <div class="left"></div>
+                <div class="right">
+                  <button type="button" class="secondary next-step" data-next="2">Next: Counting rules</button>
                 </div>
               </div>
             </div>
 
-            <div class="section">
-              <div class="section-title">Artifacts</div>
-              <div class="toggle-list">
-                <label class="checkbox">
-                  <input name="generate_html" type="checkbox" checked />
-                  <span>Generate HTML report</span>
-                </label>
-                <label class="checkbox">
-                  <input name="generate_pdf" type="checkbox" checked />
-                  <span>Generate PDF report</span>
-                </label>
-                <label class="checkbox">
-                  <input name="generate_json" type="checkbox" />
-                  <span>Generate JSON report</span>
-                </label>
+            <div class="wizard-step" data-step="2">
+              <div class="section">
+                <div class="section-kicker">Step 2</div>
+                <h2>Choose counting behavior</h2>
+                <p class="card-subtitle">These settings decide how mixed code-plus-comment lines and Python docstrings are classified.</p>
+                <div class="field-grid">
+                  <div class="field">
+                    <label for="mixed_line_policy">Mixed-line policy</label>
+                    <select id="mixed_line_policy" name="mixed_line_policy">
+                      <option value="code_only">Code only</option>
+                      <option value="code_and_comment">Code and comment</option>
+                      <option value="comment_only">Comment only</option>
+                      <option value="separate_mixed_category">Separate mixed category</option>
+                    </select>
+                    <div class="hint">Mixed lines are lines that contain executable code and inline comment text at the same time.</div>
+                  </div>
+                  <div class="field python-docstring-wrap" id="python-docstring-wrap">
+                    <label>Python docstrings</label>
+                    <div class="toggle-card">
+                      <label class="checkbox">
+                        <input id="python_docstrings_as_comments" name="python_docstrings_as_comments" type="checkbox" checked />
+                        <span>Count Python docstrings as comment-style lines</span>
+                      </label>
+                      <div class="hint" id="python-docstring-live-help">Useful when you treat docstrings as documentation rather than executable logic.</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="field-help-grid">
+                <div class="explainer-card">
+                  <div class="field-help-title">Mixed-line policy explanation</div>
+                  <div class="explainer-body" id="mixed-policy-description"></div>
+                  <div class="code-sample" id="mixed-policy-example"></div>
+                </div>
+                <div class="explainer-card python-docstring-wrap" id="python-docstring-example-card">
+                  <div class="field-help-title">Python docstring example</div>
+                  <div class="explainer-body" id="python-docstring-description"></div>
+                  <div class="code-sample" id="python-docstring-example"></div>
+                </div>
+              </div>
+
+              <div class="wizard-actions">
+                <div class="left">
+                  <button type="button" class="secondary prev-step" data-prev="1">Back</button>
+                </div>
+                <div class="right">
+                  <button type="button" class="secondary next-step" data-next="3">Next: Outputs and reports</button>
+                </div>
               </div>
             </div>
 
-            <div class="action-bar">
-              <button type="submit" id="submit-button" class="primary">Run analysis</button>
-              <button type="button" class="secondary" id="refresh-preview">Refresh preview</button>
+            <div class="wizard-step" data-step="3">
+              <div class="section">
+                <div class="section-kicker">Step 3</div>
+                <h2>Output and report identity</h2>
+                <p class="card-subtitle">Choose where generated files should be saved, what the exported report title should be, and which artifact bundle fits your workflow.</p>
+                <div class="field-grid">
+                  <div class="field">
+                    <label for="scan_preset">Scan preset</label>
+                    <select id="scan_preset">
+                      <option value="balanced">Balanced local scan</option>
+                      <option value="code_focused">Code focused</option>
+                      <option value="comment_audit">Comment audit</option>
+                      <option value="deep_review">Deep review</option>
+                    </select>
+                    <div class="hint">A scan preset is a starting point. It applies recommended defaults for the kind of review you want to do.</div>
+                  </div>
+                  <div class="field">
+                    <label for="artifact_preset">Artifact preset</label>
+                    <select id="artifact_preset">
+                      <option value="review">Review bundle</option>
+                      <option value="full">Full bundle</option>
+                      <option value="html_only">HTML only</option>
+                      <option value="machine">Machine bundle</option>
+                    </select>
+                    <div class="hint">An artifact preset toggles the output cards below for browser review, handoff, or automation use cases.</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="field-help-grid">
+                <div class="explainer-card">
+                  <div class="field-help-title">Selected scan preset</div>
+                  <div class="explainer-body" id="scan-preset-description"></div>
+                </div>
+                <div class="explainer-card">
+                  <div class="field-help-title">Selected artifact preset</div>
+                  <div class="explainer-body" id="artifact-preset-description"></div>
+                </div>
+              </div>
+
+              <div class="section">
+                <div class="full-output-row">
+                  <div class="field">
+                    <label for="output_dir">Output directory</label>
+                    <div class="input-group compact">
+                      <input id="output_dir" name="output_dir" type="text" value="out/web" placeholder="out/web" />
+                      <button type="button" class="mini-button oxide" id="browse-output-dir">Browse</button>
+                      <button type="button" class="mini-button" id="use-default-output">Use default</button>
+                    </div>
+                    <div class="hint">This is where run folders are created. It is separate from the project path and does not affect what gets scanned.</div>
+                  </div>
+
+                  <div class="field-grid sidebarish">
+                    <div class="field">
+                      <label for="report_title">Report title</label>
+                      <input id="report_title" name="report_title" type="text" value="samples/basic" placeholder="Project report title" />
+                      <div class="hint">This title appears in exported HTML and PDF outputs. It also stays visible in the page header while you configure the run.</div>
+                    </div>
+                    <div class="field">
+                      <label>Current report title in header</label>
+                      <div class="preview-code" id="report-title-preview">samples/basic</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="section">
+                <div class="section-kicker">Artifacts</div>
+                <div class="artifact-grid">
+                  <div class="artifact-card selected" data-artifact="html">
+                    <div class="marker">✓</div>
+                    <div class="artifact-icon">H</div>
+                    <h4>HTML report</h4>
+                    <p>Interactive browser-friendly report for reading totals, drilling into language breakdowns, and previewing saved output in the UI.</p>
+                    <div class="artifact-tags">
+                      <span class="soft-chip">Best for visual review</span>
+                      <span class="soft-chip">Embeddable preview</span>
+                    </div>
+                    <input type="checkbox" name="generate_html" checked class="hidden artifact-checkbox" />
+                  </div>
+                  <div class="artifact-card selected" data-artifact="pdf">
+                    <div class="marker">✓</div>
+                    <div class="artifact-icon">P</div>
+                    <h4>PDF export</h4>
+                    <p>Printable snapshot for sharing, archiving, or attaching to reviews when a fixed-format artifact is more useful than live HTML.</p>
+                    <div class="artifact-tags">
+                      <span class="soft-chip">Portable snapshot</span>
+                      <span class="soft-chip">Good for handoff</span>
+                    </div>
+                    <input type="checkbox" name="generate_pdf" checked class="hidden artifact-checkbox" />
+                  </div>
+                  <div class="artifact-card" data-artifact="json">
+                    <div class="marker">✓</div>
+                    <div class="artifact-icon">J</div>
+                    <h4>JSON result</h4>
+                    <p>Structured machine-readable output for automation, downstream processing, or future integrations with other local dashboards and tools.</p>
+                    <div class="artifact-tags">
+                      <span class="soft-chip">Automation ready</span>
+                      <span class="soft-chip">Script friendly</span>
+                    </div>
+                    <input type="checkbox" name="generate_json" class="hidden artifact-checkbox" />
+                  </div>
+                </div>
+                <div class="hint">Artifact cards are selectable. Presets above can also toggle them for common workflows.</div>
+              </div>
+
+              <div class="wizard-actions">
+                <div class="left">
+                  <button type="button" class="secondary prev-step" data-prev="2">Back</button>
+                </div>
+                <div class="right">
+                  <button type="button" class="secondary next-step" data-next="4">Next: Review and run</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="wizard-step" data-step="4">
+              <div class="section">
+                <div class="section-kicker">Step 4</div>
+                <h2>Review selections and run</h2>
+                <p class="card-subtitle">Check the selected path, counting policy, artifact bundle, and output destination before launching the scan.</p>
+                <div class="review-grid">
+                  <div class="review-card">
+                    <h4>What will be scanned</h4>
+                    <ul id="review-scan-summary"></ul>
+                  </div>
+                  <div class="review-card">
+                    <h4>How it will be counted</h4>
+                    <ul id="review-count-summary"></ul>
+                  </div>
+                  <div class="review-card">
+                    <h4>What will be saved</h4>
+                    <ul id="review-artifact-summary"></ul>
+                  </div>
+                  <div class="review-card">
+                    <h4>Where output goes</h4>
+                    <ul id="review-output-summary"></ul>
+                  </div>
+                </div>
+              </div>
+
+              <div class="wizard-actions">
+                <div class="left">
+                  <button type="button" class="secondary prev-step" data-prev="3">Back</button>
+                  <button type="button" class="secondary" id="refresh-preview">Refresh preview</button>
+                </div>
+                <div class="right">
+                  <button type="submit" id="submit-button" class="primary">Run analysis</button>
+                </div>
+              </div>
             </div>
           </form>
         </div>
       </section>
 
-      <aside class="right-stack">
-        <section class="card">
-          <div class="card-header">
-            <h2 class="card-title">Workspace inspector</h2>
-            <p class="card-subtitle">Preview the selected target, understand likely scanned content, and see how the current run is expected to traverse the tree.</p>
-          </div>
-          <div class="card-body">
-            <div class="info-table">
-              <div class="info-row">
-                <strong>Working OxideSLOC directory</strong>
-                <div class="code-block">{{ cwd }}</div>
-              </div>
-              <div class="info-row">
-                <strong>Artifact root</strong>
-                <div class="code-block">out/web</div>
-              </div>
-            </div>
-
-            <div class="badge-row">
-              <span class="badge badge-scan">likely scanned</span>
-              <span class="badge badge-skip">skipped by default</span>
-              <span class="badge badge-unsupported">unsupported</span>
-            </div>
-
-            <div class="note">This preview is heuristic. Final results still depend on ignore rules, globs, generated or minified detection, and supported language analyzers.</div>
-
-            <div class="preview-box" id="preview-panel">
-              <div class="preview-error">Loading preview...</div>
-            </div>
-          </div>
+      <aside class="workspace-column workspace-stack">
+        <section class="workspace-card">
+          <h2 class="workspace-title">Workspace inspector</h2>
+          <p class="workspace-subtitle">More file-explorer-like and code-oriented, with a dedicated preview shell instead of stacked plain boxes.</p>
         </section>
-
-        <section class="card">
-          <div class="card-header">
-            <h2 class="card-title">Operational notes</h2>
-            <p class="card-subtitle">Current behavior and next-step architecture planning.</p>
-          </div>
-          <div class="card-body">
-            <div class="note">Web scans still run synchronously. For very large repositories, the browser waits for the request to finish.</div>
-            <div class="note warn">Future workspace mode should treat super-repos and git submodules as separate project units with a rollup summary.</div>
-            <ul class="roadmap-list">
-              <li>Per-submodule project reports plus one workspace summary.</li>
-              <li>Artifact discovery panel for HTML, PDF, and JSON outputs.</li>
-              <li>Selectable workspace members for partial scans.</li>
-            </ul>
+        <section class="workspace-card">
+          <div id="preview-panel">
+            <div class="preview-error">Loading preview...</div>
           </div>
         </section>
       </aside>
@@ -1694,51 +1324,235 @@ struct LanguageSummaryRow {
       var loading = document.getElementById("loading");
       var submitButton = document.getElementById("submit-button");
       var pathInput = document.getElementById("path");
+      var outputDirInput = document.getElementById("output_dir");
+      var reportTitleInput = document.getElementById("report_title");
       var previewPanel = document.getElementById("preview-panel");
       var refreshButton = document.getElementById("refresh-preview");
+      var refreshPreviewInline = document.getElementById("refresh-preview-inline");
+      var useSamplePath = document.getElementById("use-sample-path");
+      var useDefaultOutput = document.getElementById("use-default-output");
+      var browsePath = document.getElementById("browse-path");
+      var browseOutputDir = document.getElementById("browse-output-dir");
       var themeToggle = document.getElementById("theme-toggle");
+      var mixedLinePolicy = document.getElementById("mixed_line_policy");
+      var pythonDocstrings = document.getElementById("python_docstrings_as_comments");
+      var pythonWraps = document.querySelectorAll(".python-docstring-wrap");
+      var scanPreset = document.getElementById("scan_preset");
+      var artifactPreset = document.getElementById("artifact_preset");
+      var liveReportTitle = document.getElementById("live-report-title");
+      var reportTitlePreview = document.getElementById("report-title-preview");
+      var breadcrumbTitle = document.getElementById("breadcrumb-title");
+      var stepButtons = Array.prototype.slice.call(document.querySelectorAll(".step-button"));
+      var stepPanels = Array.prototype.slice.call(document.querySelectorAll(".wizard-step"));
+      var artifactCards = Array.prototype.slice.call(document.querySelectorAll(".artifact-card"));
+      var reportTitleTouched = false;
+      var currentStep = 1;
       var previewTimer = null;
 
-      function applyTheme(theme) {
-        if (theme === "dark") {
-          document.body.classList.add("dark-theme");
-        } else {
-          document.body.classList.remove("dark-theme");
+      var mixedPolicyInfo = {
+        code_only: {
+          description: "Treat a line that contains both executable code and an inline comment as a code line only. This is the simplest and most common default when you want line counts to emphasize executable logic.",
+          example: 'Example line:\n\nx = 1  # initialize counter\n\nResult:\n- counts as code\n- does not add to comment totals\n- useful for compact implementation-focused reports'
+        },
+        code_and_comment: {
+          description: "Count mixed lines in both buckets. This is useful when you want the report to reflect that a single line contributes executable logic and reviewer-facing commentary at the same time.",
+          example: 'Example line:\n\nx = 1  # initialize counter\n\nResult:\n- counts as code\n- also counts as comment\n- useful when documentation density matters'
+        },
+        comment_only: {
+          description: "Treat mixed lines as comment lines only. This is unusual, but can be useful when auditing how much annotation or commentary exists inline, especially in heavily documented scripts.",
+          example: 'Example line:\n\nx = 1  # initialize counter\n\nResult:\n- does not add to code totals\n- counts as comment\n- useful for specialized comment-centric audits'
+        },
+        separate_mixed_category: {
+          description: "Place mixed lines into their own bucket so they are not hidden inside pure code or pure comment totals. This gives you the most explicit view of how much code and commentary are co-located on one line.",
+          example: 'Example line:\n\nx = 1  # initialize counter\n\nResult:\n- goes into a separate mixed-line bucket\n- keeps pure code and pure comment counts cleaner\n- useful for deeper review and comparison'
         }
+      };
+
+      var scanPresetInfo = {
+        balanced: "Balanced local scan is the recommended default for most repositories. It keeps the mixed-line policy conservative, leaves output practical for day-to-day use, and works well when you mainly want a reliable local overview.",
+        code_focused: "Code focused prioritizes executable implementation over commentary-oriented interpretation. It works best when you want the cleanest code totals and do not need extra emphasis on comments or review-oriented documentation output.",
+        comment_audit: "Comment audit is designed for reviewing inline explanations, documentation style, and comment-heavy areas. It is a better fit when the purpose of the run is to inspect readability and annotation, not only executable size.",
+        deep_review: "Deep review is the most explanation-heavy preset. It is useful when you want richer outputs for handoff, archiving, or side-by-side review and are willing to generate a broader set of saved artifacts."
+      };
+
+      var artifactPresetInfo = {
+        review: "Review bundle enables HTML and PDF so you can inspect the result in-browser and still save a portable snapshot for sharing or archiving.",
+        full: "Full bundle enables HTML, PDF, and JSON. It is the best choice when you want both human-readable outputs and a machine-friendly artifact for later processing.",
+        html_only: "HTML only keeps the run lightweight and browser-first. It is ideal for quick local inspection when you do not need a fixed snapshot or automation output.",
+        machine: "Machine bundle emphasizes structured output for downstream tooling. It is useful when the run is feeding scripts, dashboards, or other local automation."
+      };
+
+      function applyTheme(theme) {
+        if (theme === "dark") document.body.classList.add("dark-theme");
+        else document.body.classList.remove("dark-theme");
       }
 
       function loadSavedTheme() {
         var saved = null;
-        try {
-          saved = localStorage.getItem("oxidesloc-theme");
-        } catch (e) {
-          saved = null;
-        }
+        try { saved = localStorage.getItem("oxidesloc-theme"); } catch (e) {}
+        applyTheme(saved === "dark" ? "dark" : "light");
+      }
 
-        if (saved === "dark" || saved === "light") {
-          applyTheme(saved);
-          return;
-        }
+      function setStep(step) {
+        currentStep = step;
+        stepPanels.forEach(function (panel) {
+          panel.classList.toggle("active", Number(panel.getAttribute("data-step")) === step);
+        });
+        stepButtons.forEach(function (button) {
+          button.classList.toggle("active", Number(button.getAttribute("data-step-target")) === step);
+        });
+      }
 
-        applyTheme("light");
+      function inferTitleFromPath(value) {
+        if (!value) return "project";
+        var cleaned = value.replace(/[\/\\]+$/, "");
+        var parts = cleaned.split(/[\/\\]/).filter(Boolean);
+        return parts.length ? parts[parts.length - 1] : value;
+      }
+
+      function updateReportTitleFromPath() {
+        var inferred = inferTitleFromPath(pathInput.value || "samples/basic");
+        if (!reportTitleTouched) {
+          reportTitleInput.value = inferred;
+        }
+        var title = reportTitleInput.value || inferred;
+        liveReportTitle.textContent = title;
+        reportTitlePreview.textContent = title;
+        breadcrumbTitle.textContent = "Guided scan setup - " + title;
+      }
+
+      function updateMixedPolicyUI() {
+        var key = mixedLinePolicy.value || "code_only";
+        var info = mixedPolicyInfo[key];
+        document.getElementById("mixed-policy-description").textContent = info.description;
+        document.getElementById("mixed-policy-example").textContent = info.example;
+      }
+
+      function updatePythonDocstringUI() {
+        var checked = !!pythonDocstrings.checked;
+        document.getElementById("python-docstring-description").textContent = checked
+          ? "Enabled: docstrings are treated as comment-style documentation lines. This is useful when you want narrative documentation to contribute to comment totals."
+          : "Disabled: docstrings are not treated as comment content. This keeps comment totals closer to inline comments and explicit commented lines only.";
+        document.getElementById("python-docstring-example").textContent = checked
+          ? 'Example:\n\ndef greet():\n    """Greet the user."""\n    print("hi")\n\nResult:\n- the docstring contributes to comment-style totals'
+          : 'Example:\n\ndef greet():\n    """Greet the user."""\n    print("hi")\n\nResult:\n- the docstring is not counted as comment content';
+        document.getElementById("python-docstring-live-help").textContent = checked
+          ? "Enabled for documentation-oriented counting."
+          : "Disabled for stricter executable-vs-comment separation.";
+      }
+
+      function updatePresetDescriptions() {
+        document.getElementById("scan-preset-description").textContent = scanPresetInfo[scanPreset.value];
+        document.getElementById("artifact-preset-description").textContent = artifactPresetInfo[artifactPreset.value];
+      }
+
+      function applyArtifactPreset() {
+        var enabled = { html: false, pdf: false, json: false };
+        if (artifactPreset.value === "review") { enabled.html = true; enabled.pdf = true; }
+        if (artifactPreset.value === "full") { enabled.html = true; enabled.pdf = true; enabled.json = true; }
+        if (artifactPreset.value === "html_only") { enabled.html = true; }
+        if (artifactPreset.value === "machine") { enabled.json = true; enabled.html = true; }
+
+        artifactCards.forEach(function (card) {
+          var artifact = card.getAttribute("data-artifact");
+          var checked = !!enabled[artifact];
+          var checkbox = card.querySelector(".artifact-checkbox");
+          checkbox.checked = checked;
+          card.classList.toggle("selected", checked);
+        });
+      }
+
+      function toggleArtifactCard(card) {
+        var checkbox = card.querySelector(".artifact-checkbox");
+        checkbox.checked = !checkbox.checked;
+        card.classList.toggle("selected", checkbox.checked);
+      }
+
+      function updateReview() {
+        var scanSummary = document.getElementById("review-scan-summary");
+        var countSummary = document.getElementById("review-count-summary");
+        var artifactSummary = document.getElementById("review-artifact-summary");
+        var outputSummary = document.getElementById("review-output-summary");
+        var includeText = document.getElementById("include_globs").value.trim();
+        var excludeText = document.getElementById("exclude_globs").value.trim();
+
+        scanSummary.innerHTML = ""
+          + "<li>Path: " + escapeHtml(pathInput.value || "samples/basic") + "</li>"
+          + "<li>Include filters: " + escapeHtml(includeText || "none") + "</li>"
+          + "<li>Exclude filters: " + escapeHtml(excludeText || "none") + "</li>";
+
+        countSummary.innerHTML = ""
+          + "<li>Mixed-line policy: " + escapeHtml(mixedLinePolicy.options[mixedLinePolicy.selectedIndex].text) + "</li>"
+          + (isPythonVisible() ? "<li>Python docstrings counted as comments: " + (pythonDocstrings.checked ? "yes" : "no") + "</li>" : "<li>Python-specific docstring option hidden because no Python files were detected in the preview.</li>")
+          + "<li>Scan preset: " + escapeHtml(scanPreset.options[scanPreset.selectedIndex].text) + "</li>";
+
+        var selectedArtifacts = artifactCards.filter(function (card) {
+          return card.querySelector(".artifact-checkbox").checked;
+        }).map(function (card) {
+          return card.querySelector("h4").textContent;
+        });
+
+        artifactSummary.innerHTML = ""
+          + "<li>Artifact preset: " + escapeHtml(artifactPreset.options[artifactPreset.selectedIndex].text) + "</li>"
+          + "<li>Selected artifacts: " + escapeHtml(selectedArtifacts.join(", ") || "none") + "</li>";
+
+        outputSummary.innerHTML = ""
+          + "<li>Output directory: " + escapeHtml(outputDirInput.value || "out/web") + "</li>"
+          + "<li>Report title: " + escapeHtml(reportTitleInput.value || inferTitleFromPath(pathInput.value || "samples/basic")) + "</li>";
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function isPythonVisible() {
+        return !document.getElementById("python-docstring-wrap").classList.contains("hidden");
+      }
+
+      function syncPythonVisibility() {
+        var html = previewPanel.textContent || "";
+        var hasPython = html.indexOf(".py") >= 0 || html.indexOf("Python") >= 0;
+        pythonWraps.forEach(function (node) {
+          node.classList.toggle("hidden", !hasPython);
+        });
       }
 
       function loadPreview() {
-        if (!previewPanel || !pathInput) {
-          return;
-        }
-
+        if (!previewPanel || !pathInput) return;
         var path = pathInput.value || "samples/basic";
         previewPanel.innerHTML = '<div class="preview-error">Refreshing preview...</div>';
-
         fetch("/preview?path=" + encodeURIComponent(path))
           .then(function (response) { return response.text(); })
-          .then(function (html) { previewPanel.innerHTML = html; })
+          .then(function (html) {
+            previewPanel.innerHTML = html;
+            syncPythonVisibility();
+            updateReview();
+          })
           .catch(function (err) {
-            previewPanel.innerHTML =
-              '<div class="preview-error">Preview request failed: ' +
-              String(err) +
-              '</div>';
+            previewPanel.innerHTML = '<div class="preview-error">Preview request failed: ' + String(err) + '</div>';
+          });
+      }
+
+      function pickDirectory(targetInput) {
+        fetch("/pick-directory")
+          .then(function (response) { return response.json(); })
+          .then(function (data) {
+            if (data && data.path) {
+              targetInput.value = data.path;
+              if (targetInput === pathInput) {
+                updateReportTitleFromPath();
+                loadPreview();
+              }
+              updateReview();
+            }
+          })
+          .catch(function () {
+            window.alert("Directory picker request failed.");
           });
       }
 
@@ -1746,26 +1560,76 @@ struct LanguageSummaryRow {
         themeToggle.addEventListener("click", function () {
           var nextTheme = document.body.classList.contains("dark-theme") ? "light" : "dark";
           applyTheme(nextTheme);
-          try {
-            localStorage.setItem("oxidesloc-theme", nextTheme);
-          } catch (e) {}
+          try { localStorage.setItem("oxidesloc-theme", nextTheme); } catch (e) {}
         });
       }
 
-      loadSavedTheme();
+      stepButtons.forEach(function (button) {
+        button.addEventListener("click", function () {
+          setStep(Number(button.getAttribute("data-step-target")));
+        });
+      });
+
+      Array.prototype.slice.call(document.querySelectorAll(".next-step")).forEach(function (button) {
+        button.addEventListener("click", function () {
+          updateReview();
+          setStep(Number(button.getAttribute("data-next")));
+        });
+      });
+
+      Array.prototype.slice.call(document.querySelectorAll(".prev-step")).forEach(function (button) {
+        button.addEventListener("click", function () {
+          setStep(Number(button.getAttribute("data-prev")));
+        });
+      });
+
+      if (useSamplePath) {
+        useSamplePath.addEventListener("click", function () {
+          pathInput.value = "samples/basic";
+          updateReportTitleFromPath();
+          loadPreview();
+        });
+      }
+
+      if (useDefaultOutput) {
+        useDefaultOutput.addEventListener("click", function () {
+          outputDirInput.value = "out/web";
+          updateReview();
+        });
+      }
+
+      if (browsePath) browsePath.addEventListener("click", function () { pickDirectory(pathInput); });
+      if (browseOutputDir) browseOutputDir.addEventListener("click", function () { pickDirectory(outputDirInput); });
+      if (refreshButton) refreshButton.addEventListener("click", loadPreview);
+      if (refreshPreviewInline) refreshPreviewInline.addEventListener("click", loadPreview);
 
       if (pathInput) {
         pathInput.addEventListener("input", function () {
-          if (previewTimer) {
-            clearTimeout(previewTimer);
-          }
-          previewTimer = setTimeout(loadPreview, 300);
+          updateReportTitleFromPath();
+          if (previewTimer) clearTimeout(previewTimer);
+          previewTimer = setTimeout(loadPreview, 280);
         });
       }
 
-      if (refreshButton) {
-        refreshButton.addEventListener("click", loadPreview);
+      if (reportTitleInput) {
+        reportTitleInput.addEventListener("input", function () {
+          reportTitleTouched = reportTitleInput.value.trim().length > 0;
+          updateReportTitleFromPath();
+          updateReview();
+        });
       }
+
+      if (mixedLinePolicy) mixedLinePolicy.addEventListener("change", function () { updateMixedPolicyUI(); updateReview(); });
+      if (pythonDocstrings) pythonDocstrings.addEventListener("change", function () { updatePythonDocstringUI(); updateReview(); });
+      if (scanPreset) scanPreset.addEventListener("change", function () { updatePresetDescriptions(); updateReview(); });
+      if (artifactPreset) artifactPreset.addEventListener("change", function () { updatePresetDescriptions(); applyArtifactPreset(); updateReview(); });
+
+      artifactCards.forEach(function (card) {
+        card.addEventListener("click", function () {
+          toggleArtifactCard(card);
+          updateReview();
+        });
+      });
 
       if (form && loading && submitButton) {
         form.addEventListener("submit", function () {
@@ -1775,6 +1639,13 @@ struct LanguageSummaryRow {
         });
       }
 
+      loadSavedTheme();
+      updateReportTitleFromPath();
+      updateMixedPolicyUI();
+      updatePythonDocstringUI();
+      updatePresetDescriptions();
+      applyArtifactPreset();
+      updateReview();
       loadPreview();
     })();
   </script>
@@ -1783,9 +1654,7 @@ struct LanguageSummaryRow {
 "#,
     ext = "html"
 )]
-struct IndexTemplate {
-    cwd: String,
-}
+struct IndexTemplate {}
 
 #[derive(Template)]
 #[template(

@@ -56,9 +56,6 @@ Currently supported languages:
 Important:
 If you run oxide-sloc against this Rust workspace itself, most files will currently be skipped because Rust, TOML, Markdown, YAML, and similar repository files are not yet supported.
 
-Important note:
-If you run oxide-sloc against this Rust workspace itself, you will currently see most files skipped as unsupported, because Rust/TOML/Markdown/YAML analysis is not implemented yet.
-
 ## Minimal local verification
 
 Create a tiny sample directory with supported file types, then run:

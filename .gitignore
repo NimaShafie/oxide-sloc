@@ -13,3 +13,7 @@ result.html
 result.pdf
 
 /target/
+
+# local test output
+out/
+tmp-sloc/

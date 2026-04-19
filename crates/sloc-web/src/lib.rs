@@ -116,6 +116,11 @@ struct PickDirectoryQuery {
     current: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct ArtifactQuery {
+    download: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct PickDirectoryResponse {
     selected_path: Option<String>,
@@ -356,6 +361,18 @@ async fn analyze_handler(
             .json_path
             .as_ref()
             .map(|_| format!("/runs/{run_id}/json")),
+        html_download_url: artifacts
+            .html_path
+            .as_ref()
+            .map(|_| format!("/runs/{run_id}/html?download=1")),
+        pdf_download_url: artifacts
+            .pdf_path
+            .as_ref()
+            .map(|_| format!("/runs/{run_id}/pdf?download=1")),
+        json_download_url: artifacts
+            .json_path
+            .as_ref()
+            .map(|_| format!("/runs/{run_id}/json?download=1")),
         html_path: artifacts.html_path.as_ref().map(|path| display_path(path)),
         pdf_path: artifacts.pdf_path.as_ref().map(|path| display_path(path)),
         json_path: artifacts.json_path.as_ref().map(|path| display_path(path)),
@@ -374,6 +391,7 @@ async fn analyze_handler(
 async fn artifact_handler(
     State(state): State<AppState>,
     AxumPath((run_id, artifact)): AxumPath<(String, String)>,
+    Query(query): Query<ArtifactQuery>,
 ) -> Response {
     let artifact_set = {
         let registry = state.artifacts.lock().await;
@@ -384,6 +402,11 @@ async fn artifact_handler(
         return StatusCode::NOT_FOUND.into_response();
     };
 
+    let wants_download = matches!(
+        query.download.as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    );
+
     match artifact.as_str() {
         "html" => {
             let Some(path) = artifact_set.html_path else {
@@ -391,7 +414,23 @@ async fn artifact_handler(
             };
 
             match fs::read_to_string(&path) {
-                Ok(content) => Html(content).into_response(),
+                Ok(content) => {
+                    if wants_download {
+                        (
+                            [
+                                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                                (
+                                    header::CONTENT_DISPOSITION,
+                                    "attachment; filename=report.html",
+                                ),
+                            ],
+                            content,
+                        )
+                            .into_response()
+                    } else {
+                        Html(content).into_response()
+                    }
+                }
                 Err(_) => StatusCode::NOT_FOUND.into_response(),
             }
         }
@@ -401,7 +440,23 @@ async fn artifact_handler(
             };
 
             match fs::read(&path) {
-                Ok(bytes) => ([(header::CONTENT_TYPE, "application/pdf")], bytes).into_response(),
+                Ok(bytes) => {
+                    if wants_download {
+                        (
+                            [
+                                (header::CONTENT_TYPE, "application/pdf"),
+                                (
+                                    header::CONTENT_DISPOSITION,
+                                    "attachment; filename=report.pdf",
+                                ),
+                            ],
+                            bytes,
+                        )
+                            .into_response()
+                    } else {
+                        ([(header::CONTENT_TYPE, "application/pdf")], bytes).into_response()
+                    }
+                }
                 Err(_) => StatusCode::NOT_FOUND.into_response(),
             }
         }
@@ -411,11 +466,27 @@ async fn artifact_handler(
             };
 
             match fs::read(&path) {
-                Ok(bytes) => (
-                    [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
-                    bytes,
-                )
-                    .into_response(),
+                Ok(bytes) => {
+                    if wants_download {
+                        (
+                            [
+                                (header::CONTENT_TYPE, "application/json; charset=utf-8"),
+                                (
+                                    header::CONTENT_DISPOSITION,
+                                    "attachment; filename=result.json",
+                                ),
+                            ],
+                            bytes,
+                        )
+                            .into_response()
+                    } else {
+                        (
+                            [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+                            bytes,
+                        )
+                            .into_response()
+                    }
+                }
                 Err(_) => StatusCode::NOT_FOUND.into_response(),
             }
         }
@@ -564,7 +635,11 @@ fn resolve_input_path(raw: &str) -> PathBuf {
     }
 }
 
-fn build_preview_html(root: &Path, include_patterns: &[String], exclude_patterns: &[String]) -> Result<String> {
+fn build_preview_html(
+    root: &Path,
+    include_patterns: &[String],
+    exclude_patterns: &[String],
+) -> Result<String> {
     if !root.exists() {
         return Ok(format!(
             r#"<div class="preview-error">Path does not exist: <code>{}</code></div>"#,
@@ -2599,218 +2674,216 @@ struct IndexTemplate {}
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ report_title }}</title>
   <style>
     :root {
-      --bg-a: #0b1020;
-      --bg-b: #121935;
-      --bg-c: #1f2b58;
-      --panel: rgba(18, 25, 53, 0.88);
-      --line: rgba(87, 120, 255, 0.34);
-      --text: #edf2ff;
-      --muted: #b8c3eb;
-      --accent: #5d8cff;
-      --accent-2: #8a62ff;
-      --good: #7fe29a;
-      --shadow: 0 20px 60px rgba(0, 0, 0, 0.28);
+      --radius: 18px;
+      --bg: #f5efe8;
+      --surface: rgba(255,255,255,0.82);
+      --surface-2: #fbf7f2;
+      --surface-3: #efe6dc;
+      --line: #e6d0bf;
+      --line-strong: #dcb89f;
+      --text: #43342d;
+      --muted: #7b675b;
+      --muted-2: #a08777;
+      --nav: #b85d33;
+      --nav-2: #7a371b;
+      --accent: #6f9bff;
+      --accent-2: #4a78ee;
+      --oxide: #d37a4c;
+      --oxide-2: #b35428;
+      --shadow: 0 18px 42px rgba(77, 44, 20, 0.12);
+      --shadow-strong: 0 22px 48px rgba(77, 44, 20, 0.16);
+      --success-bg: #e8f5ed;
+      --success-text: #1a8f47;
+      --info-bg: #eef3ff;
+      --info-text: #4467d8;
+    }
+
+    body.dark-theme {
+      --bg: #1b1511;
+      --surface: #261c17;
+      --surface-2: #2d221d;
+      --surface-3: #372922;
+      --line: #524238;
+      --line-strong: #6c5649;
+      --text: #f5ece6;
+      --muted: #c7b7aa;
+      --muted-2: #aa9485;
+      --nav: #b85d33;
+      --nav-2: #7a371b;
+      --accent: #6f9bff;
+      --accent-2: #4a78ee;
+      --oxide: #d37a4c;
+      --oxide-2: #b35428;
+      --shadow: 0 18px 42px rgba(0,0,0,0.28);
+      --shadow-strong: 0 22px 48px rgba(0,0,0,0.34);
+      --success-bg: #163927;
+      --success-text: #8fe2a8;
+      --info-bg: #1c2847;
+      --info-text: #a9c1ff;
     }
 
     * { box-sizing: border-box; }
-
-    body {
-      margin: 0;
-      min-height: 100vh;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      color: var(--text);
-      background:
-        radial-gradient(circle at 14% 18%, rgba(93, 140, 255, 0.22), transparent 28%),
-        radial-gradient(circle at 86% 8%, rgba(124, 77, 255, 0.18), transparent 26%),
-        linear-gradient(135deg, var(--bg-a), var(--bg-b) 48%, var(--bg-c));
+    html, body { margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); }
+    body { overflow-x: hidden; transition: background 0.18s ease, color 0.18s ease; }
+    .top-nav, .page { position: relative; z-index: 2; }
+    .top-nav { position: sticky; top: 0; z-index: 30; background: linear-gradient(180deg, var(--nav), var(--nav-2)); border-bottom: 1px solid rgba(255,255,255,0.12); box-shadow: 0 4px 14px rgba(0,0,0,0.18); }
+    .top-nav-inner { max-width: 1720px; margin: 0 auto; padding: 10px 24px; min-height: 64px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 380px) auto; align-items: center; gap: 18px; }
+    .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
+    .brand-mark { width: 42px; height: 42px; border-radius: 14px; background: radial-gradient(circle at 35% 35%, #f2a578, var(--oxide) 58%, var(--oxide-2)); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), 0 8px 18px rgba(0,0,0,0.22); flex: 0 0 auto; }
+    .brand-copy { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
+    .brand-title { margin: 0; color: #fff; font-size: 17px; font-weight: 800; line-height: 1.1; }
+    .brand-subtitle { color: rgba(255,255,255,0.85); font-size: 12px; line-height: 1.2; margin-top: 2px; }
+    .nav-project-slot { display:flex; justify-content:center; min-width:0; }
+    .nav-project-pill { width: 100%; max-width: 260px; display:inline-flex; align-items:center; justify-content:center; gap: 10px; min-height: 38px; padding: 0 14px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.18); color: #fff; background: rgba(255,255,255,0.10); font-size: 12px; font-weight: 700; box-shadow: inset 0 1px 0 rgba(255,255,255,0.08); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .nav-project-label { color: rgba(255,255,255,0.78); text-transform: uppercase; letter-spacing: 0.08em; font-size: 11px; font-weight: 800; }
+    .nav-project-value { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+    .nav-status { display: flex; align-items: center; justify-content:flex-end; gap: 10px; flex-wrap: wrap; }
+    .nav-pill, .theme-toggle { display: inline-flex; align-items: center; gap: 8px; min-height: 38px; padding: 0 14px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.18); color: #fff; background: rgba(255,255,255,0.08); font-size: 12px; font-weight: 700; box-shadow: inset 0 1px 0 rgba(255,255,255,0.08); }
+    .theme-toggle { width: 38px; justify-content: center; padding: 0; cursor: pointer; transition: transform 0.15s ease, background 0.15s ease; }
+    .theme-toggle:hover { transform: translateY(-1px); background: rgba(255,255,255,0.16); }
+    .theme-toggle svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; }
+    .theme-toggle .icon-sun { display:none; }
+    body.dark-theme .theme-toggle .icon-sun { display:block; }
+    body.dark-theme .theme-toggle .icon-moon { display:none; }
+    .status-dot { width: 8px; height: 8px; border-radius: 999px; background: #26d768; box-shadow: 0 0 0 4px rgba(38,215,104,0.14); }
+    .page { max-width: 1720px; margin: 0 auto; padding: 18px 24px 40px; }
+    .hero, .panel, .metric, .path-item { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+    .hero, .panel { padding: 22px; }
+    .hero { margin-bottom: 18px; background: linear-gradient(180deg, rgba(255,255,255,0.30), transparent), var(--surface); }
+    .hero-top { display:flex; justify-content:space-between; align-items:flex-start; gap:18px; }
+    .hero-title { margin:0; font-size: 26px; font-weight: 850; letter-spacing: -0.03em; }
+    .hero-subtitle { margin: 10px 0 0; color: var(--muted); font-size: 16px; line-height: 1.65; max-width: 920px; }
+    .hero-note { margin-top: 14px; color: var(--muted); font-size: 14px; line-height: 1.6; }
+    .action-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 18px; }
+    .action-card { padding: 16px; border-radius: 16px; border: 1px solid var(--line); background: var(--surface-2); }
+    .action-card h3 { margin:0 0 10px; font-size: 16px; }
+    .action-buttons { display:flex; flex-wrap:wrap; gap: 10px; }
+    .button, .copy-button {
+      display: inline-flex; align-items: center; justify-content: center; border-radius: 14px; border: 1px solid rgba(111, 144, 255, 0.30); padding: 11px 14px; text-decoration: none; color: white; background: linear-gradient(135deg, var(--accent), var(--accent-2)); font-weight: 800; box-shadow: 0 12px 24px rgba(73, 106, 255, 0.22); cursor: pointer;
     }
-
-    .wrap {
-      max-width: 1320px;
-      margin: 0 auto;
-      padding: 32px 22px 48px;
-    }
-
-    .panel {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 26px;
-      padding: 22px;
-      box-shadow: var(--shadow);
-      backdrop-filter: blur(18px);
-      margin-bottom: 22px;
-    }
-
-    .topbar {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 12px;
-      justify-content: space-between;
-      align-items: flex-start;
-      margin-bottom: 16px;
-    }
-
-    h1, h2 {
-      margin: 0;
-      letter-spacing: -0.02em;
-    }
-
-    .muted {
-      color: var(--muted);
-    }
-
-    .meta-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-      gap: 14px;
-      margin-top: 18px;
-    }
-
-    .metric {
-      border: 1px solid rgba(111, 144, 255, 0.28);
-      border-radius: 18px;
-      padding: 16px;
-      background: rgba(9, 15, 34, 0.48);
-    }
-
-    .metric .label {
-      color: #aebeea;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      margin-bottom: 8px;
-    }
-
-    .metric .value {
-      font-size: 38px;
-      font-weight: 800;
-      line-height: 1;
-    }
-
-    .action-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 12px;
-      margin-top: 18px;
-    }
-
-    .button {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      border-radius: 14px;
-      border: 1px solid rgba(111, 144, 255, 0.30);
-      padding: 12px 16px;
-      text-decoration: none;
-      color: white;
-      background: linear-gradient(135deg, var(--accent), var(--accent-2));
-      font-weight: 800;
-      box-shadow: 0 12px 24px rgba(73, 106, 255, 0.22);
-    }
-
-    .button.secondary {
-      background: rgba(9, 15, 34, 0.48);
-      box-shadow: none;
-      color: #e4ebff;
-    }
-
-    .path-list {
-      display: grid;
-      gap: 10px;
-      margin-top: 18px;
-    }
-
-    .path-item {
-      padding: 14px;
-      border-radius: 16px;
-      border: 1px solid rgba(111, 144, 255, 0.16);
-      background: rgba(9, 15, 34, 0.42);
-    }
-
-    .path-item strong {
-      display: block;
-      margin-bottom: 6px;
-    }
-
-    code {
-      display: inline-block;
-      max-width: 100%;
-      overflow-wrap: anywhere;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      background: rgba(9, 15, 34, 0.60);
-      border: 1px solid rgba(106, 140, 255, 0.20);
-      padding: 2px 6px;
-      border-radius: 8px;
-    }
-
-    .two-col {
-      display: grid;
-      grid-template-columns: 0.95fr 1.05fr;
-      gap: 22px;
-      align-items: start;
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 14px;
-    }
-
-    th, td {
-      text-align: left;
-      padding: 10px 8px;
-      border-bottom: 1px solid rgba(111, 144, 255, 0.20);
-    }
-
-    th {
-      color: #b8c6ed;
-      font-weight: 700;
-    }
-
-    tr:last-child td {
-      border-bottom: none;
-    }
-
-    .preview-shell {
-      border-radius: 20px;
-      overflow: hidden;
-      border: 1px solid rgba(111, 144, 255, 0.22);
-      background: rgba(9, 15, 34, 0.42);
-    }
-
-    iframe {
-      width: 100%;
-      min-height: 920px;
-      border: none;
-      background: white;
-    }
-
-    .empty-preview {
-      padding: 26px;
-      color: var(--muted);
-      line-height: 1.6;
-    }
-
-    @media (max-width: 1080px) {
-      .two-col {
-        grid-template-columns: 1fr;
-      }
+    .button.secondary, .copy-button.secondary { background: var(--surface-3); box-shadow: none; color: var(--text); border-color: var(--line-strong); }
+    .meta-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; margin-top: 18px; }
+    .metric { padding: 16px; }
+    .metric .label { color: var(--muted-2); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
+    .metric .value { font-size: 38px; font-weight: 800; line-height: 1; }
+    .path-list { display: grid; gap: 10px; margin-top: 18px; }
+    .path-item { padding: 14px; background: var(--surface-2); }
+    .path-item strong { display: block; margin-bottom: 6px; }
+    code { display: inline-block; max-width: 100%; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--surface-3); border: 1px solid var(--line); padding: 2px 6px; border-radius: 8px; color: var(--text); }
+    .two-col { display: grid; grid-template-columns: 0.95fr 1.05fr; gap: 18px; align-items: start; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-weight: 700; }
+    tr:last-child td { border-bottom: none; }
+    .preview-shell { border-radius: 20px; overflow: hidden; border: 1px solid var(--line); background: var(--surface-2); }
+    iframe { width: 100%; min-height: 1000px; border: none; background: white; }
+    .empty-preview { padding: 26px; color: var(--muted); line-height: 1.6; }
+    .pill-row { display:flex; gap:8px; flex-wrap:wrap; }
+    .soft-chip { display:inline-flex; align-items:center; min-height: 32px; padding: 0 12px; border-radius: 999px; border:1px solid var(--line); background: var(--surface-2); color: var(--text); font-size: 13px; font-weight: 700; }
+    .soft-chip.success { background: var(--success-bg); color: var(--success-text); }
+    .toolbar-row { display:flex; justify-content:space-between; align-items:flex-start; gap: 12px; margin-bottom: 12px; }
+    .muted { color: var(--muted); }
+    @media (max-width: 1180px) {
+      .top-nav-inner, .two-col, .action-grid { grid-template-columns: 1fr; }
+      .nav-project-slot, .nav-status { justify-content:flex-start; }
+      .hero-top { flex-direction: column; }
     }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <section class="panel">
-      <div class="topbar">
-        <div>
-          <h1>{{ report_title }}</h1>
-          <p class="muted">Web scan complete for <code>{{ project_path }}</code></p>
+  <div class="top-nav">
+    <div class="top-nav-inner">
+      <div class="brand">
+        <div class="brand-mark"></div>
+        <div class="brand-copy">
+          <div class="brand-title">OxideSLOC Local analysis workbench</div>
+          <div class="brand-subtitle">Run complete</div>
         </div>
+      </div>
+      <div class="nav-project-slot">
+        <div class="nav-project-pill"><span class="nav-project-label">Project</span><span class="nav-project-value">{{ report_title }}</span></div>
+      </div>
+      <div class="nav-status">
+        <span class="nav-pill"><span class="status-dot"></span>Analysis saved</span>
+        <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme" title="Toggle theme">
+          <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 15.5A8.5 8.5 0 1 1 12.5 4 6.7 6.7 0 0 0 20 15.5Z"></path></svg>
+          <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"></circle><path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.9 5.1l-1.6 1.6M6.7 17.3l-1.6 1.6M18.9 18.9l-1.6-1.6M6.7 6.7 5.1 5.1"></path></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="page">
+    <section class="hero">
+      <div class="hero-top">
         <div>
+          <div class="soft-chip success">Run finished successfully</div>
+          <h1 class="hero-title">{{ report_title }}</h1>
+          <p class="hero-subtitle">Your HTML, PDF, and JSON artifacts are now saved. Use the quick actions below to view, download, or copy the saved paths for sharing outside the local workbench.</p>
+          <p class="hero-note">The embedded preview below now reflects the current saved-report theme instead of the older blue prototype layout.</p>
+        </div>
+        <div class="pill-row">
           <a class="button secondary" href="/">New scan</a>
+          <button type="button" class="copy-button secondary" data-copy-value="{{ output_dir }}">Copy output folder</button>
+          <button type="button" class="copy-button secondary" data-copy-value="{{ run_id }}">Copy run ID</button>
+        </div>
+      </div>
+
+      <div class="action-grid">
+        <div class="action-card">
+          <h3>HTML report</h3>
+          <div class="action-buttons">
+            {% match html_url %}
+              {% when Some with (url) %}
+                <a class="button" href="{{ url }}" target="_blank" rel="noopener">Open HTML</a>
+              {% when None %}{% endmatch %}
+            {% match html_download_url %}
+              {% when Some with (url) %}
+                <a class="button secondary" href="{{ url }}">Download HTML</a>
+              {% when None %}{% endmatch %}
+            {% match html_path %}
+              {% when Some with (path) %}
+                <button type="button" class="copy-button secondary" data-copy-value="{{ path }}">Copy HTML path</button>
+              {% when None %}{% endmatch %}
+          </div>
+        </div>
+        <div class="action-card">
+          <h3>PDF report</h3>
+          <div class="action-buttons">
+            {% match pdf_url %}
+              {% when Some with (url) %}
+                <a class="button" href="{{ url }}" target="_blank" rel="noopener">Open PDF</a>
+              {% when None %}{% endmatch %}
+            {% match pdf_download_url %}
+              {% when Some with (url) %}
+                <a class="button secondary" href="{{ url }}">Download PDF</a>
+              {% when None %}{% endmatch %}
+            {% match pdf_path %}
+              {% when Some with (path) %}
+                <button type="button" class="copy-button secondary" data-copy-value="{{ path }}">Copy PDF path</button>
+              {% when None %}{% endmatch %}
+          </div>
+        </div>
+        <div class="action-card">
+          <h3>JSON report</h3>
+          <div class="action-buttons">
+            {% match json_url %}
+              {% when Some with (url) %}
+                <a class="button" href="{{ url }}" target="_blank" rel="noopener">Open JSON</a>
+              {% when None %}{% endmatch %}
+            {% match json_download_url %}
+              {% when Some with (url) %}
+                <a class="button secondary" href="{{ url }}">Download JSON</a>
+              {% when None %}{% endmatch %}
+            {% match json_path %}
+              {% when Some with (path) %}
+                <button type="button" class="copy-button secondary" data-copy-value="{{ path }}">Copy JSON path</button>
+              {% when None %}{% endmatch %}
+          </div>
         </div>
       </div>
 
@@ -2824,70 +2897,21 @@ struct IndexTemplate {}
         <div class="metric"><div class="label">Mixed separate</div><div class="value">{{ mixed_lines }}</div></div>
       </div>
 
-      <div class="action-row">
-        {% match html_url %}
-          {% when Some with (url) %}
-            <a class="button" href="{{ url }}" target="_blank" rel="noopener">Open HTML report</a>
-          {% when None %}
-          {% endmatch %}
-
-        {% match pdf_url %}
-          {% when Some with (url) %}
-            <a class="button" href="{{ url }}" target="_blank" rel="noopener">Open PDF report</a>
-          {% when None %}
-          {% endmatch %}
-
-        {% match json_url %}
-          {% when Some with (url) %}
-            <a class="button secondary" href="{{ url }}" target="_blank" rel="noopener">Open JSON report</a>
-          {% when None %}
-          {% endmatch %}
-      </div>
-
       <div class="path-list">
-        <div class="path-item">
-          <strong>Run ID</strong>
-          <code>{{ run_id }}</code>
-        </div>
-        <div class="path-item">
-          <strong>Output folder</strong>
-          <code>{{ output_dir }}</code>
-        </div>
-
-        {% match html_path %}
-          {% when Some with (path) %}
-            <div class="path-item">
-              <strong>HTML file</strong>
-              <code>{{ path }}</code>
-            </div>
-          {% when None %}
-          {% endmatch %}
-
-        {% match pdf_path %}
-          {% when Some with (path) %}
-            <div class="path-item">
-              <strong>PDF file</strong>
-              <code>{{ path }}</code>
-            </div>
-          {% when None %}
-          {% endmatch %}
-
-        {% match json_path %}
-          {% when Some with (path) %}
-            <div class="path-item">
-              <strong>JSON file</strong>
-              <code>{{ path }}</code>
-            </div>
-          {% when None %}
-          {% endmatch %}
+        <div class="path-item"><strong>Project path</strong><code>{{ project_path }}</code></div>
+        <div class="path-item"><strong>Output folder</strong><code>{{ output_dir }}</code></div>
       </div>
     </section>
 
     <div class="two-col">
       <section class="panel">
-        <h2>Language breakdown</h2>
-        <p class="muted">A quick summary of what this run actually counted across supported languages.</p>
-
+        <div class="toolbar-row">
+          <div>
+            <h2>Language breakdown</h2>
+            <p class="muted">A quick summary of what this run actually counted across supported languages.</p>
+          </div>
+          <div class="pill-row"><span class="soft-chip success">Saved artifact preview ready</span></div>
+        </div>
         <table>
           <thead>
             <tr>
@@ -2917,8 +2941,12 @@ struct IndexTemplate {}
       </section>
 
       <section class="panel">
-        <h2>Report preview</h2>
-        <p class="muted">This preview uses the saved HTML artifact for the run. PDF and JSON links are available above when selected.</p>
+        <div class="toolbar-row">
+          <div>
+            <h2>Report preview</h2>
+            <p class="muted">This preview uses the saved HTML artifact for the run. It now follows the current workbench styling and carries its own theme toggle, sharing controls, and improved warning summary.</p>
+          </div>
+        </div>
 
         <div class="preview-shell">
           {% if has_preview %}
@@ -2937,6 +2965,47 @@ struct IndexTemplate {}
       </section>
     </div>
   </div>
+
+  <script>
+    (function () {
+      var body = document.body;
+      var themeToggle = document.getElementById('theme-toggle');
+      var storageKey = 'oxidesloc-theme';
+
+      function applyTheme(theme) {
+        body.classList.toggle('dark-theme', theme === 'dark');
+      }
+
+      function loadSavedTheme() {
+        try {
+          var saved = localStorage.getItem(storageKey);
+          if (saved === 'dark' || saved === 'light') {
+            applyTheme(saved);
+          }
+        } catch (e) {}
+      }
+
+      if (themeToggle) {
+        themeToggle.addEventListener('click', function () {
+          var nextTheme = body.classList.contains('dark-theme') ? 'light' : 'dark';
+          applyTheme(nextTheme);
+          try { localStorage.setItem(storageKey, nextTheme); } catch (e) {}
+        });
+      }
+
+      Array.prototype.slice.call(document.querySelectorAll('[data-copy-value]')).forEach(function (button) {
+        button.addEventListener('click', function () {
+          var value = button.getAttribute('data-copy-value') || '';
+          if (!value) return;
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(value).catch(function () {});
+          }
+        });
+      });
+
+      loadSavedTheme();
+    })();
+  </script>
 </body>
 </html>
 "##,
@@ -2957,6 +3026,9 @@ struct ResultTemplate {
     html_url: Option<String>,
     pdf_url: Option<String>,
     json_url: Option<String>,
+    html_download_url: Option<String>,
+    pdf_download_url: Option<String>,
+    json_download_url: Option<String>,
     html_path: Option<String>,
     pdf_path: Option<String>,
     json_path: Option<String>,

@@ -217,6 +217,7 @@ fn file_row_view(file: &FileRecord) -> FileRow {
         blank_lines: file.effective_counts.blank_lines,
         mixed_lines_separate: file.effective_counts.mixed_lines_separate,
         status: format!("{:?}", file.status),
+        status_class: format!("{:?}", file.status).to_ascii_lowercase(),
         warnings: if file.warnings.is_empty() {
             String::new()
         } else {
@@ -246,6 +247,7 @@ struct FileRow {
     blank_lines: u64,
     mixed_lines_separate: u64,
     status: String,
+    status_class: String,
     warnings: String,
 }
 
@@ -259,220 +261,158 @@ struct FileRow {
   <title>{{ title }}</title>
   <style>
     :root {
-      color-scheme: light dark;
-      --bg: #0b1020;
-      --panel: #121935;
-      --panel-2: #172145;
-      --text: #edf2ff;
-      --muted: #b7c2ea;
-      --line: #2c3a73;
-      --accent: #7aa2ff;
-      --good: #81c995;
-      --warn: #ffca7a;
-    }
-    @media (prefers-color-scheme: light) {
-      :root {
-        --bg: #f4f7ff;
-        --panel: #ffffff;
-        --panel-2: #f7f9ff;
-        --text: #16203b;
-        --muted: #546079;
-        --line: #d6def4;
-        --accent: #245fff;
-        --good: #237a40;
-        --warn: #8c5f00;
-      }
+      --bg: #efe9e2;
+      --surface: #fcfaf7;
+      --surface-2: #f7f0e8;
+      --line: #dfcfbf;
+      --line-strong: #cfb29c;
+      --text: #2f241c;
+      --muted: #6f6257;
+      --muted-2: #917f71;
+      --nav: #9a4c28;
+      --nav-2: #6f3119;
+      --accent: #2563eb;
+      --good-bg: #eaf9ee;
+      --good-text: #1c8746;
+      --warn-bg: #fff2d8;
+      --warn-text: #926000;
+      --danger-bg: #fdeaea;
+      --danger-text: #b33b3b;
+      --shadow: 0 18px 44px rgba(73,45,28,0.10);
+      --radius: 18px;
     }
     * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      line-height: 1.45;
-    }
-    .wrap { max-width: 1280px; margin: 0 auto; padding: 32px 24px 48px; }
-    .hero, .panel {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      padding: 20px 22px;
-      box-shadow: 0 10px 30px rgba(0,0,0,.12);
-      margin-bottom: 22px;
-    }
-    h1, h2 { margin: 0 0 12px; }
-    .meta { color: var(--muted); display: flex; flex-wrap: wrap; gap: 18px; font-size: 14px; }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-      gap: 14px;
-      margin-top: 18px;
-    }
-    .card {
-      background: var(--panel-2);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 14px 16px;
-    }
-    .label { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
-    .value { font-size: 28px; font-weight: 700; margin-top: 6px; }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 14px;
-    }
-    th, td {
-      text-align: left;
-      padding: 10px 8px;
-      border-bottom: 1px solid var(--line);
-      vertical-align: top;
-    }
-    th { color: var(--muted); font-weight: 600; }
+    body { margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: linear-gradient(180deg, #efe9e2, #f5ede4 58%, #efe1d2); color: var(--text); }
+    .topbar { background: linear-gradient(180deg, var(--nav), var(--nav-2)); color: #fff; border-bottom: 1px solid rgba(255,255,255,0.10); }
+    .topbar-inner { max-width: 1460px; margin: 0 auto; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .brand { display:flex; align-items:center; gap:12px; }
+    .brand-mark { width: 14px; height: 14px; border-radius: 4px; background: linear-gradient(135deg, #e9a06e, #8f4220); box-shadow: 0 0 0 3px rgba(255,255,255,0.10); }
+    .brand-title { font-weight: 800; }
+    .wrap { max-width: 1460px; margin: 0 auto; padding: 24px; }
+    .hero, .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 22px; margin-bottom: 22px; }
+    h1, h2 { margin: 0; letter-spacing: -0.02em; }
+    .subtitle { color: var(--muted); line-height: 1.6; margin-top: 8px; }
+    .meta { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 12px; color: var(--muted); font-size: 14px; }
+    .meta-chip, code { display:inline-flex; align-items:center; gap:8px; padding: 6px 10px; border-radius: 999px; border:1px solid var(--line); background: var(--surface-2); }
+    .summary-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(170px,1fr)); gap: 14px; margin-top: 20px; }
+    .metric { border: 1px solid var(--line); border-radius: 16px; padding: 16px; background: linear-gradient(180deg, rgba(184,93,51,0.05), rgba(37,99,235,0.03)); }
+    .label { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted-2); }
+    .value { font-size: 34px; font-weight: 800; margin-top: 6px; }
+    .toolbar { display:flex; flex-wrap:wrap; justify-content:space-between; gap: 12px; align-items: center; margin-bottom: 16px; }
+    .toolbar-left { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .search { min-width: 280px; padding: 10px 12px; border-radius: 10px; border:1px solid var(--line-strong); background:#fff; color:var(--text); }
+    .pill-row { display:flex; gap:8px; flex-wrap:wrap; }
+    .pill { padding: 6px 10px; border-radius: 999px; border:1px solid var(--line); background: var(--surface-2); font-size: 12px; font-weight: 700; }
+    .pill.good { background: var(--good-bg); color: var(--good-text); border-color: rgba(28,135,70,0.18); }
+    .table-shell { border: 1px solid var(--line); border-radius: 16px; overflow: auto; background: #fff; max-height: 900px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 11px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 800; background: #fbf7f2; cursor: pointer; position: sticky; top: 0; z-index: 1; }
+    tbody tr:hover { background: #fffaf4; }
     tr:last-child td { border-bottom: none; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .small { color: var(--muted); font-size: 13px; }
-    pre {
-      background: var(--panel-2);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 16px;
-      overflow: auto;
-      font-size: 12px;
-    }
-    .warn { color: var(--warn); }
-    .ok { color: var(--good); }
+    .status-tag { display:inline-flex; align-items:center; padding: 4px 8px; border-radius: 999px; border:1px solid var(--line); background: var(--surface-2); font-size: 12px; font-weight: 700; }
+    .status-analyzedexact { background: var(--good-bg); color: var(--good-text); border-color: rgba(28,135,70,0.18); }
+    .status-analyzedbesteffort, .status-skippedbypolicy { background: var(--warn-bg); color: var(--warn-text); border-color: rgba(146,96,0,0.18); }
+    .status-skippedunsupported, .status-skippedbinary { background: var(--danger-bg); color: var(--danger-text); border-color: rgba(179,59,59,0.18); }
+    .stack { display:grid; gap:22px; }
+    pre { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 16px; overflow: auto; font-size: 12px; }
+    .warn-list { margin: 0; padding-left: 18px; line-height: 1.6; }
+    .sort-indicator { color: var(--muted-2); font-size: 11px; margin-left: 6px; }
     @media print {
-      body { background: white; color: black; }
-      .hero, .panel, .card, pre { box-shadow: none; break-inside: avoid; }
-      a { color: inherit; text-decoration: none; }
+      body { background: white; }
+      .topbar, .toolbar { display:none; }
+      .hero, .panel, .metric, .table-shell, pre { box-shadow:none; break-inside: avoid; }
+      th { position: static; }
     }
   </style>
 </head>
 <body>
+  <div class="topbar"><div class="topbar-inner"><div class="brand"><div class="brand-mark"></div><div><div class="brand-title">oxide-sloc</div><div style="font-size:12px;opacity:.82;">Saved HTML report</div></div></div><div class="pill-row"><span class="pill">Run ID {{ run.tool.run_id }}</span><span class="pill">Mode {{ run.environment.runtime_mode }}</span></div></div></div>
   <div class="wrap">
     <section class="hero">
-      <h1>{{ title }}</h1>
+      <div class="hero-brand">
+        <img class="hero-logo" src="/images/logo/oxide-sloc-logo-transparent.png" alt="OxideSLOC logo" />
+        <div class="hero-copy">
+          <h1>{{ title }}</h1>
+      <p class="subtitle">Saved report artifact for this scan. Use the sortable tables below to inspect language totals, per-file details, and skipped-file reasons in the same oxide-sloc theme as the local workbench.</p>
+      </div>
+      </div>
       <div class="meta">
-        <div>Run ID: <span class="mono">{{ run.tool.run_id }}</span></div>
-        <div>Generated: {{ run.tool.timestamp_utc }}</div>
-        <div>OS: {{ run.environment.operating_system }} / {{ run.environment.architecture }}</div>
-        <div>Mode: {{ run.environment.runtime_mode }}</div>
+        <span class="meta-chip">Generated {{ run.tool.timestamp_utc }}</span>
+        <span class="meta-chip">OS {{ run.environment.operating_system }} / {{ run.environment.architecture }}</span>
+        <span class="meta-chip">Files analyzed {{ run.summary_totals.files_analyzed }}</span>
+        <span class="meta-chip">Files skipped {{ run.summary_totals.files_skipped }}</span>
       </div>
-      <div class="grid">
-        <div class="card"><div class="label">Files analyzed</div><div class="value">{{ run.summary_totals.files_analyzed }}</div></div>
-        <div class="card"><div class="label">Files skipped</div><div class="value">{{ run.summary_totals.files_skipped }}</div></div>
-        <div class="card"><div class="label">Physical lines</div><div class="value">{{ run.summary_totals.total_physical_lines }}</div></div>
-        <div class="card"><div class="label">Code</div><div class="value">{{ run.summary_totals.code_lines }}</div></div>
-        <div class="card"><div class="label">Comments</div><div class="value">{{ run.summary_totals.comment_lines }}</div></div>
-        <div class="card"><div class="label">Blank</div><div class="value">{{ run.summary_totals.blank_lines }}</div></div>
-        <div class="card"><div class="label">Mixed separate</div><div class="value">{{ run.summary_totals.mixed_lines_separate }}</div></div>
+      <div class="summary-grid">
+        <div class="metric"><div class="label">Physical lines</div><div class="value">{{ run.summary_totals.total_physical_lines }}</div></div>
+        <div class="metric"><div class="label">Code</div><div class="value">{{ run.summary_totals.code_lines }}</div></div>
+        <div class="metric"><div class="label">Comments</div><div class="value">{{ run.summary_totals.comment_lines }}</div></div>
+        <div class="metric"><div class="label">Blank</div><div class="value">{{ run.summary_totals.blank_lines }}</div></div>
+        <div class="metric"><div class="label">Mixed separate</div><div class="value">{{ run.summary_totals.mixed_lines_separate }}</div></div>
       </div>
     </section>
-
-    <section class="panel">
-      <h2>Language breakdown</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Language</th>
-            <th>Files</th>
-            <th>Physical</th>
-            <th>Code</th>
-            <th>Comments</th>
-            <th>Blank</th>
-            <th>Mixed separate</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in language_rows %}
-          <tr>
-            <td>{{ row.language }}</td>
-            <td>{{ row.files }}</td>
-            <td>{{ row.total_physical_lines }}</td>
-            <td>{{ row.code_lines }}</td>
-            <td>{{ row.comment_lines }}</td>
-            <td>{{ row.blank_lines }}</td>
-            <td>{{ row.mixed_lines_separate }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </section>
-
-    <section class="panel">
-      <h2>Per-file detail</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>File</th>
-            <th>Language</th>
-            <th>Physical</th>
-            <th>Code</th>
-            <th>Comments</th>
-            <th>Blank</th>
-            <th>Mixed separate</th>
-            <th>Status</th>
-            <th>Warnings</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in file_rows %}
-          <tr>
-            <td class="mono">{{ row.relative_path }}</td>
-            <td>{{ row.language }}</td>
-            <td>{{ row.total_physical_lines }}</td>
-            <td>{{ row.code_lines }}</td>
-            <td>{{ row.comment_lines }}</td>
-            <td>{{ row.blank_lines }}</td>
-            <td>{{ row.mixed_lines_separate }}</td>
-            <td>{{ row.status }}</td>
-            <td class="small">{{ row.warnings }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </section>
-
-    <section class="panel">
-      <h2>Skipped files</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>File</th>
-            <th>Status</th>
-            <th>Warnings</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in skipped_rows %}
-          <tr>
-            <td class="mono">{{ row.relative_path }}</td>
-            <td>{{ row.status }}</td>
-            <td class="small">{{ row.warnings }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </section>
-
-    <section class="panel">
-      <h2>Run warnings</h2>
-      {% if !has_run_warnings %}
-        <div class="ok">No top-level warnings.</div>
-      {% else %}
-        <ul>
-          {% for warning in run.warnings %}
-            <li class="warn">{{ warning }}</li>
-          {% endfor %}
-        </ul>
-      {% endif %}
-    </section>
-
-    <section class="panel">
-      <h2>Effective configuration</h2>
-      <pre>{{ config_json }}</pre>
+    <section class="panel stack">
+      <div>
+        <div class="toolbar"><div class="toolbar-left"><h2>Language breakdown</h2></div></div>
+        <div class="table-shell">
+          <table data-sort-table><thead><tr><th data-sort-type="text">Language</th><th data-sort-type="number">Files</th><th data-sort-type="number">Physical</th><th data-sort-type="number">Code</th><th data-sort-type="number">Comments</th><th data-sort-type="number">Blank</th><th data-sort-type="number">Mixed separate</th></tr></thead><tbody>{% for row in language_rows %}<tr><td>{{ row.language }}</td><td>{{ row.files }}</td><td>{{ row.total_physical_lines }}</td><td>{{ row.code_lines }}</td><td>{{ row.comment_lines }}</td><td>{{ row.blank_lines }}</td><td>{{ row.mixed_lines_separate }}</td></tr>{% endfor %}</tbody></table>
+        </div>
+      </div>
+      <div>
+        <div class="toolbar"><div class="toolbar-left"><h2>Per-file detail</h2><input class="search" type="search" placeholder="Filter files, languages, status, warnings..." data-table-filter="per-file-table" /></div><div class="pill-row"><span class="pill good">Click any column header to sort</span></div></div>
+        <div class="table-shell"><table id="per-file-table" data-sort-table><thead><tr><th data-sort-type="text">File</th><th data-sort-type="text">Language</th><th data-sort-type="number">Physical</th><th data-sort-type="number">Code</th><th data-sort-type="number">Comments</th><th data-sort-type="number">Blank</th><th data-sort-type="number">Mixed separate</th><th data-sort-type="text">Status</th><th data-sort-type="text">Warnings</th></tr></thead><tbody>{% for row in file_rows %}<tr><td class="mono">{{ row.relative_path }}</td><td>{{ row.language }}</td><td>{{ row.total_physical_lines }}</td><td>{{ row.code_lines }}</td><td>{{ row.comment_lines }}</td><td>{{ row.blank_lines }}</td><td>{{ row.mixed_lines_separate }}</td><td><span class="status-tag status-{{ row.status_class }}">{{ row.status }}</span></td><td class="small">{{ row.warnings }}</td></tr>{% endfor %}</tbody></table></div>
+      </div>
+      <div>
+        <div class="toolbar"><div class="toolbar-left"><h2>Skipped files</h2><input class="search" type="search" placeholder="Filter skipped files, reasons, warnings..." data-table-filter="skipped-table" /></div></div>
+        <div class="table-shell"><table id="skipped-table" data-sort-table><thead><tr><th data-sort-type="text">File</th><th data-sort-type="text">Status</th><th data-sort-type="text">Warnings</th></tr></thead><tbody>{% for row in skipped_rows %}<tr><td class="mono">{{ row.relative_path }}</td><td><span class="status-tag status-{{ row.status_class }}">{{ row.status }}</span></td><td class="small">{{ row.warnings }}</td></tr>{% endfor %}</tbody></table></div>
+      </div>
+      <div><h2>Run warnings</h2>{% if !has_run_warnings %}<div class="pill good">No top-level warnings.</div>{% else %}<ul class="warn-list">{% for warning in run.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>{% endif %}</div>
+      <div><h2>Effective configuration</h2><pre>{{ config_json }}</pre></div>
     </section>
   </div>
+  <script>
+    (function () {
+      function detectType(value) {
+        return /^-?\d+(?:\.\d+)?$/.test(value.trim()) ? parseFloat(value) : value.toLowerCase();
+      }
+      document.querySelectorAll('[data-sort-table]').forEach(function (table) {
+        var headers = Array.prototype.slice.call(table.querySelectorAll('th'));
+        headers.forEach(function (th, idx) {
+          var direction = 1;
+          var marker = document.createElement('span');
+          marker.className = 'sort-indicator';
+          marker.textContent = '↕';
+          th.appendChild(marker);
+          th.addEventListener('click', function () {
+            var tbody = table.tBodies[0];
+            var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+            rows.sort(function (a, b) {
+              var av = detectType(a.children[idx].innerText || a.children[idx].textContent || '');
+              var bv = detectType(b.children[idx].innerText || b.children[idx].textContent || '');
+              if (av < bv) return -1 * direction;
+              if (av > bv) return 1 * direction;
+              return 0;
+            });
+            rows.forEach(function (row) { tbody.appendChild(row); });
+            direction = direction * -1;
+          });
+        });
+      });
+      document.querySelectorAll('[data-table-filter]').forEach(function (input) {
+        var table = document.getElementById(input.getAttribute('data-table-filter'));
+        if (!table) return;
+        input.addEventListener('input', function () {
+          var q = input.value.toLowerCase();
+          Array.prototype.slice.call(table.tBodies[0].rows).forEach(function (row) {
+            var text = row.innerText.toLowerCase();
+            row.style.display = text.indexOf(q) >= 0 ? '' : 'none';
+          });
+        });
+      });
+    })();
+  </script>
 </body>
 </html>
 "#,

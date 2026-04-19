@@ -3,6 +3,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
@@ -17,7 +18,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use sloc_config::{AppConfig, MixedLinePolicy};
+use sloc_config::{AppConfig, BinaryFileBehavior, MixedLinePolicy};
 use sloc_core::analyze;
 use sloc_report::{render_html, write_pdf_from_html};
 
@@ -43,6 +44,7 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         .route("/analyze", post(analyze_handler))
         .route("/preview", get(preview_handler))
         .route("/pick-directory", get(pick_directory_handler))
+        .route("/images/:folder/:file", get(image_handler))
         .route("/runs/:run_id/:artifact", get(artifact_handler))
         .with_state(AppState {
             base_config: config,
@@ -54,8 +56,16 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         .with_context(|| format!("failed to bind local web UI on {bind_address}"))?;
 
     println!("OxideSLOC local web UI running at http://{bind_address}/");
+    println!("Press Ctrl+C to stop the server.");
 
     axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                println!();
+                println!("Shutting down OxideSLOC local web UI...");
+                println!("Server stopped cleanly.");
+            }
+        })
         .await
         .context("web server terminated unexpectedly")
 }
@@ -79,6 +89,11 @@ struct AnalyzeForm {
     path: String,
     mixed_line_policy: Option<MixedLinePolicy>,
     python_docstrings_as_comments: Option<String>,
+    generated_file_detection: Option<String>,
+    minified_file_detection: Option<String>,
+    vendor_directory_detection: Option<String>,
+    include_lockfiles: Option<String>,
+    binary_file_behavior: Option<BinaryFileBehavior>,
     output_dir: Option<String>,
     report_title: Option<String>,
     generate_json: Option<String>,
@@ -91,11 +106,14 @@ struct AnalyzeForm {
 #[derive(Debug, Deserialize)]
 struct PreviewQuery {
     path: Option<String>,
+    include_globs: Option<String>,
+    exclude_globs: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct PickDirectoryQuery {
     kind: Option<String>,
+    current: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -110,7 +128,20 @@ async fn pick_directory_handler(Query(query): Query<PickDirectoryQuery>) -> impl
         _ => "Select project directory",
     };
 
-    let picked = rfd::FileDialog::new().set_title(title).pick_folder();
+    let mut dialog = rfd::FileDialog::new().set_title(title);
+    if let Some(current) = query.current.as_deref() {
+        let resolved = resolve_input_path(current);
+        let seed = if resolved.is_dir() {
+            Some(resolved)
+        } else {
+            resolved.parent().map(Path::to_path_buf)
+        };
+        if let Some(seed_dir) = seed.filter(|p| p.exists()) {
+            dialog = dialog.set_directory(seed_dir);
+        }
+    }
+
+    let picked = dialog.pick_folder();
 
     Json(PickDirectoryResponse {
         selected_path: picked.as_ref().map(|p| display_path(p)),
@@ -118,27 +149,52 @@ async fn pick_directory_handler(Query(query): Query<PickDirectoryQuery>) -> impl
     })
 }
 
-async fn preview_handler(Query(query): Query<PreviewQuery>) -> impl IntoResponse {
-    let raw_path = query.path.unwrap_or_else(|| "samples/basic".to_string());
-    let preview_path = PathBuf::from(raw_path.trim());
-
-    let resolved = if preview_path.as_os_str().is_empty() {
-        PathBuf::from("samples/basic")
-    } else if preview_path.is_absolute() {
-        preview_path
-    } else {
-        match std::env::current_dir() {
-            Ok(cwd) => cwd.join(preview_path),
-            Err(err) => {
-                return Html(format!(
-                    r#"<div class="preview-error">Failed to resolve current directory: {}</div>"#,
-                    escape_html(&err.to_string())
-                ));
-            }
-        }
+async fn image_handler(AxumPath((folder, file)): AxumPath<(String, String)>) -> impl IntoResponse {
+    let safe_folder = match folder.as_str() {
+        "icons" | "logo" => folder,
+        _ => return StatusCode::NOT_FOUND.into_response(),
     };
 
-    match build_preview_html(&resolved) {
+    let safe_name = Path::new(&file)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+
+    if safe_name.is_empty() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    let ext = Path::new(safe_name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    let content_type = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+
+    let path = workspace_root()
+        .join("images")
+        .join(safe_folder)
+        .join(safe_name);
+    match fs::read(path) {
+        Ok(bytes) => ([(header::CONTENT_TYPE, content_type)], bytes).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn preview_handler(Query(query): Query<PreviewQuery>) -> impl IntoResponse {
+    let raw_path = query.path.unwrap_or_else(|| "samples/basic".to_string());
+    let resolved = resolve_input_path(&raw_path);
+    let include_patterns = split_patterns(query.include_globs.as_deref());
+    let exclude_patterns = split_patterns(query.exclude_globs.as_deref());
+
+    match build_preview_html(&resolved, &include_patterns, &exclude_patterns) {
         Ok(html) => Html(html),
         Err(err) => Html(format!(
             r#"<div class="preview-error">Preview failed: {}</div>"#,
@@ -152,13 +208,24 @@ async fn analyze_handler(
     Form(form): Form<AnalyzeForm>,
 ) -> impl IntoResponse {
     let mut config = state.base_config.clone();
-    config.discovery.root_paths = vec![PathBuf::from(form.path.clone())];
+    config.discovery.root_paths = vec![resolve_input_path(&form.path)];
 
     if let Some(policy) = form.mixed_line_policy {
         config.analysis.mixed_line_policy = policy;
     }
 
     config.analysis.python_docstrings_as_comments = form.python_docstrings_as_comments.is_some();
+    config.analysis.generated_file_detection =
+        form.generated_file_detection.as_deref() != Some("disabled");
+    config.analysis.minified_file_detection =
+        form.minified_file_detection.as_deref() != Some("disabled");
+    config.analysis.vendor_directory_detection =
+        form.vendor_directory_detection.as_deref() != Some("disabled");
+    config.analysis.include_lockfiles = form.include_lockfiles.as_deref() == Some("enabled");
+
+    if let Some(binary_behavior) = form.binary_file_behavior {
+        config.analysis.binary_file_behavior = binary_behavior;
+    }
 
     if let Some(report_title) = form.report_title.as_deref() {
         let trimmed = report_title.trim();
@@ -429,9 +496,7 @@ fn resolve_output_root(raw: Option<&str>) -> Result<PathBuf> {
     if path.is_absolute() {
         Ok(path)
     } else {
-        Ok(std::env::current_dir()
-            .context("failed to resolve current working directory")?
-            .join(path))
+        Ok(workspace_root().join(path))
     }
 }
 
@@ -472,7 +537,34 @@ fn display_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-fn build_preview_html(root: &Path) -> Result<String> {
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn resolve_input_path(raw: &str) -> PathBuf {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return workspace_root().join("samples").join("basic");
+    }
+
+    let candidate = PathBuf::from(trimmed);
+    if candidate.is_absolute() {
+        candidate
+    } else {
+        let rooted = workspace_root().join(&candidate);
+        if rooted.exists() {
+            rooted
+        } else {
+            workspace_root().join(candidate)
+        }
+    }
+}
+
+fn build_preview_html(root: &Path, include_patterns: &[String], exclude_patterns: &[String]) -> Result<String> {
     if !root.exists() {
         return Ok(format!(
             r#"<div class="preview-error">Path does not exist: <code>{}</code></div>"#,
@@ -480,152 +572,189 @@ fn build_preview_html(root: &Path) -> Result<String> {
         ));
     }
 
-    let cwd = display_path(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let selected = display_path(root);
-    let languages = detect_languages_in_preview(root)?;
-
-    let mut out = String::new();
-    out.push_str(r#"<div class="explorer-wrap">"#);
-
-    out.push_str(r#"<div class="explorer-toolbar">"#);
-    out.push_str(r#"<div class="explorer-title-group">"#);
-    out.push_str(r#"<div class="explorer-title">Project preview explorer</div>"#);
-    out.push_str(r#"<div class="explorer-subtitle">Server-side heuristic preview of likely scanned, skipped, and unsupported content.</div>"#);
-    out.push_str(r#"</div>"#);
-
-    out.push_str(r#"<div class="preview-legend better-spacing">"#);
-    out.push_str(r#"<span class="badge badge-scan">likely scanned</span>"#);
-    out.push_str(r#"<span class="badge badge-skip">skipped by default</span>"#);
-    out.push_str(r#"<span class="badge badge-unsupported">unsupported</span>"#);
-    out.push_str(r#"</div></div>"#);
-
-    out.push_str(r#"<div class="explorer-meta-grid">"#);
-    out.push_str(&format!(
-        r#"<div class="explorer-meta-card"><div class="meta-label">Working oxide-sloc directory</div><div class="preview-code">{}</div></div>"#,
-        escape_html(&cwd)
-    ));
-    out.push_str(&format!(
-        r#"<div class="explorer-meta-card"><div class="meta-label">Selected project path</div><div class="preview-code">{}</div></div>"#,
-        escape_html(&selected)
-    ));
-    out.push_str(r#"</div>"#);
-
-    if !languages.is_empty() {
-        out.push_str(r#"<div class="explorer-language-strip"><div class="meta-label">Detected languages in preview</div><div class="language-pill-row">"#);
-        for language in languages {
-            out.push_str(&format!(
-                r#"<span class="language-pill">{}</span>"#,
-                escape_html(language)
-            ));
-        }
-        out.push_str(r#"</div></div>"#);
-    }
-
-    out.push_str(
-        r#"<div class="preview-note">This preview is heuristic. It shows what the current build is most likely to scan by default, but final results still depend on ignore rules, globs, generated or minified detection, and supported analyzers.</div>"#,
-    );
-
-    out.push_str(r#"<div class="file-explorer-shell">"#);
-    out.push_str(r#"<div class="file-explorer-header"><span>Name</span><span>Status</span></div>"#);
-    out.push_str(r#"<div class="file-explorer-tree"><pre class="tree">"#);
+    let mut stats = PreviewStats::default();
+    let mut rows = Vec::new();
+    let mut languages = Vec::new();
+    let mut budget = PreviewBudget {
+        shown: 0,
+        max_entries: 600,
+        max_depth: 9,
+    };
+    let mut next_row_id = 1usize;
 
     let root_name = root
         .file_name()
         .and_then(|name| name.to_str())
         .map(|name| name.to_string())
         .unwrap_or_else(|| root.to_string_lossy().into_owned());
+    let root_modified = root
+        .metadata()
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+        .map(format_system_time)
+        .unwrap_or_else(|| "-".to_string());
 
-    out.push_str(&format!(
-        r#"<span class="entry entry-dir">{}/</span>"#,
-        escape_html(&root_name)
-    ));
+    rows.push(PreviewRow {
+        row_id: 0,
+        parent_row_id: None,
+        depth: 0,
+        name: format!("{}/", root_name),
+        kind: PreviewKind::Dir,
+        is_dir: true,
+        language: None,
+        modified: root_modified,
+        type_label: "Directory".to_string(),
+    });
+    collect_preview_rows(
+        root,
+        root,
+        0,
+        Some(0),
+        &mut next_row_id,
+        &mut budget,
+        &mut stats,
+        &mut rows,
+        &mut languages,
+        include_patterns,
+        exclude_patterns,
+    )?;
 
-    let mut budget = PreviewBudget {
-        shown: 0,
-        max_entries: 240,
-        max_depth: 5,
-    };
-    render_tree(root, 0, &mut budget, &mut out)?;
+    let mut out = String::new();
+    out.push_str(r#"<div class="explorer-wrap">"#);
+    out.push_str(r#"<div class="explorer-toolbar compact">"#);
+    out.push_str(r#"<div class="explorer-title-group">"#);
+    out.push_str(r#"<div class="explorer-title">Project scope preview</div>"#);
+    out.push_str(r#"<div class="explorer-subtitle wide">Pre-scan explorer view for the current built-in analyzers and default skip rules.</div>"#);
+    out.push_str(r#"</div>"#);
+    out.push_str(r#"<div class="preview-legend better-spacing">"#);
+    out.push_str(r#"<span class="badge badge-scan">supported</span>"#);
+    out.push_str(r#"<span class="badge badge-skip">skipped by policy</span>"#);
+    out.push_str(r#"<span class="badge badge-unsupported">unsupported</span>"#);
+    out.push_str(r#"</div></div>"#);
 
-    if budget.shown >= budget.max_entries {
+    out.push_str(r#"<div class="scope-stats">"#);
+    out.push_str(&format!(r#"<button type="button" class="scope-stat-button" data-filter="dir"><span class="scope-stat-label">Directories</span><span class="scope-stat-value">{}</span></button>"#, stats.directories));
+    out.push_str(&format!(r#"<button type="button" class="scope-stat-button" data-filter="file"><span class="scope-stat-label">Files</span><span class="scope-stat-value">{}</span></button>"#, stats.files));
+    out.push_str(&format!(r#"<button type="button" class="scope-stat-button supported" data-filter="supported"><span class="scope-stat-label">Supported files</span><span class="scope-stat-value">{}</span></button>"#, stats.supported));
+    out.push_str(&format!(r#"<button type="button" class="scope-stat-button skipped" data-filter="skipped"><span class="scope-stat-label">Skipped by policy</span><span class="scope-stat-value">{}</span></button>"#, stats.skipped));
+    out.push_str(&format!(r#"<button type="button" class="scope-stat-button unsupported" data-filter="unsupported"><span class="scope-stat-label">Unsupported files</span><span class="scope-stat-value">{}</span></button>"#, stats.unsupported));
+    out.push_str(r#"<button type="button" class="scope-stat-button reset" data-filter="reset-view"><span class="scope-stat-label">Reset view</span><span class="scope-stat-value">All</span></button>"#);
+    out.push_str(r#"</div>"#);
+
+    out.push_str(r#"<div class="explorer-meta-grid split">"#);
+    out.push_str(&format!(r#"<div class="explorer-meta-card"><div class="meta-label">Selected project path</div><div class="preview-code">{}</div></div>"#, escape_html(&selected)));
+    out.push_str(r#"<div class="explorer-language-strip"><div class="meta-label">Detected languages</div><div class="language-pill-row iconified">"#);
+    if languages.is_empty() {
         out.push_str(
-            "\n<span class=\"entry entry-more\">... preview truncated for readability ...</span>",
+            r#"<span class="language-pill muted-pill">No supported languages detected yet</span>"#,
         );
+    } else {
+        out.push_str(r#"<button type="button" class="language-pill detected-language-chip active" data-language-filter=""><span>All languages</span></button>"#);
+        for language in &languages {
+            if let Some(icon) = language_icon_file(language) {
+                out.push_str(&format!(r#"<button type="button" class="language-pill has-icon detected-language-chip" data-language-filter="{}"><img src="/images/icons/{}" alt="{} icon" /><span>{}</span></button>"#, escape_html(&language.to_ascii_lowercase()), icon, escape_html(language), escape_html(language)));
+            } else {
+                out.push_str(&format!(
+                    r#"<button type="button" class="language-pill detected-language-chip" data-language-filter="{}">{}</button>"#,
+                    escape_html(&language.to_ascii_lowercase()),
+                    escape_html(language)
+                ));
+            }
+        }
     }
+    out.push_str(r#"</div></div></div>"#);
 
-    out.push_str("</pre></div></div></div>");
+    out.push_str(r#"<div class="preview-note stronger">This preview is generated before the run starts. It shows what is currently supported, what default policies skip, and which files are outside the enabled analyzer set for this build.</div>"#);
+
+    out.push_str(r#"<div class="file-explorer-shell">"#);
+    out.push_str(r#"<div class="file-explorer-controls"><div class="file-explorer-actions"><button type="button" class="mini-button explorer-action" data-explorer-action="expand-all">Expand all</button><button type="button" class="mini-button explorer-action" data-explorer-action="collapse-all">Collapse all</button><button type="button" class="mini-button explorer-action" data-explorer-action="clear-filters">Reset view</button></div><div class="file-explorer-search-row"><select class="explorer-filter-select" id="explorer-filter-select"><option value="all">All rows</option><option value="dir">Directories only</option><option value="file">Files only</option><option value="supported">Supported only</option><option value="skipped">Skipped by policy</option><option value="unsupported">Unsupported only</option></select><input type="text" class="explorer-search" id="explorer-search" placeholder="Filter by file or folder name" /></div></div>"#);
+    out.push_str(r#"<div class="file-explorer-header"><button type="button" class="tree-sort-button" data-sort-key="name" data-sort-order="none"><span>Name</span><span class="tree-sort-indicator">↕</span></button><button type="button" class="tree-sort-button" data-sort-key="date" data-sort-order="none"><span>Date</span><span class="tree-sort-indicator">↕</span></button><button type="button" class="tree-sort-button" data-sort-key="type" data-sort-order="none"><span>Type</span><span class="tree-sort-indicator">↕</span></button><button type="button" class="tree-sort-button" data-sort-key="status" data-sort-order="none"><span>Status</span><span class="tree-sort-indicator">↕</span></button></div>"#);
+    out.push_str(r#"<div class="file-explorer-tree">"#);
+    for row in rows {
+        let status_label = row.kind.label();
+        let lang_attr = row.language.unwrap_or("");
+        let toggle_html = if row.is_dir {
+            r#"<button type="button" class="tree-toggle" aria-label="Toggle folder">▾</button>"#
+                .to_string()
+        } else {
+            r#"<span class="tree-bullet">•</span>"#.to_string()
+        };
+        out.push_str(&format!(r#"<div class="tree-row kind-{} status-{}" data-kind="{}" data-status="{}" data-language="{}" data-row-id="{}" data-parent-id="{}" data-dir="{}" data-expanded="true" data-name-lower="{}" data-sort-name="{}" data-sort-date="{}" data-sort-type="{}" data-sort-status="{}"><div class="tree-name-cell" style="--depth:{}">{}<span class="tree-node {}">{}</span></div><div class="tree-date-cell">{}</div><div class="tree-type-cell">{}</div><div class="tree-status-cell"><span class="badge {}">{}</span></div></div>"#, if row.is_dir { "dir" } else { "file" }, row.kind.filter_key(), if row.is_dir { "dir" } else { "file" }, row.kind.filter_key(), escape_html(lang_attr), row.row_id, row.parent_row_id.map(|id| id.to_string()).unwrap_or_default(), if row.is_dir { "true" } else { "false" }, escape_html(&row.name.to_ascii_lowercase()), escape_html(&row.name.to_ascii_lowercase()), escape_html(&row.modified), escape_html(&row.type_label.to_ascii_lowercase()), escape_html(status_label), row.depth, toggle_html, if row.is_dir { "tree-node-dir" } else { row.kind.node_class() }, escape_html(&row.name), escape_html(&row.modified), escape_html(&row.type_label), row.kind.badge_class(), status_label));
+    }
+    if budget.shown >= budget.max_entries {
+        out.push_str(r#"<div class="tree-row more-row" data-kind="file" data-status="more" data-row-id="999999" data-parent-id="" data-dir="false" data-expanded="true" data-name-lower="preview truncated"><div class="tree-name-cell" style="--depth:0"><span class="tree-bullet">•</span><span class="tree-node tree-node-more">... preview truncated for readability ...</span></div><div class="tree-date-cell">-</div><div class="tree-type-cell">Preview note</div><div class="tree-status-cell"></div></div>"#);
+    }
+    out.push_str(r#"</div></div></div>"#);
 
     Ok(out)
 }
 
-fn detect_languages_in_preview(root: &Path) -> Result<Vec<&'static str>> {
-    let mut found = Vec::new();
-    let mut budget = 0usize;
-    detect_languages_walk(root, &mut found, &mut budget)?;
-    Ok(found)
+#[derive(Default)]
+struct PreviewStats {
+    directories: usize,
+    files: usize,
+    supported: usize,
+    skipped: usize,
+    unsupported: usize,
 }
 
-fn detect_languages_walk(
-    root: &Path,
-    found: &mut Vec<&'static str>,
-    budget: &mut usize,
-) -> Result<()> {
-    if *budget > 300 {
-        return Ok(());
-    }
+struct PreviewRow {
+    row_id: usize,
+    parent_row_id: Option<usize>,
+    depth: usize,
+    name: String,
+    kind: PreviewKind,
+    is_dir: bool,
+    language: Option<&'static str>,
+    modified: String,
+    type_label: String,
+}
 
-    let entries = match fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(_) => return Ok(()),
-    };
+#[derive(Copy, Clone)]
+enum PreviewKind {
+    Dir,
+    Supported,
+    Skipped,
+    Unsupported,
+}
 
-    for entry in entries.flatten() {
-        if *budget > 300 {
-            break;
-        }
-        *budget += 1;
-
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-
-        if path.is_dir() {
-            if matches!(name.as_str(), ".git" | "target" | "node_modules") {
-                continue;
-            }
-            let _ = detect_languages_walk(&path, found, budget);
-            continue;
-        }
-
-        let language = if name.ends_with(".c") || name.ends_with(".h") {
-            Some("C")
-        } else if name.ends_with(".cpp")
-            || name.ends_with(".cxx")
-            || name.ends_with(".cc")
-            || name.ends_with(".hpp")
-            || name.ends_with(".hh")
-            || name.ends_with(".hxx")
-        {
-            Some("C++")
-        } else if name.ends_with(".cs") {
-            Some("C#")
-        } else if name.ends_with(".py") {
-            Some("Python")
-        } else if name.ends_with(".sh") {
-            Some("Shell")
-        } else if name.ends_with(".ps1") || name.ends_with(".psm1") || name.ends_with(".psd1") {
-            Some("PowerShell")
-        } else {
-            None
-        };
-
-        if let Some(language) = language {
-            if !found.contains(&language) {
-                found.push(language);
-            }
+impl PreviewKind {
+    fn filter_key(self) -> &'static str {
+        match self {
+            PreviewKind::Dir => "dir",
+            PreviewKind::Supported => "supported",
+            PreviewKind::Skipped => "skipped",
+            PreviewKind::Unsupported => "unsupported",
         }
     }
 
-    Ok(())
+    fn label(self) -> &'static str {
+        match self {
+            PreviewKind::Dir => "dir",
+            PreviewKind::Supported => "supported",
+            PreviewKind::Skipped => "skipped by policy",
+            PreviewKind::Unsupported => "unsupported",
+        }
+    }
+
+    fn badge_class(self) -> &'static str {
+        match self {
+            PreviewKind::Dir => "badge badge-dir",
+            PreviewKind::Supported => "badge badge-scan",
+            PreviewKind::Skipped => "badge badge-skip",
+            PreviewKind::Unsupported => "badge badge-unsupported",
+        }
+    }
+
+    fn node_class(self) -> &'static str {
+        match self {
+            PreviewKind::Dir => "tree-node-dir",
+            PreviewKind::Supported => "tree-node-supported",
+            PreviewKind::Skipped => "tree-node-skipped",
+            PreviewKind::Unsupported => "tree-node-unsupported",
+        }
+    }
 }
 
 struct PreviewBudget {
@@ -634,11 +763,19 @@ struct PreviewBudget {
     max_depth: usize,
 }
 
-fn render_tree(
+#[allow(clippy::too_many_arguments)]
+fn collect_preview_rows(
+    root: &Path,
     dir: &Path,
     depth: usize,
+    parent_row_id: Option<usize>,
+    next_row_id: &mut usize,
     budget: &mut PreviewBudget,
-    out: &mut String,
+    stats: &mut PreviewStats,
+    rows: &mut Vec<PreviewRow>,
+    languages: &mut Vec<&'static str>,
+    include_patterns: &[String],
+    exclude_patterns: &[String],
 ) -> Result<()> {
     if depth >= budget.max_depth || budget.shown >= budget.max_entries {
         return Ok(());
@@ -648,7 +785,6 @@ fn render_tree(
         .with_context(|| format!("failed to read directory {}", dir.display()))?
         .filter_map(|entry| entry.ok())
         .collect::<Vec<_>>();
-
     entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase());
 
     for entry in entries {
@@ -662,34 +798,82 @@ fn render_tree(
             Ok(meta) => meta,
             Err(_) => continue,
         };
-
-        let indent = "  ".repeat(depth + 1);
+        let row_id = *next_row_id;
+        *next_row_id += 1;
+        let modified = metadata
+            .modified()
+            .ok()
+            .map(format_system_time)
+            .unwrap_or_else(|| "-".to_string());
 
         if metadata.is_dir() {
-            let status = classify_dir(&name);
-            out.push('\n');
-            out.push_str(&indent);
-            out.push_str(&format!(
-                r#"<span class="entry entry-dir {}">{}/ {}</span>"#,
-                status.css_class,
-                escape_html(&name),
-                status.badge_html
-            ));
-            budget.shown += 1;
-
-            if !status.skip_children {
-                render_tree(&path, depth + 1, budget, out)?;
+            let relative = preview_relative_path(root, &path);
+            if should_skip_preview_directory(&relative, exclude_patterns) {
+                continue;
             }
-        } else if metadata.is_file() {
-            let status = classify_file(&name);
-            out.push('\n');
-            out.push_str(&indent);
-            out.push_str(&format!(
-                r#"<span class="entry {}">{} {}</span>"#,
-                status.css_class,
-                escape_html(&name),
-                status.badge_html
-            ));
+
+            stats.directories += 1;
+            rows.push(PreviewRow {
+                row_id,
+                parent_row_id,
+                depth: depth + 1,
+                name: format!("{}/", name),
+                kind: PreviewKind::Dir,
+                is_dir: true,
+                language: None,
+                modified,
+                type_label: "Directory".to_string(),
+            });
+            budget.shown += 1;
+            if !matches!(name.as_str(), ".git" | "node_modules" | "target") {
+                collect_preview_rows(
+                    root,
+                    &path,
+                    depth + 1,
+                    Some(row_id),
+                    next_row_id,
+                    budget,
+                    stats,
+                    rows,
+                    languages,
+                    include_patterns,
+                    exclude_patterns,
+                )?;
+            }
+            continue;
+        }
+
+        if metadata.is_file() {
+            let relative = preview_relative_path(root, &path);
+            if !should_include_preview_file(&relative, include_patterns, exclude_patterns) {
+                continue;
+            }
+
+            stats.files += 1;
+            let kind = classify_preview_file(&name);
+            match kind {
+                PreviewKind::Supported => stats.supported += 1,
+                PreviewKind::Skipped => stats.skipped += 1,
+                PreviewKind::Unsupported => stats.unsupported += 1,
+                PreviewKind::Dir => {}
+            }
+            let language = detect_language_name(&name);
+            if let Some(language) = language {
+                if !languages.contains(&language) {
+                    languages.push(language);
+                }
+            }
+            rows.push(PreviewRow {
+                row_id,
+                parent_row_id,
+                depth: depth + 1,
+                name: name.clone(),
+                kind,
+                is_dir: false,
+                language,
+                modified,
+                type_label: preview_type_label(&name, language, kind),
+            });
             budget.shown += 1;
         }
     }
@@ -697,28 +881,113 @@ fn render_tree(
     Ok(())
 }
 
-struct PreviewStatus {
-    css_class: &'static str,
-    badge_html: &'static str,
-    skip_children: bool,
-}
-
-fn classify_dir(name: &str) -> PreviewStatus {
-    match name {
-        ".git" | "node_modules" | "target" => PreviewStatus {
-            css_class: "entry-skip",
-            badge_html: r#"<span class="badge badge-skip">skipped by default</span>"#,
-            skip_children: true,
-        },
-        _ => PreviewStatus {
-            css_class: "",
-            badge_html: r#"<span class="badge badge-dir">dir</span>"#,
-            skip_children: false,
-        },
+fn preview_type_label(name: &str, language: Option<&'static str>, kind: PreviewKind) -> String {
+    if let Some(language) = language {
+        return format!("{} source", language);
+    }
+    let lower = name.to_ascii_lowercase();
+    let ext = Path::new(&lower)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    match kind {
+        PreviewKind::Skipped => {
+            if lower.ends_with(".min.js") {
+                "Minified asset".to_string()
+            } else if [
+                "png", "jpg", "jpeg", "gif", "zip", "pdf", "xz", "gz", "tar", "pyc",
+            ]
+            .contains(&ext)
+            {
+                "Binary or archive".to_string()
+            } else {
+                "Skipped file".to_string()
+            }
+        }
+        PreviewKind::Unsupported => {
+            if ext.is_empty() {
+                "Unsupported file".to_string()
+            } else {
+                format!("{} file", ext.to_ascii_uppercase())
+            }
+        }
+        PreviewKind::Supported => "Supported source".to_string(),
+        PreviewKind::Dir => "Directory".to_string(),
     }
 }
 
-fn classify_file(name: &str) -> PreviewStatus {
+fn format_system_time(time: SystemTime) -> String {
+    let secs = match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs() as i64,
+        Err(_) => return "-".to_string(),
+    };
+    let days = secs.div_euclid(86_400);
+    let secs_of_day = secs.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let hour = secs_of_day / 3_600;
+    let minute = (secs_of_day % 3_600) / 60;
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        year, month, day, hour, minute
+    )
+}
+
+fn civil_from_days(days: i64) -> (i32, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = mp + if mp < 10 { 3 } else { -9 };
+    let year = y + if m <= 2 { 1 } else { 0 };
+    (year as i32, m as u32, d as u32)
+}
+
+fn detect_language_name(name: &str) -> Option<&'static str> {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".c") || lower.ends_with(".h") {
+        Some("C")
+    } else if [".cpp", ".cxx", ".cc", ".hpp", ".hh", ".hxx"]
+        .iter()
+        .any(|s| lower.ends_with(s))
+    {
+        Some("C++")
+    } else if lower.ends_with(".cs") {
+        Some("C#")
+    } else if lower.ends_with(".py") {
+        Some("Python")
+    } else if lower.ends_with(".sh") {
+        Some("Shell")
+    } else if [".ps1", ".psm1", ".psd1"]
+        .iter()
+        .any(|s| lower.ends_with(s))
+    {
+        Some("PowerShell")
+    } else {
+        None
+    }
+}
+
+fn language_icon_file(language: &str) -> Option<&'static str> {
+    match language {
+        "C" => Some("c.png"),
+        "C++" => Some("cpp.png"),
+        "C#" => Some("c-sharp.png"),
+        "Python" => Some("python.png"),
+        "Shell" => Some("shell.png"),
+        "PowerShell" => Some("powershell.png"),
+        "JavaScript" => Some("java-script.png"),
+        "HTML" => Some("html-5.png"),
+        "Java" => Some("java.png"),
+        "Visual Basic" => Some("visual-basic.png"),
+        _ => None,
+    }
+}
+
+fn classify_preview_file(name: &str) -> PreviewKind {
     let lower = name.to_ascii_lowercase();
 
     let scannable = [
@@ -729,11 +998,7 @@ fn classify_file(name: &str) -> PreviewStatus {
     .any(|suffix| lower.ends_with(suffix));
 
     if scannable {
-        PreviewStatus {
-            css_class: "entry-scan",
-            badge_html: r#"<span class="badge badge-scan">likely scanned</span>"#,
-            skip_children: false,
-        }
+        PreviewKind::Supported
     } else if lower.ends_with(".min.js")
         || lower.ends_with(".lock")
         || lower.ends_with(".png")
@@ -742,19 +1007,93 @@ fn classify_file(name: &str) -> PreviewStatus {
         || lower.ends_with(".gif")
         || lower.ends_with(".zip")
         || lower.ends_with(".pdf")
+        || lower.ends_with(".pyc")
+        || lower.ends_with(".xz")
+        || lower.ends_with(".tar")
+        || lower.ends_with(".gz")
     {
-        PreviewStatus {
-            css_class: "entry-skip",
-            badge_html: r#"<span class="badge badge-skip">skipped by default</span>"#,
-            skip_children: false,
-        }
+        PreviewKind::Skipped
     } else {
-        PreviewStatus {
-            css_class: "entry-unsupported",
-            badge_html: r#"<span class="badge badge-unsupported">unsupported</span>"#,
-            skip_children: false,
+        PreviewKind::Unsupported
+    }
+}
+
+fn preview_relative_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .ok()
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_matches('/')
+        .to_string()
+}
+
+fn should_skip_preview_directory(relative: &str, exclude_patterns: &[String]) -> bool {
+    if relative.is_empty() {
+        return false;
+    }
+
+    exclude_patterns.iter().any(|pattern| {
+        wildcard_match(pattern, relative)
+            || wildcard_match(pattern, &format!("{relative}/"))
+            || wildcard_match(pattern, &format!("{relative}/placeholder"))
+    })
+}
+
+fn should_include_preview_file(
+    relative: &str,
+    include_patterns: &[String],
+    exclude_patterns: &[String],
+) -> bool {
+    if relative.is_empty() {
+        return true;
+    }
+
+    let included = include_patterns.is_empty()
+        || include_patterns
+            .iter()
+            .any(|pattern| wildcard_match(pattern, relative));
+    let excluded = exclude_patterns
+        .iter()
+        .any(|pattern| wildcard_match(pattern, relative));
+
+    included && !excluded
+}
+
+fn wildcard_match(pattern: &str, candidate: &str) -> bool {
+    let pattern = pattern.trim().replace('\\', "/");
+    let candidate = candidate.trim().replace('\\', "/");
+    let p = pattern.as_bytes();
+    let c = candidate.as_bytes();
+    let mut pi = 0usize;
+    let mut ci = 0usize;
+    let mut star: Option<usize> = None;
+    let mut star_match = 0usize;
+
+    while ci < c.len() {
+        if pi < p.len() && (p[pi] == c[ci] || p[pi] == b'?') {
+            pi += 1;
+            ci += 1;
+        } else if pi < p.len() && p[pi] == b'*' {
+            while pi < p.len() && p[pi] == b'*' {
+                pi += 1;
+            }
+            star = Some(pi);
+            star_match = ci;
+        } else if let Some(star_pi) = star {
+            star_match += 1;
+            ci = star_match;
+            pi = star_pi;
+        } else {
+            return false;
         }
     }
+
+    while pi < p.len() && p[pi] == b'*' {
+        pi += 1;
+    }
+
+    pi == p.len()
 }
 
 fn escape_html(value: &str) -> String {
@@ -779,12 +1118,12 @@ struct LanguageSummaryRow {
 
 #[derive(Template)]
 #[template(
-    source = r#"
+    source = r##"
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>oxide-sloc local web UI</title>
+  <title>Oxide-SLOC | samples/basic</title>
   <style>
     :root {
       --bg: #efe9e2;
@@ -842,13 +1181,30 @@ struct LanguageSummaryRow {
     * { box-sizing: border-box; }
     html, body { margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); }
     body { overflow-x: hidden; transition: background 0.18s ease, color 0.18s ease; }
+    .top-nav, .page, .loading { position: relative; z-index: 2; }
+    .background-watermarks { position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
+    .background-watermarks img { position: absolute; opacity: 0.04; filter: blur(0.3px); user-select: none; max-width: none; }
+    .background-watermarks img:nth-child(1) { top: 5%; left: 4%; width: 180px; transform: rotate(-10deg); }
+    .background-watermarks img:nth-child(2) { top: 10%; right: 8%; width: 230px; transform: rotate(8deg); }
+    .background-watermarks img:nth-child(3) { top: 27%; left: 11%; width: 210px; transform: rotate(-6deg); }
+    .background-watermarks img:nth-child(4) { top: 34%; right: 13%; width: 170px; transform: rotate(12deg); }
+    .background-watermarks img:nth-child(5) { top: 52%; left: 5%; width: 250px; transform: rotate(-9deg); }
+    .background-watermarks img:nth-child(6) { top: 58%; right: 6%; width: 220px; transform: rotate(7deg); }
+    .background-watermarks img:nth-child(7) { bottom: 13%; left: 20%; width: 190px; transform: rotate(-5deg); }
+    .background-watermarks img:nth-child(8) { bottom: 8%; right: 17%; width: 235px; transform: rotate(10deg); }
     .top-nav { position: sticky; top: 0; z-index: 30; background: linear-gradient(180deg, var(--nav), var(--nav-2)); border-bottom: 1px solid rgba(255,255,255,0.12); box-shadow: 0 4px 14px rgba(0,0,0,0.18); }
-    .top-nav-inner { max-width: 1460px; margin: 0 auto; padding: 10px 24px; min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
-    .brand { display: flex; align-items: center; gap: 12px; }
-    .brand-mark { width: 14px; height: 14px; border-radius: 4px; background: linear-gradient(135deg, #e9a06e, var(--oxide-2)); box-shadow: 0 0 0 3px rgba(255,255,255,0.10); }
-    .brand-title { margin: 0; color: #fff; font-size: 17px; font-weight: 800; }
-    .brand-subtitle { color: rgba(255,255,255,0.8); font-size: 12px; }
-    .nav-status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .top-nav-inner { max-width: 1720px; margin: 0 auto; padding: 10px 24px; min-height: 64px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 460px) auto; align-items: center; gap: 18px; }
+    .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
+    .brand-logo { width: 42px; height: 42px; object-fit: contain; flex: 0 0 auto; filter: drop-shadow(0 4px 10px rgba(0,0,0,0.22)); }
+    .brand-copy { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
+    .brand-title { margin: 0; color: #fff; font-size: 17px; font-weight: 800; line-height: 1.1; }
+    .brand-subtitle { color: rgba(255,255,255,0.85); font-size: 12px; line-height: 1.2; margin-top: 2px; }
+    .nav-project-slot { display:flex; justify-content:center; min-width:0; }
+    .nav-project-pill { width: 100%; max-width: 240px; display:none; align-items:center; justify-content:center; gap: 10px; min-height: 38px; padding: 0 14px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.18); color: #fff; background: rgba(255,255,255,0.10); font-size: 12px; font-weight: 700; box-shadow: inset 0 1px 0 rgba(255,255,255,0.08); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .nav-project-pill.visible { display:inline-flex; }
+    .nav-project-label { color: rgba(255,255,255,0.78); text-transform: uppercase; letter-spacing: 0.08em; font-size: 11px; font-weight: 800; }
+    .nav-project-value { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+    .nav-status { display: flex; align-items: center; justify-content:flex-end; gap: 10px; flex-wrap: wrap; }
     .nav-pill, .theme-toggle { display: inline-flex; align-items: center; gap: 8px; min-height: 38px; padding: 0 14px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.18); color: #fff; background: rgba(255,255,255,0.08); font-size: 12px; font-weight: 700; box-shadow: inset 0 1px 0 rgba(255,255,255,0.08); }
     .nav-pill code { color: #fff; background: rgba(0,0,0,0.28); border: 1px solid rgba(255,255,255,0.10); padding: 3px 8px; border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .theme-toggle { width: 38px; justify-content: center; padding: 0; cursor: pointer; transition: transform 0.15s ease, background 0.15s ease; }
@@ -858,13 +1214,16 @@ struct LanguageSummaryRow {
     body.dark-theme .theme-toggle .icon-sun { display:block; }
     body.dark-theme .theme-toggle .icon-moon { display:none; }
     .status-dot { width: 8px; height: 8px; border-radius: 999px; background: #26d768; box-shadow: 0 0 0 4px rgba(38,215,104,0.14); }
-    .page { max-width: 1460px; margin: 0 auto; padding: 18px 24px 40px; }
+    .page { max-width: 1720px; margin: 0 auto; padding: 18px 24px 40px; }
     .subnav { display:flex; align-items:center; gap:8px; margin-bottom: 14px; color: var(--muted-2); font-size: 13px; }
     .subnav strong { color: var(--text); }
-    .summary-grid { display:grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 14px; margin-bottom: 18px; }
+    .summary-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }
     .summary-card, .card, .step-nav, .explainer-card, .review-card, .workspace-card, .artifact-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, transform 0.18s ease; }
     .summary-card:hover, .workspace-card:hover, .explainer-card:hover, .artifact-card:hover, .review-card:hover { box-shadow: var(--shadow-strong); border-color: var(--line-strong); transform: translateY(-2px); }
     .card:hover, .step-nav:hover { box-shadow: var(--shadow-strong); border-color: var(--line-strong); }
+    .side-info-card { padding: 18px; }
+    .side-mini-list { display:grid; gap: 10px; margin-top: 14px; }
+    .side-mini-item { color: var(--muted); font-size: 13px; line-height: 1.55; }
     .summary-card { padding: 18px 18px 16px; position: relative; overflow: hidden; }
     .summary-card::before { content:""; position:absolute; inset:0 auto 0 0; width:4px; background: linear-gradient(180deg, var(--oxide), var(--oxide-2)); }
     .summary-label, .section-kicker, .meta-label, .field-help-title { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-2); }
@@ -872,7 +1231,8 @@ struct LanguageSummaryRow {
     .summary-body { margin-top: 8px; color: var(--muted); font-size: 13px; line-height: 1.55; }
     .coverage-pills { display:flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
     .coverage-pill, .language-pill, .soft-chip { display:inline-flex; align-items:center; min-height: 32px; padding: 0 12px; border-radius: 999px; border:1px solid var(--line); background: var(--surface-2); color: var(--text); font-size: 13px; font-weight: 700; }
-    .layout { display:grid; grid-template-columns: 260px 1fr 420px; gap: 18px; align-items:start; }
+    .layout { display:grid; grid-template-columns: 280px minmax(0, 1fr); gap: 18px; align-items:start; }
+    .side-stack { display:grid; gap: 16px; align-items:start; }
     .step-nav { padding: 14px; position: sticky; top: 88px; }
     .step-nav h3 { margin: 6px 4px 14px; font-size: 15px; }
     .step-button { width:100%; display:flex; align-items:center; gap:12px; border:none; background:transparent; border-radius: 12px; padding: 12px 12px; color: var(--text); cursor:pointer; text-align:left; font-size:15px; font-weight:700; transition: background 0.15s ease, transform 0.15s ease; }
@@ -881,12 +1241,19 @@ struct LanguageSummaryRow {
     .step-num { width:22px; height:22px; border-radius:999px; display:inline-flex; align-items:center; justify-content:center; background: var(--surface-3); color: var(--text); font-size:12px; font-weight:800; flex:0 0 auto; }
     .step-button.active .step-num { background: rgba(37,99,235,0.18); color: var(--accent-2); }
     .card-header { padding: 22px 22px 18px; border-bottom:1px solid var(--line); background: linear-gradient(180deg, rgba(255,255,255,0.30), transparent), var(--surface); }
-    .card-title-row { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+    .card-title-row { display:flex; justify-content:space-between; align-items:flex-start; gap:18px; }
+    .wizard-progress { min-width: 240px; max-width: 320px; width: 100%; }
+    .wizard-progress-top { display:flex; justify-content:space-between; align-items:center; gap: 12px; margin-bottom: 8px; }
+    .wizard-progress-label { font-size: 12px; font-weight: 800; color: var(--muted-2); text-transform: uppercase; letter-spacing: 0.08em; }
+    .wizard-progress-value { font-size: 13px; font-weight: 900; color: var(--text); }
+    .wizard-progress-track { width: 100%; height: 10px; border-radius: 999px; background: var(--surface-3); border: 1px solid var(--line); overflow: hidden; }
+    .wizard-progress-fill { height: 100%; width: 25%; border-radius: 999px; background: linear-gradient(90deg, var(--oxide), var(--accent)); transition: width 0.22s ease; }
     .card-title { margin:0; font-size: 22px; font-weight: 850; letter-spacing: -0.03em; }
     .card-subtitle { margin: 10px 0 0; color: var(--muted); font-size: 16px; line-height: 1.65; max-width: 920px; }
     .card-body { padding: 22px; }
-    .wizard-step { display:none; }
-    .wizard-step.active { display:block; }
+    .wizard-step { display:none; opacity: 0; transform: translateY(8px); }
+    .wizard-step.active { display:block; animation: stepFade 220ms ease both; }
+    @keyframes stepFade { from { opacity: 0; transform: translateY(12px); filter: blur(2px);} to { opacity: 1; transform: translateY(0); filter: blur(0);} }
     .section { margin-bottom: 22px; padding-bottom: 22px; border-bottom:1px solid var(--line); }
     .section:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: none; }
     .field-grid { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -912,12 +1279,38 @@ struct LanguageSummaryRow {
     .wizard-actions { display:flex; justify-content:space-between; align-items:center; gap: 12px; margin-top: 22px; padding-top: 18px; border-top:1px solid var(--line); }
     .wizard-actions .left, .wizard-actions .right { display:flex; gap: 10px; flex-wrap:wrap; }
     .field-help-grid { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
-    .explainer-card { padding: 16px; }
-    .explainer-body { margin-top: 10px; color: var(--muted); font-size: 14px; line-height: 1.62; }
-    .code-sample { margin-top: 10px; padding: 12px 14px; border-radius: 10px; border:1px solid var(--line); background: var(--surface-2); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; font-size: 13px; color: var(--text); }
+    .field-help-grid.coupled-help { margin-top: 12px; }
+    .field-help-grid.preset-grid { align-items: start; }
+    .counting-intro { margin-bottom: 22px; }
+    .counting-top-grid { gap: 20px; margin-top: 12px; align-items: start; }
+    .counting-top-grid .field { padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+    .counting-top-grid .hint { margin-top: 14px; padding: 12px 14px; border-left: 4px solid var(--oxide); background: linear-gradient(180deg, rgba(184,93,51,0.06), transparent), var(--surface-2); border-radius: 10px; }
+    .subsection-bar { margin: 24px 0 14px; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--line); background: linear-gradient(180deg, rgba(37,99,235,0.05), transparent), var(--surface-2); font-size: 12px; font-weight: 900; color: var(--muted-2); text-transform: uppercase; letter-spacing: 0.08em; }
+    .section-spacer-top { margin-top: 28px; }
+    .explainer-card { padding: 18px; background: linear-gradient(180deg, rgba(184,93,51,0.05), transparent), var(--surface); }
+    .explainer-card.prominent { box-shadow: 0 0 0 1px rgba(184,93,51,0.14), var(--shadow); }
+    .explainer-body { margin-top: 10px; color: var(--muted); font-size: 14px; line-height: 1.68; }
+    .code-sample { margin-top: 10px; padding: 14px 16px; border-radius: 12px; border:1px solid var(--line); background: var(--surface-2); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; font-size: 13px; color: var(--text); }
+    .preset-summary-row { display:flex; flex-wrap:wrap; gap: 10px; margin-top: 12px; }
+    .preset-summary-chip { display:inline-flex; align-items:center; min-height: 30px; padding: 0 12px; border-radius: 999px; border:1px solid var(--line); background: linear-gradient(180deg, rgba(37,99,235,0.08), transparent), var(--surface-2); color: var(--text); font-size: 12px; font-weight: 800; }
+    .preset-note { margin-top: 12px; padding: 12px 14px; border-radius: 12px; border:1px solid var(--line); background: linear-gradient(180deg, rgba(184,93,51,0.08), transparent), var(--surface-2); color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .glob-guidance-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+    .glob-guidance-card { padding: 14px; border-radius: 12px; border:1px solid var(--line); background: var(--surface-2); }
+    .glob-guidance-card strong { display:block; margin-bottom: 8px; color: var(--text); }
+    .glob-guidance-card p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.58; }
     .toggle-card { border:1px solid var(--line); border-radius: 12px; background: var(--surface-2); padding: 16px; }
     .checkbox { display:flex; align-items:flex-start; gap: 10px; font-size: 15px; font-weight:700; }
     .checkbox input { width: 16px; height: 16px; margin-top: 3px; accent-color: var(--accent); }
+    .advanced-rule-table { display:grid; gap: 12px; margin-top: 18px; }
+    .advanced-rule-row { display:grid; grid-template-columns: 220px 220px minmax(0, 1fr); gap: 14px; align-items:start; padding: 16px; border:1px solid var(--line); border-radius: 14px; background: var(--surface-2); }
+    .advanced-rule-row.static-note { grid-template-columns: 220px minmax(0, 1fr); }
+    .advanced-rule-head h4 { margin: 6px 0 0; font-size: 16px; }
+    .advanced-rule-description { color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .advanced-rule-description strong { color: var(--text); }
+    .output-identity-grid { display:grid; grid-template-columns: 1.15fr 0.95fr; gap: 18px; align-items:start; margin-top: 22px; }
+    .review-card-head { display:flex; justify-content:space-between; align-items:flex-start; gap: 10px; margin-bottom: 8px; }
+    .review-link { border:none; background: transparent; color: var(--accent-2); font-size: 12px; font-weight: 800; cursor: pointer; padding: 0; }
+    .review-link:hover { text-decoration: underline; }
     .artifact-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
     .artifact-card { position:relative; padding: 16px; cursor:pointer; }
     .artifact-card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(37,99,235,0.18), var(--shadow-strong); }
@@ -928,18 +1321,17 @@ struct LanguageSummaryRow {
     .artifact-card p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.6; }
     .artifact-tags { display:flex; flex-wrap:wrap; gap: 8px; margin-top: 14px; }
     .review-grid { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
-    .review-card { padding: 16px; background: linear-gradient(180deg, rgba(255,255,255,0.22), transparent), var(--surface); }
+    .review-card { padding: 18px; background: linear-gradient(180deg, rgba(255,255,255,0.22), transparent), var(--surface); }
+    .review-card.highlight { background: linear-gradient(180deg, rgba(37,99,235,0.05), transparent), var(--surface); }
     .review-card h4 { margin: 0 0 8px; font-size: 17px; }
     .review-card p, .review-card li { color: var(--muted); font-size: 14px; line-height: 1.62; }
     .review-card ul { padding-left: 18px; margin: 0; }
-    .workspace-stack { display:grid; gap: 16px; }
-    .workspace-card { padding: 18px; }
-    .workspace-title { margin:0; font-size: 18px; font-weight: 850; }
-    .workspace-subtitle { margin: 8px 0 0; color: var(--muted); font-size: 15px; line-height: 1.6; }
-    .explorer-wrap { display:grid; gap: 14px; }
-    .explorer-toolbar { display:flex; justify-content:space-between; gap: 12px; align-items:flex-start; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+        .explorer-wrap { display:grid; gap: 16px; margin-top: 18px; }
+    .explorer-toolbar { display:flex; justify-content:space-between; gap: 12px; align-items:flex-start; }
+    .explorer-toolbar.compact { padding: 0; border-bottom: none; }
     .explorer-title { font-size: 18px; font-weight: 850; }
-    .explorer-subtitle { margin-top: 6px; color: var(--muted); font-size: 14px; line-height: 1.55; max-width: 290px; }
+    .explorer-subtitle { margin-top: 6px; color: var(--muted); font-size: 14px; line-height: 1.55; max-width: 520px; }
+    .explorer-subtitle.wide { max-width: none; }
     .preview-legend { display:flex; flex-wrap:wrap; gap: 10px; }
     .better-spacing { align-items:flex-start; justify-content:flex-end; }
     .badge { display:inline-flex; align-items:center; min-height: 30px; padding: 0 12px; border-radius: 999px; font-size: 13px; font-weight: 800; border:1px solid transparent; }
@@ -948,21 +1340,58 @@ struct LanguageSummaryRow {
     .badge-unsupported { background: var(--danger-bg); color: var(--danger-text); border-color: #f1c3c3; }
     .badge-dir { background: #e8eeff; color: #365caa; border-color: #cad7f3; }
     body.dark-theme .badge-dir { background:#223058; color:#bfd0ff; border-color:#3b4f87; }
-    .explorer-meta-grid { display:grid; grid-template-columns: 1fr; gap: 12px; }
+    .scope-stats { display:grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
+    .scope-stat-button { appearance:none; text-align:left; border:1px solid var(--line); background: var(--surface); border-radius: 14px; padding: 14px 16px; cursor:pointer; transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease, background .15s ease; }
+    .scope-stat-button:hover { transform: translateY(-1px); box-shadow: var(--shadow); border-color: var(--line-strong); }
+    .scope-stat-button.active { box-shadow: 0 0 0 2px rgba(37,99,235,0.14), var(--shadow); border-color: var(--accent); }
+    .scope-stat-button.supported { background: var(--success-bg); }
+    .scope-stat-button.skipped { background: var(--warn-bg); }
+    .scope-stat-button.unsupported { background: var(--danger-bg); }
+    .scope-stat-button.reset { background: linear-gradient(180deg, rgba(37,99,235,0.08), transparent), var(--surface); }
+    .scope-stat-label { display:block; font-size:12px; font-weight:800; color: var(--muted-2); text-transform: uppercase; letter-spacing: .08em; }
+    .scope-stat-value { display:block; margin-top: 6px; font-size: 22px; font-weight: 900; color: var(--text); }
+    .explorer-meta-grid { display:grid; grid-template-columns: 1.4fr 1fr; gap: 12px; }
+    .explorer-meta-grid.split { grid-template-columns: 1.3fr .9fr; }
     .explorer-meta-card, .preview-note { padding: 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface-2); }
+    .preview-note.stronger { background: linear-gradient(180deg, rgba(184,93,51,0.08), transparent), var(--surface-2); border-left: 4px solid var(--oxide); font-size: 15px; line-height: 1.65; }
     .preview-code, code { display:block; margin-top: 8px; padding: 10px 12px; border-radius: 10px; border:1px solid var(--line); background: #fff; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; overflow-wrap:anywhere; }
     code { display:inline-block; margin-top:0; padding:2px 7px; }
     .explorer-language-strip { padding: 14px; border-radius: 12px; border:1px solid var(--line); background: var(--surface-2); }
-    .language-pill-row { display:flex; flex-wrap:wrap; gap: 8px; margin-top: 10px; }
+    .language-pill-row { display:flex; flex-wrap:wrap; gap: 10px; margin-top: 10px; }
+    .language-pill.has-icon { display:inline-flex; align-items:center; gap: 10px; padding-right: 14px; }
+    .language-pill.has-icon img { width: 18px; height: 18px; object-fit: contain; }
+    .language-pill.muted-pill { color: var(--muted); }
+    button.language-pill { appearance:none; cursor:pointer; }
+    .detected-language-chip.active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(37,99,235,0.12); background: linear-gradient(180deg, rgba(37,99,235,0.10), transparent), var(--surface-2); }
     .file-explorer-shell { border:1px solid var(--line); border-radius: 14px; overflow:hidden; background: var(--surface); }
-    .file-explorer-header { display:grid; grid-template-columns: 1fr auto; gap: 10px; padding: 11px 14px; background: linear-gradient(180deg, var(--surface-2), transparent); border-bottom:1px solid var(--line); font-size: 12px; font-weight: 800; color: var(--muted-2); text-transform: uppercase; letter-spacing: 0.08em; }
-    .file-explorer-tree { max-height: 500px; overflow:auto; padding: 14px; }
-    .tree { margin:0; color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; line-height: 1.9; white-space: pre-wrap; word-break: break-word; }
-    .entry-dir { color: var(--text); font-weight: 800; }
-    .entry-scan { color: var(--success-text); }
-    .entry-skip { color: var(--warn-text); }
-    .entry-unsupported { color: var(--danger-text); }
-    .entry-more { color: var(--muted-2); font-style: italic; }
+    .file-explorer-controls { display:flex; justify-content:space-between; gap: 12px; align-items:center; padding: 12px 14px; border-bottom:1px solid var(--line); background: linear-gradient(180deg, var(--surface-2), rgba(255,255,255,0.35)); flex-wrap: nowrap; }
+    .file-explorer-actions, .file-explorer-search-row { display:flex; gap: 10px; align-items:center; flex-wrap:nowrap; }
+    .file-explorer-search-row { margin-left: auto; }
+    .explorer-filter-select { min-width: 170px; width: 170px; }
+    .explorer-search { min-width: 300px; width: 300px; }
+    .file-explorer-header { display:grid; grid-template-columns: minmax(0, 1fr) 170px 160px 200px; gap: 12px; padding: 11px 14px; background: linear-gradient(180deg, var(--surface-2), transparent); border-bottom:1px solid var(--line); }
+    .tree-sort-button { display:flex; align-items:center; justify-content:space-between; gap: 10px; width:100%; padding: 4px 8px; border:none; border-radius: 10px; background: transparent; color: var(--muted-2); font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; cursor:pointer; }
+    .tree-sort-button:hover { background: rgba(37,99,235,0.08); color: var(--accent-2); }
+    .tree-sort-button.active { background: rgba(37,99,235,0.12); color: var(--accent-2); }
+    .tree-sort-indicator { font-size: 13px; letter-spacing: 0; text-transform:none; }
+    .file-explorer-tree { max-height: 560px; overflow:auto; }
+    .tree-row { display:grid; grid-template-columns: minmax(0, 1fr) 170px 160px 200px; gap: 12px; align-items:center; padding: 0 14px; border-bottom:1px solid rgba(0,0,0,0.04); }
+    .tree-row:nth-child(odd) { background: rgba(255,255,255,0.25); }
+    body.dark-theme .tree-row:nth-child(odd) { background: rgba(255,255,255,0.02); }
+    .tree-row.hidden-by-filter { display:none !important; }
+    .tree-name-cell, .tree-date-cell, .tree-type-cell, .tree-status-cell { padding: 9px 0; }
+    .tree-name-cell { display:flex; align-items:center; gap: 10px; padding-left: calc(var(--depth) * 18px + 8px); position: relative; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; min-width:0; }
+    .tree-toggle { width: 28px; height: 28px; display:inline-flex; align-items:center; justify-content:center; border:none; background: var(--surface-2); color: var(--muted-2); cursor:pointer; font-size: 18px; line-height: 1; flex:0 0 28px; border-radius: 8px; border: 1px solid var(--line); font-weight: 900; }
+    .tree-toggle:hover { color: var(--text); background: var(--surface-3); }
+    .tree-bullet { color: var(--muted-2); width: 28px; text-align:center; flex: 0 0 28px; font-size: 14px; }
+    .tree-node { display:inline-flex; align-items:center; min-width:0; }
+    .tree-node-dir { color: var(--text); font-weight: 800; }
+    .tree-node-supported { color: var(--success-text); }
+    .tree-node-skipped { color: var(--warn-text); }
+    .tree-node-unsupported { color: var(--danger-text); }
+    .tree-node-more { color: var(--muted-2); font-style: italic; }
+    .tree-date-cell, .tree-type-cell { color: var(--muted); font-size: 13px; }
+    .tree-status-cell { display:flex; justify-content:flex-start; }
     .preview-error { color: var(--danger-text); background: var(--danger-bg); border:1px solid #efc2c2; padding: 12px; border-radius: 12px; }
     .loading { position: fixed; inset: 0; display:none; align-items:center; justify-content:center; background: rgba(17,24,39,0.28); z-index: 100; }
     .loading.active { display:flex; }
@@ -973,18 +1402,34 @@ struct LanguageSummaryRow {
     .progress-bar span { display:block; width:42%; height:100%; background: linear-gradient(90deg, var(--accent), #6b8cff); animation: pulseBar 1.4s ease-in-out infinite; }
     @keyframes pulseBar { 0% { transform: translateX(-35%); width:25%; } 50% { transform: translateX(130%); width:44%; } 100% { transform: translateX(250%); width:25%; } }
     .hidden { display:none !important; }
-    @media (max-width: 1280px) { .layout { grid-template-columns: 230px 1fr; } .workspace-column { grid-column: 1 / -1; } }
-    @media (max-width: 980px) { .summary-grid, .field-grid, .artifact-grid, .review-grid { grid-template-columns: 1fr; } .layout { grid-template-columns: 1fr; } .step-nav { position:static; } .top-nav-inner { flex-direction: column; align-items:flex-start; } .input-group { grid-template-columns: 1fr 1fr; } .input-group.compact { grid-template-columns: 1fr 1fr; } .better-spacing { justify-content:flex-start; } }
+    @media (max-width: 1280px) { .layout { grid-template-columns: 230px 1fr; } .scope-stats, .explorer-meta-grid, .explorer-meta-grid.split { grid-template-columns: 1fr 1fr; } }
+    @media (max-width: 980px) { .summary-grid, .field-grid, .artifact-grid, .review-grid, .scope-stats, .explorer-meta-grid, .explorer-meta-grid.split, .glob-guidance-grid { grid-template-columns: 1fr; } .layout { grid-template-columns: 1fr; } .step-nav { position:static; } .top-nav-inner { grid-template-columns: 1fr; justify-items: stretch; } .nav-project-slot, .nav-status { justify-content:flex-start; } .input-group { grid-template-columns: 1fr 1fr; } .input-group.compact { grid-template-columns: 1fr 1fr; } .better-spacing { justify-content:flex-start; } .file-explorer-controls { flex-direction: column; align-items:flex-start; flex-wrap: wrap; } .file-explorer-search-row { margin-left: 0; flex-wrap: wrap; width: 100%; } .explorer-search { min-width: 0; width: 100%; } .file-explorer-header, .tree-row { grid-template-columns: minmax(0, 1fr) 110px 110px 140px; } .advanced-rule-row, .advanced-rule-row.static-note, .output-identity-grid, .counting-top-grid { grid-template-columns: 1fr; } .wizard-progress { max-width: none; } }
   </style>
 </head>
 <body>
+  <div class="background-watermarks" aria-hidden="true">
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+  </div>
   <div class="top-nav">
     <div class="top-nav-inner">
       <div class="brand">
-        <div class="brand-mark"></div>
-        <div>
+        <img class="brand-logo" src="/images/logo/small-logo.png" alt="OxideSLOC logo" />
+        <div class="brand-copy">
           <div class="brand-title">OxideSLOC</div>
           <div class="brand-subtitle">Local analysis workbench</div>
+        </div>
+      </div>
+      <div class="nav-project-slot">
+        <div class="nav-project-pill" id="nav-project-pill" aria-live="polite">
+          <span class="nav-project-label">Project</span>
+          <span class="nav-project-value" id="nav-project-title">samples/basic</span>
         </div>
       </div>
       <div class="nav-status">
@@ -1038,12 +1483,34 @@ struct LanguageSummaryRow {
     </div>
 
     <div class="layout">
-      <aside class="step-nav">
+      <aside class="side-stack">
+        <section class="step-nav">
         <h3>Guided scan setup</h3>
         <button type="button" class="step-button active" data-step-target="1"><span class="step-num">1</span><span>Select project</span></button>
         <button type="button" class="step-button" data-step-target="2"><span class="step-num">2</span><span>Counting rules</span></button>
         <button type="button" class="step-button" data-step-target="3"><span class="step-num">3</span><span>Outputs and reports</span></button>
         <button type="button" class="step-button" data-step-target="4"><span class="step-num">4</span><span>Review and run</span></button>
+        </section>
+
+        <section class="workspace-card side-info-card">
+          <div class="section-kicker">Quick guide</div>
+          <h2 class="workspace-title">Run checklist</h2>
+          <p class="workspace-subtitle">Use the preview first, confirm counting rules, then choose your export bundle before running a larger scan.</p>
+
+          <div class="side-mini-list">
+            <div class="side-mini-item"><strong>Project path</strong></div>
+            <div class="preview-code" id="side-path-preview">samples/basic</div>
+
+            <div class="side-mini-item"><strong>Output root</strong></div>
+            <div class="preview-code" id="side-output-preview">out/web</div>
+
+            <div class="side-mini-item"><strong>Preview first</strong><br />Use Step 1 to verify what will be seen as supported, skipped by policy, or unsupported before you spend time on a full run.</div>
+            <div class="side-mini-item"><strong>Count with intent</strong><br />In Step 2, decide whether mixed code-plus-comment lines should stay code-only, count in both buckets, or be split into a dedicated mixed bucket.</div>
+            <div class="side-mini-item"><strong>Preset then refine</strong><br />Use Step 3 presets as a starting point, then fine tune report title, output location, and artifacts for local review versus automation handoff.</div>
+            <div class="side-mini-item"><strong>Default bundle</strong><br />HTML and PDF are enabled by default so you get both an interactive report and a portable export.</div>
+            <div class="side-mini-item"><strong>Future friendly</strong><br />Stable report titles and JSON output make it easier to compare later runs, store scan history, and feed CI or Jenkins metadata later.</div>
+          </div>
+        </section>
       </aside>
 
       <section class="card">
@@ -1052,6 +1519,15 @@ struct LanguageSummaryRow {
             <div>
               <h1 class="card-title">Guided scan configuration</h1>
               <p class="card-subtitle">Split setup into steps so each group of options has room for examples, explanations, and stronger customization.</p>
+            </div>
+            <div class="wizard-progress" aria-label="Scan setup progress">
+              <div class="wizard-progress-top">
+                <span class="wizard-progress-label">Setup progress</span>
+                <span class="wizard-progress-value" id="wizard-progress-value">25%</span>
+              </div>
+              <div class="wizard-progress-track">
+                <div class="wizard-progress-fill" id="wizard-progress-fill"></div>
+              </div>
             </div>
           </div>
         </div>
@@ -1072,6 +1548,10 @@ struct LanguageSummaryRow {
                   </div>
                   <div class="hint">Browse opens the native folder picker through the Rust backend, so you do not need to type local paths manually.</div>
                 </div>
+
+                <div id="preview-panel">
+                  <div class="preview-error">Loading preview...</div>
+                </div>
               </div>
 
               <div class="section">
@@ -1079,12 +1559,26 @@ struct LanguageSummaryRow {
                   <div class="field">
                     <label for="include_globs">Include globs</label>
                     <textarea id="include_globs" name="include_globs" placeholder="examples:&#10;src/**/*.py&#10;scripts/*.sh"></textarea>
-                    <div class="hint">Use line-separated or comma-separated patterns to explicitly include paths. This narrows selection, but unsupported languages still need analyzer support.</div>
+                    <div class="hint">Use line-separated or comma-separated patterns when you want to narrow the scan to only certain folders or file types. If you leave this empty, everything under the project path is eligible first, and then exclude rules trim it down.</div>
                   </div>
                   <div class="field">
                     <label for="exclude_globs">Exclude globs</label>
                     <textarea id="exclude_globs" name="exclude_globs" placeholder="examples:&#10;vendor/**&#10;**/*.min.js"></textarea>
-                    <div class="hint">Use this to trim vendor trees, generated output, minified files, or other classes of content from the scan.</div>
+                    <div class="hint">Use this to remove noisy areas from the scope such as dependency trees, generated output, build folders, snapshots, or minified assets.</div>
+                  </div>
+                </div>
+                <div class="glob-guidance-grid">
+                  <div class="glob-guidance-card">
+                    <strong>How to read them</strong>
+                    <p><code>*</code> matches within a name, <code>**</code> reaches across nested folders, and patterns are usually written relative to the selected project path.</p>
+                  </div>
+                  <div class="glob-guidance-card">
+                    <strong>Common include examples</strong>
+                    <p><code>src/**/*.rs</code> only Rust sources in src, <code>scripts/*</code> top-level scripts folder, <code>tests/**</code> everything under tests.</p>
+                  </div>
+                  <div class="glob-guidance-card">
+                    <strong>Common exclude examples</strong>
+                    <p><code>vendor/**</code> third-party code, <code>target/**</code> build output, <code>**/*.min.js</code> minified assets, <code>**/generated/**</code> generated files.</p>
                   </div>
                 </div>
               </div>
@@ -1101,8 +1595,9 @@ struct LanguageSummaryRow {
               <div class="section">
                 <div class="section-kicker">Step 2</div>
                 <h2>Choose counting behavior</h2>
-                <p class="card-subtitle">These settings decide how mixed code-plus-comment lines and Python docstrings are classified.</p>
-                <div class="field-grid">
+                <p class="card-subtitle counting-intro">These settings decide how mixed code-plus-comment lines and Python docstrings are classified. Pure comment lines, block comments, physical lines, and blank lines are still tracked by supported analyzers even when they do not share a line with executable code.</p>
+                <div class="subsection-bar">Primary line classification</div>
+                <div class="field-grid counting-top-grid">
                   <div class="field">
                     <label for="mixed_line_policy">Mixed-line policy</label>
                     <select id="mixed_line_policy" name="mixed_line_policy">
@@ -1111,7 +1606,7 @@ struct LanguageSummaryRow {
                       <option value="comment_only">Comment only</option>
                       <option value="separate_mixed_category">Separate mixed category</option>
                     </select>
-                    <div class="hint">Mixed lines are lines that contain executable code and inline comment text at the same time.</div>
+                    <div class="hint">Mixed lines are lines that contain executable code and inline comment text at the same time. Use this to decide whether those lines stay in code totals, comment totals, both, or a dedicated mixed bucket.</div>
                   </div>
                   <div class="field python-docstring-wrap" id="python-docstring-wrap">
                     <label>Python docstrings</label>
@@ -1126,16 +1621,49 @@ struct LanguageSummaryRow {
                 </div>
               </div>
 
-              <div class="field-help-grid">
-                <div class="explainer-card">
+              <div class="field-help-grid coupled-help">
+                <div class="explainer-card prominent">
                   <div class="field-help-title">Mixed-line policy explanation</div>
                   <div class="explainer-body" id="mixed-policy-description"></div>
                   <div class="code-sample" id="mixed-policy-example"></div>
                 </div>
-                <div class="explainer-card python-docstring-wrap" id="python-docstring-example-card">
+                <div class="explainer-card prominent python-docstring-wrap" id="python-docstring-example-card">
                   <div class="field-help-title">Python docstring example</div>
                   <div class="explainer-body" id="python-docstring-description"></div>
                   <div class="code-sample" id="python-docstring-example"></div>
+                </div>
+              </div>
+
+              <div class="subsection-bar">Additional scan rules</div>
+              <div class="advanced-rule-table">
+                <div class="advanced-rule-row">
+                  <div class="advanced-rule-head"><div class="field-help-title">Generated files</div><h4>Generated-file detection</h4></div>
+                  <select name="generated_file_detection" id="generated_file_detection"><option value="enabled" selected>Enabled</option><option value="disabled">Disabled</option></select>
+                  <div class="advanced-rule-description"><strong>Purpose:</strong> Keep generated code or generated assets out of the totals by default.<br /><strong>Good default when:</strong> you want authored source only.<br /><strong>Turn it off when:</strong> you intentionally want generated SDKs, compiled templates, or codegen output included.</div>
+                </div>
+                <div class="advanced-rule-row">
+                  <div class="advanced-rule-head"><div class="field-help-title">Minified files</div><h4>Minified-file detection</h4></div>
+                  <select name="minified_file_detection" id="minified_file_detection"><option value="enabled" selected>Enabled</option><option value="disabled">Disabled</option></select>
+                  <div class="advanced-rule-description"><strong>Purpose:</strong> Prevent compressed assets from distorting file and line counts.<br /><strong>Good default when:</strong> your repo includes built JavaScript or bundled web assets.<br /><strong>Turn it off when:</strong> minified files are the actual subject of the review.</div>
+                </div>
+                <div class="advanced-rule-row">
+                  <div class="advanced-rule-head"><div class="field-help-title">Vendor directories</div><h4>Vendor-directory detection</h4></div>
+                  <select name="vendor_directory_detection" id="vendor_directory_detection"><option value="enabled" selected>Enabled</option><option value="disabled">Disabled</option></select>
+                  <div class="advanced-rule-description"><strong>Purpose:</strong> Skip bundled third-party dependencies so the totals reflect your project more closely.<br /><strong>Good default when:</strong> you only want first-party code in the report.<br /><strong>Turn it off when:</strong> vendored code is part of what you need to measure.</div>
+                </div>
+                <div class="advanced-rule-row">
+                  <div class="advanced-rule-head"><div class="field-help-title">Lockfiles and manifests</div><h4>Include lockfiles</h4></div>
+                  <select name="include_lockfiles" id="include_lockfiles"><option value="disabled" selected>Disabled</option><option value="enabled">Enabled</option></select>
+                  <div class="advanced-rule-description"><strong>Purpose:</strong> Decide whether package lockfiles and similar generated manifests belong in the scan scope.<br /><strong>Keep disabled when:</strong> you want implementation-focused totals.<br /><strong>Enable when:</strong> your review includes dependency metadata or repository footprint.</div>
+                </div>
+                <div class="advanced-rule-row">
+                  <div class="advanced-rule-head"><div class="field-help-title">Binary handling</div><h4>Binary file behavior</h4></div>
+                  <select name="binary_file_behavior" id="binary_file_behavior"><option value="skip" selected>Skip binary files</option><option value="fail">Fail on binary files</option></select>
+                  <div class="advanced-rule-description"><strong>Purpose:</strong> Control how the scan reacts when binaries are encountered inside the selected scope.<br /><strong>Skip binary files:</strong> best for typical local runs.<br /><strong>Fail on binary files:</strong> useful when you want the run to stop and force cleanup of the selected path or include rules.</div>
+                </div>
+                <div class="advanced-rule-row static-note">
+                  <div class="advanced-rule-head"><div class="field-help-title">Always tracked</div><h4>Comment and blank-line basics</h4></div>
+                  <div class="advanced-rule-description"><strong>Always included by supported analyzers:</strong> pure comment lines, multi-line comment blocks, blank lines, and total physical lines. The mixed-line policy above only changes what happens when executable code and comment text share the same line.</div>
                 </div>
               </div>
 
@@ -1178,19 +1706,24 @@ struct LanguageSummaryRow {
                 </div>
               </div>
 
-              <div class="field-help-grid">
+              <div class="field-help-grid preset-grid">
                 <div class="explainer-card">
                   <div class="field-help-title">Selected scan preset</div>
                   <div class="explainer-body" id="scan-preset-description"></div>
+                  <div class="preset-summary-row" id="scan-preset-summary"></div>
+                  <div class="code-sample" id="scan-preset-example"></div>
+                  <div class="preset-note" id="scan-preset-note"></div>
                 </div>
                 <div class="explainer-card">
                   <div class="field-help-title">Selected artifact preset</div>
                   <div class="explainer-body" id="artifact-preset-description"></div>
+                  <div class="preset-summary-row" id="artifact-preset-summary"></div>
+                  <div class="code-sample" id="artifact-preset-example"></div>
                 </div>
               </div>
 
-              <div class="section">
-                <div class="full-output-row">
+              <div class="section section-spacer-top">
+                <div class="output-identity-grid">
                   <div class="field">
                     <label for="output_dir">Output directory</label>
                     <div class="input-group compact">
@@ -1200,18 +1733,12 @@ struct LanguageSummaryRow {
                     </div>
                     <div class="hint">This is where run folders are created. It is separate from the project path and does not affect what gets scanned.</div>
                   </div>
-
-                  <div class="field-grid sidebarish">
-                    <div class="field">
-                      <label for="report_title">Report title</label>
-                      <input id="report_title" name="report_title" type="text" value="samples/basic" placeholder="Project report title" />
-                      <div class="hint">This title appears in exported HTML and PDF outputs. It also stays visible in the page header while you configure the run.</div>
-                    </div>
-                    <div class="field">
-                      <label>Current report title in header</label>
-                      <div class="preview-code" id="report-title-preview">samples/basic</div>
-                    </div>
+                  <div class="field">
+                    <label for="report_title">Report title</label>
+                    <input id="report_title" name="report_title" type="text" value="samples/basic" placeholder="Project report title" />
+                    <div class="hint">This title appears in exported HTML and PDF outputs. It also stays visible in the page header while you configure the run.</div>
                   </div>
+
                 </div>
               </div>
 
@@ -1269,23 +1796,31 @@ struct LanguageSummaryRow {
               <div class="section">
                 <div class="section-kicker">Step 4</div>
                 <h2>Review selections and run</h2>
-                <p class="card-subtitle">Check the selected path, counting policy, artifact bundle, and output destination before launching the scan.</p>
+                <p class="card-subtitle">Check the selected path, counting policy, artifact bundle, output destination, and preview scope before launching the scan.</p>
                 <div class="review-grid">
-                  <div class="review-card">
-                    <h4>What will be scanned</h4>
+                  <div class="review-card highlight">
+                    <div class="review-card-head"><h4>What will be scanned</h4><button type="button" class="review-link jump-step" data-step-target="1">Edit step 1</button></div>
                     <ul id="review-scan-summary"></ul>
                   </div>
-                  <div class="review-card">
-                    <h4>How it will be counted</h4>
+                  <div class="review-card highlight">
+                    <div class="review-card-head"><h4>How it will be counted</h4><button type="button" class="review-link jump-step" data-step-target="2">Edit step 2</button></div>
                     <ul id="review-count-summary"></ul>
                   </div>
                   <div class="review-card">
-                    <h4>What will be saved</h4>
+                    <div class="review-card-head"><h4>What will be saved</h4><button type="button" class="review-link jump-step" data-step-target="3">Edit step 3</button></div>
                     <ul id="review-artifact-summary"></ul>
                   </div>
                   <div class="review-card">
-                    <h4>Where output goes</h4>
+                    <div class="review-card-head"><h4>Where output goes</h4><button type="button" class="review-link jump-step" data-step-target="3">Edit step 3</button></div>
                     <ul id="review-output-summary"></ul>
+                  </div>
+                  <div class="review-card">
+                    <div class="review-card-head"><h4>Scope preview snapshot</h4><button type="button" class="review-link jump-step" data-step-target="1">Review scope</button></div>
+                    <ul id="review-preview-summary"></ul>
+                  </div>
+                  <div class="review-card highlight">
+                    <div class="review-card-head"><h4>Run readiness</h4><button type="button" class="review-link jump-step" data-step-target="4">Current step</button></div>
+                    <ul id="review-readiness-summary"></ul>
                   </div>
                 </div>
               </div>
@@ -1293,28 +1828,14 @@ struct LanguageSummaryRow {
               <div class="wizard-actions">
                 <div class="left">
                   <button type="button" class="secondary prev-step" data-prev="3">Back</button>
-                  <button type="button" class="secondary" id="refresh-preview">Refresh preview</button>
                 </div>
                 <div class="right">
                   <button type="submit" id="submit-button" class="primary">Run analysis</button>
                 </div>
               </div>
-            </div>
-          </form>
+            </div></form>
         </div>
       </section>
-
-      <aside class="workspace-column workspace-stack">
-        <section class="workspace-card">
-          <h2 class="workspace-title">Workspace inspector</h2>
-          <p class="workspace-subtitle">More file-explorer-like and code-oriented, with a dedicated preview shell instead of stacked plain boxes.</p>
-        </section>
-        <section class="workspace-card">
-          <div id="preview-panel">
-            <div class="preview-error">Loading preview...</div>
-          </div>
-        </section>
-      </aside>
     </div>
   </div>
 
@@ -1339,9 +1860,15 @@ struct LanguageSummaryRow {
       var pythonWraps = document.querySelectorAll(".python-docstring-wrap");
       var scanPreset = document.getElementById("scan_preset");
       var artifactPreset = document.getElementById("artifact_preset");
+      var includeGlobsInput = document.getElementById("include_globs");
+      var excludeGlobsInput = document.getElementById("exclude_globs");
       var liveReportTitle = document.getElementById("live-report-title");
-      var reportTitlePreview = document.getElementById("report-title-preview");
+      var navProjectPill = document.getElementById("nav-project-pill");
+      var navProjectTitle = document.getElementById("nav-project-title");
+      var reportTitlePreview = null;
       var breadcrumbTitle = document.getElementById("breadcrumb-title");
+      var wizardProgressFill = document.getElementById("wizard-progress-fill");
+      var wizardProgressValue = document.getElementById("wizard-progress-value");
       var stepButtons = Array.prototype.slice.call(document.querySelectorAll(".step-button"));
       var stepPanels = Array.prototype.slice.call(document.querySelectorAll(".wizard-step"));
       var artifactCards = Array.prototype.slice.call(document.querySelectorAll(".artifact-card"));
@@ -1369,17 +1896,57 @@ struct LanguageSummaryRow {
       };
 
       var scanPresetInfo = {
-        balanced: "Balanced local scan is the recommended default for most repositories. It keeps the mixed-line policy conservative, leaves output practical for day-to-day use, and works well when you mainly want a reliable local overview.",
-        code_focused: "Code focused prioritizes executable implementation over commentary-oriented interpretation. It works best when you want the cleanest code totals and do not need extra emphasis on comments or review-oriented documentation output.",
-        comment_audit: "Comment audit is designed for reviewing inline explanations, documentation style, and comment-heavy areas. It is a better fit when the purpose of the run is to inspect readability and annotation, not only executable size.",
-        deep_review: "Deep review is the most explanation-heavy preset. It is useful when you want richer outputs for handoff, archiving, or side-by-side review and are willing to generate a broader set of saved artifacts."
+        balanced: {
+          description: "Balanced local scan is the default starting point for most repositories. It keeps scope guards enabled, counts mixed lines conservatively, and gives you a practical everyday review setup.",
+          chips: ["Mixed: code only", "Docstrings: on", "Lockfiles: off", "Binary: skip"],
+          example: 'mixed_line_policy = "code_only"\npython_docstrings_as_comments = true\ninclude_lockfiles = false\nbinary_file_behavior = "skip"',
+          note: "Best when you want a stable local overview before making deeper adjustments.",
+          apply: { mixed: "code_only", docstrings: true, generated: "enabled", minified: "enabled", vendor: "enabled", lockfiles: "disabled", binary: "skip" }
+        },
+        code_focused: {
+          description: "Code focused trims commentary-oriented interpretation so executable implementation stays front and center in the totals.",
+          chips: ["Mixed: code only", "Docstrings: off", "Vendor guard: on", "Lockfiles: off"],
+          example: 'mixed_line_policy = "code_only"\npython_docstrings_as_comments = false\ninclude_lockfiles = false\nvendor_directory_detection = "enabled"',
+          note: "Use this when you mainly care about implementation size and want cleaner code totals.",
+          apply: { mixed: "code_only", docstrings: false, generated: "enabled", minified: "enabled", vendor: "enabled", lockfiles: "disabled", binary: "skip" }
+        },
+        comment_audit: {
+          description: "Comment audit makes inline explanation and documentation density easier to inspect without changing the overall project scope too aggressively.",
+          chips: ["Mixed: code + comment", "Docstrings: on", "Generated guard: on", "Binary: skip"],
+          example: 'mixed_line_policy = "code_and_comment"\npython_docstrings_as_comments = true\ninclude_lockfiles = false\ngenerated_file_detection = "enabled"',
+          note: "Useful when readability, annotations, or documentation habits are part of the review goal.",
+          apply: { mixed: "code_and_comment", docstrings: true, generated: "enabled", minified: "enabled", vendor: "enabled", lockfiles: "disabled", binary: "skip" }
+        },
+        deep_review: {
+          description: "Deep review surfaces more nuance in the counts by separating mixed lines and pulling in a bit more repository metadata.",
+          chips: ["Mixed: separate bucket", "Docstrings: on", "Lockfiles: on", "Binary: skip"],
+          example: 'mixed_line_policy = "separate_mixed_category"\npython_docstrings_as_comments = true\ninclude_lockfiles = true\nbinary_file_behavior = "skip"',
+          note: "Choose this when you want a richer review snapshot before producing saved reports or comparing future runs.",
+          apply: { mixed: "separate_mixed_category", docstrings: true, generated: "enabled", minified: "enabled", vendor: "enabled", lockfiles: "enabled", binary: "skip" }
+        }
       };
 
       var artifactPresetInfo = {
-        review: "Review bundle enables HTML and PDF so you can inspect the result in-browser and still save a portable snapshot for sharing or archiving.",
-        full: "Full bundle enables HTML, PDF, and JSON. It is the best choice when you want both human-readable outputs and a machine-friendly artifact for later processing.",
-        html_only: "HTML only keeps the run lightweight and browser-first. It is ideal for quick local inspection when you do not need a fixed snapshot or automation output.",
-        machine: "Machine bundle emphasizes structured output for downstream tooling. It is useful when the run is feeding scripts, dashboards, or other local automation."
+        review: {
+          description: "Review bundle enables HTML and PDF so you can inspect the result in-browser and still save a portable snapshot for sharing or archiving.",
+          chips: ["HTML", "PDF"],
+          example: 'generate_html = true\ngenerate_pdf = true\ngenerate_json = false'
+        },
+        full: {
+          description: "Full bundle enables HTML, PDF, and JSON. It is the best choice when you want both human-readable outputs and a machine-friendly artifact for later processing.",
+          chips: ["HTML", "PDF", "JSON"],
+          example: 'generate_html = true\ngenerate_pdf = true\ngenerate_json = true'
+        },
+        html_only: {
+          description: "HTML only keeps the run lightweight and browser-first. It is ideal for quick local inspection when you do not need a fixed snapshot or automation output.",
+          chips: ["HTML only", "Fast local review"],
+          example: 'generate_html = true\ngenerate_pdf = false\ngenerate_json = false'
+        },
+        machine: {
+          description: "Machine bundle emphasizes structured output for downstream tooling. It is useful when the run is feeding scripts, dashboards, or other local automation.",
+          chips: ["HTML", "JSON"],
+          example: 'generate_html = true\ngenerate_pdf = false\ngenerate_json = true'
+        }
       };
 
       function applyTheme(theme) {
@@ -1393,6 +1960,12 @@ struct LanguageSummaryRow {
         applyTheme(saved === "dark" ? "dark" : "light");
       }
 
+      function updateWizardProgress(step) {
+        var percent = Math.max(25, Math.min(100, step * 25));
+        if (wizardProgressFill) wizardProgressFill.style.width = String(percent) + "%";
+        if (wizardProgressValue) wizardProgressValue.textContent = String(percent) + "%";
+      }
+
       function setStep(step) {
         currentStep = step;
         stepPanels.forEach(function (panel) {
@@ -1401,6 +1974,7 @@ struct LanguageSummaryRow {
         stepButtons.forEach(function (button) {
           button.classList.toggle("active", Number(button.getAttribute("data-step-target")) === step);
         });
+        updateWizardProgress(step);
       }
 
       function inferTitleFromPath(value) {
@@ -1417,8 +1991,20 @@ struct LanguageSummaryRow {
         }
         var title = reportTitleInput.value || inferred;
         liveReportTitle.textContent = title;
-        reportTitlePreview.textContent = title;
+        if (reportTitlePreview) reportTitlePreview.textContent = title;
         breadcrumbTitle.textContent = "Guided scan setup - " + title;
+        document.title = "Oxide-SLOC | " + title;
+
+        var projectPath = (pathInput.value || "").trim();
+        if (navProjectPill && navProjectTitle) {
+          if (projectPath.length > 0) {
+            navProjectTitle.textContent = inferred;
+            navProjectPill.classList.add("visible");
+          } else {
+            navProjectTitle.textContent = "";
+            navProjectPill.classList.remove("visible");
+          }
+        }
       }
 
       function updateMixedPolicyUI() {
@@ -1441,9 +2027,38 @@ struct LanguageSummaryRow {
           : "Disabled for stricter executable-vs-comment separation.";
       }
 
+      function renderPresetChips(targetId, chips) {
+        var target = document.getElementById(targetId);
+        if (!target) return;
+        target.innerHTML = (chips || []).map(function (chip) {
+          return '<span class="preset-summary-chip">' + escapeHtml(chip) + '</span>';
+        }).join('');
+      }
+
       function updatePresetDescriptions() {
-        document.getElementById("scan-preset-description").textContent = scanPresetInfo[scanPreset.value];
-        document.getElementById("artifact-preset-description").textContent = artifactPresetInfo[artifactPreset.value];
+        var scanInfo = scanPresetInfo[scanPreset.value];
+        var artifactInfo = artifactPresetInfo[artifactPreset.value];
+        document.getElementById("scan-preset-description").textContent = scanInfo.description;
+        document.getElementById("scan-preset-example").textContent = scanInfo.example;
+        document.getElementById("scan-preset-note").textContent = scanInfo.note;
+        document.getElementById("artifact-preset-description").textContent = artifactInfo.description;
+        document.getElementById("artifact-preset-example").textContent = artifactInfo.example;
+        renderPresetChips("scan-preset-summary", scanInfo.chips);
+        renderPresetChips("artifact-preset-summary", artifactInfo.chips);
+      }
+
+      function applyScanPreset() {
+        var info = scanPresetInfo[scanPreset.value];
+        if (!info || !info.apply) return;
+        mixedLinePolicy.value = info.apply.mixed;
+        pythonDocstrings.checked = !!info.apply.docstrings;
+        document.getElementById("generated_file_detection").value = info.apply.generated;
+        document.getElementById("minified_file_detection").value = info.apply.minified;
+        document.getElementById("vendor_directory_detection").value = info.apply.vendor;
+        document.getElementById("include_lockfiles").value = info.apply.lockfiles;
+        document.getElementById("binary_file_behavior").value = info.apply.binary;
+        updateMixedPolicyUI();
+        updatePythonDocstringUI();
       }
 
       function applyArtifactPreset() {
@@ -1473,8 +2088,15 @@ struct LanguageSummaryRow {
         var countSummary = document.getElementById("review-count-summary");
         var artifactSummary = document.getElementById("review-artifact-summary");
         var outputSummary = document.getElementById("review-output-summary");
+        var previewSummary = document.getElementById("review-preview-summary");
+        var readinessSummary = document.getElementById("review-readiness-summary");
         var includeText = document.getElementById("include_globs").value.trim();
         var excludeText = document.getElementById("exclude_globs").value.trim();
+        var sidePathPreview = document.getElementById("side-path-preview");
+        var sideOutputPreview = document.getElementById("side-output-preview");
+
+        if (sidePathPreview) { sidePathPreview.textContent = pathInput.value || "samples/basic"; }
+        if (sideOutputPreview) { sideOutputPreview.textContent = outputDirInput.value || "out/web"; }
 
         scanSummary.innerHTML = ""
           + "<li>Path: " + escapeHtml(pathInput.value || "samples/basic") + "</li>"
@@ -1483,15 +2105,15 @@ struct LanguageSummaryRow {
 
         countSummary.innerHTML = ""
           + "<li>Mixed-line policy: " + escapeHtml(mixedLinePolicy.options[mixedLinePolicy.selectedIndex].text) + "</li>"
-          + (isPythonVisible() ? "<li>Python docstrings counted as comments: " + (pythonDocstrings.checked ? "yes" : "no") + "</li>" : "<li>Python-specific docstring option hidden because no Python files were detected in the preview.</li>")
+          + "<li>Python docstrings counted as comments: " + (pythonDocstrings.checked ? "yes" : "no") + "</li>"
+          + "<li>Generated-file detection: " + escapeHtml(document.getElementById("generated_file_detection").value) + "</li>"
+          + "<li>Minified-file detection: " + escapeHtml(document.getElementById("minified_file_detection").value) + "</li>"
+          + "<li>Vendor-directory detection: " + escapeHtml(document.getElementById("vendor_directory_detection").value) + "</li>"
+          + "<li>Lockfiles: " + escapeHtml(document.getElementById("include_lockfiles").value) + "</li>"
+          + "<li>Binary behavior: " + escapeHtml(document.getElementById("binary_file_behavior").options[document.getElementById("binary_file_behavior").selectedIndex].text) + "</li>"
           + "<li>Scan preset: " + escapeHtml(scanPreset.options[scanPreset.selectedIndex].text) + "</li>";
 
-        var selectedArtifacts = artifactCards.filter(function (card) {
-          return card.querySelector(".artifact-checkbox").checked;
-        }).map(function (card) {
-          return card.querySelector("h4").textContent;
-        });
-
+        var selectedArtifacts = artifactCards.filter(function (card) { return card.classList.contains("selected"); }).map(function (card) { return card.querySelector("h4").textContent; });
         artifactSummary.innerHTML = ""
           + "<li>Artifact preset: " + escapeHtml(artifactPreset.options[artifactPreset.selectedIndex].text) + "</li>"
           + "<li>Selected artifacts: " + escapeHtml(selectedArtifacts.join(", ") || "none") + "</li>";
@@ -1499,6 +2121,32 @@ struct LanguageSummaryRow {
         outputSummary.innerHTML = ""
           + "<li>Output directory: " + escapeHtml(outputDirInput.value || "out/web") + "</li>"
           + "<li>Report title: " + escapeHtml(reportTitleInput.value || inferTitleFromPath(pathInput.value || "samples/basic")) + "</li>";
+
+        if (previewSummary) {
+          var statButtons = Array.prototype.slice.call(previewPanel.querySelectorAll('.scope-stat-button'));
+          var languages = Array.prototype.slice.call(previewPanel.querySelectorAll('.detected-language-chip')).map(function (node) { return node.textContent.trim(); }).filter(Boolean);
+          var statMap = {};
+          statButtons.forEach(function (button) {
+            var valueNode = button.querySelector('.scope-stat-value');
+            statMap[button.getAttribute('data-filter')] = valueNode ? valueNode.textContent.trim() : '0';
+          });
+          previewSummary.innerHTML = ''
+            + '<li>Directories in preview: ' + escapeHtml(statMap.dir || '0') + '</li>'
+            + '<li>Files in preview: ' + escapeHtml(statMap.file || '0') + '</li>'
+            + '<li>Supported files: ' + escapeHtml(statMap.supported || '0') + '</li>'
+            + '<li>Skipped by policy: ' + escapeHtml(statMap.skipped || '0') + '</li>'
+            + '<li>Unsupported files: ' + escapeHtml(statMap.unsupported || '0') + '</li>'
+            + '<li>Detected languages: ' + escapeHtml(languages.join(', ') || 'none') + '</li>';
+
+          if (readinessSummary) {
+            var selectedArtifactsCount = selectedArtifacts.length;
+            readinessSummary.innerHTML = ''
+              + '<li>Current step completion: ' + escapeHtml(String(Math.max(25, Math.min(100, currentStep * 25)))) + '%</li>'
+              + '<li>Project path set: ' + (pathInput.value ? 'yes' : 'no') + '</li>'
+              + '<li>Artifact count selected: ' + escapeHtml(String(selectedArtifactsCount)) + '</li>'
+              + '<li>Ready to run: ' + ((pathInput.value && selectedArtifactsCount > 0) ? 'yes' : 'no') + '</li>';
+          }
+        }
       }
 
       function escapeHtml(value) {
@@ -1522,14 +2170,275 @@ struct LanguageSummaryRow {
         });
       }
 
+      function attachPreviewInteractions() {
+        var buttons = Array.prototype.slice.call(previewPanel.querySelectorAll(".scope-stat-button"));
+        var treeContainer = previewPanel.querySelector(".file-explorer-tree");
+        var rows = Array.prototype.slice.call(previewPanel.querySelectorAll(".tree-row"));
+        var dirRows = rows.filter(function (row) { return row.getAttribute("data-dir") === "true"; });
+        var filterSelect = previewPanel.querySelector("#explorer-filter-select");
+        var searchInput = previewPanel.querySelector("#explorer-search");
+        var actionButtons = Array.prototype.slice.call(previewPanel.querySelectorAll(".explorer-action"));
+        var sortButtons = Array.prototype.slice.call(previewPanel.querySelectorAll(".tree-sort-button"));
+        var languageButtons = Array.prototype.slice.call(previewPanel.querySelectorAll(".detected-language-chip"));
+        var activeFilter = "all";
+        var activeLanguage = "";
+        var searchTerm = "";
+        var currentSortKey = null;
+        var currentSortOrder = "asc";
+        var childRows = {};
+
+        rows.forEach(function (row) {
+          var parentId = row.getAttribute("data-parent-id") || "";
+          var rowId = row.getAttribute("data-row-id") || "";
+          if (!childRows[parentId]) childRows[parentId] = [];
+          childRows[parentId].push(rowId);
+        });
+
+        function rowById(id) {
+          return previewPanel.querySelector('.tree-row[data-row-id="' + id + '"]');
+        }
+
+        function hasCollapsedAncestor(row) {
+          var parentId = row.getAttribute("data-parent-id");
+          while (parentId) {
+            var parent = rowById(parentId);
+            if (!parent) break;
+            if (parent.getAttribute("data-expanded") === "false") return true;
+            parentId = parent.getAttribute("data-parent-id");
+          }
+          return false;
+        }
+
+        function updateToggleGlyph(row) {
+          var toggle = row.querySelector(".tree-toggle");
+          if (!toggle) return;
+          toggle.textContent = row.getAttribute("data-expanded") === "false" ? "▸" : "▾";
+        }
+
+        function rowSortValue(row, key) {
+          return (row.getAttribute("data-sort-" + key) || "").toLowerCase();
+        }
+
+        function updateSortButtons() {
+          sortButtons.forEach(function (button) {
+            var isActive = button.getAttribute("data-sort-key") === currentSortKey;
+            var indicator = button.querySelector(".tree-sort-indicator");
+            button.classList.toggle("active", isActive);
+            button.setAttribute("data-sort-order", isActive ? currentSortOrder : "none");
+            if (indicator) {
+              indicator.textContent = !isActive ? "↕" : (currentSortOrder === "asc" ? "↑" : "↓");
+            }
+          });
+        }
+
+        function sortSiblingRows() {
+          if (!treeContainer) {
+            updateSortButtons();
+            return;
+          }
+
+          var rowMap = {};
+          var childrenMap = {};
+          rows.forEach(function (row) {
+            var rowId = row.getAttribute("data-row-id");
+            var parentId = row.getAttribute("data-parent-id") || "";
+            rowMap[rowId] = row;
+            if (!childrenMap[parentId]) childrenMap[parentId] = [];
+            childrenMap[parentId].push(rowId);
+          });
+
+          Object.keys(childrenMap).forEach(function (parentId) {
+            if (!parentId) return;
+            childrenMap[parentId].sort(function (a, b) {
+              var rowA = rowMap[a];
+              var rowB = rowMap[b];
+              if (!currentSortKey) {
+                return Number(a) - Number(b);
+              }
+              var valueA = rowSortValue(rowA, currentSortKey);
+              var valueB = rowSortValue(rowB, currentSortKey);
+              if (valueA < valueB) return currentSortOrder === "asc" ? -1 : 1;
+              if (valueA > valueB) return currentSortOrder === "asc" ? 1 : -1;
+              var fallbackA = rowSortValue(rowA, "name");
+              var fallbackB = rowSortValue(rowB, "name");
+              if (fallbackA < fallbackB) return -1;
+              if (fallbackA > fallbackB) return 1;
+              return Number(a) - Number(b);
+            });
+          });
+
+          var orderedIds = [];
+          function pushChildren(parentId) {
+            (childrenMap[parentId] || []).forEach(function (childId) {
+              orderedIds.push(childId);
+              pushChildren(childId);
+            });
+          }
+
+          (childrenMap[""] || []).sort(function (a, b) { return Number(a) - Number(b); }).forEach(function (topId) {
+            orderedIds.push(topId);
+            pushChildren(topId);
+          });
+
+          orderedIds.forEach(function (id) {
+            if (rowMap[id]) treeContainer.appendChild(rowMap[id]);
+          });
+          updateSortButtons();
+        }
+
+        function updateLanguageButtons() {
+          languageButtons.forEach(function (button) {
+            var languageValue = (button.getAttribute("data-language-filter") || "").toLowerCase();
+            var isActive = languageValue === activeLanguage;
+            button.classList.toggle("active", isActive);
+          });
+        }
+
+        function rowSelfMatches(row) {
+          var kind = row.getAttribute("data-kind");
+          var status = row.getAttribute("data-status");
+          var language = (row.getAttribute("data-language") || "").toLowerCase();
+          var name = row.getAttribute("data-name-lower") || "";
+          var type = (row.querySelector('.tree-type-cell') || { textContent: '' }).textContent.toLowerCase();
+          var passesFilter = activeFilter === "all" || (activeFilter === "file" && kind === "file") || (activeFilter === "dir" && kind === "dir") || activeFilter === status;
+          var passesSearch = !searchTerm || name.indexOf(searchTerm) >= 0 || type.indexOf(searchTerm) >= 0 || status.indexOf(searchTerm) >= 0 || language.indexOf(searchTerm) >= 0;
+          var passesLanguage = !activeLanguage || language === activeLanguage;
+          return passesFilter && passesSearch && passesLanguage;
+        }
+
+        function hasMatchingDescendant(rowId) {
+          return (childRows[rowId] || []).some(function (childId) {
+            var childRow = rowById(childId);
+            return !!childRow && (rowSelfMatches(childRow) || hasMatchingDescendant(childId));
+          });
+        }
+
+        function rowMatches(row) {
+          if (rowSelfMatches(row)) return true;
+          return row.getAttribute("data-dir") === "true" && hasMatchingDescendant(row.getAttribute("data-row-id") || "");
+        }
+
+        function resetViewState() {
+          activeFilter = "all";
+          activeLanguage = "";
+          searchTerm = "";
+          currentSortKey = null;
+          currentSortOrder = "asc";
+          dirRows.forEach(function (row) { row.setAttribute("data-expanded", "true"); updateToggleGlyph(row); });
+          if (searchInput) searchInput.value = "";
+          if (filterSelect) filterSelect.value = "all";
+          updateLanguageButtons();
+        }
+
+        function applyVisibility() {
+          rows.forEach(function (row) {
+            var visible = rowMatches(row) && !hasCollapsedAncestor(row);
+            row.classList.toggle("hidden-by-filter", !visible);
+            row.style.display = visible ? "grid" : "none";
+          });
+          buttons.forEach(function (button) {
+            button.classList.toggle("active", button.getAttribute("data-filter") === activeFilter);
+          });
+          if (filterSelect) filterSelect.value = activeFilter;
+        }
+
+        buttons.forEach(function (button) {
+          button.addEventListener("click", function () {
+            var filterValue = button.getAttribute("data-filter") || "all";
+            if (filterValue === "reset-view") {
+              resetViewState();
+              sortSiblingRows();
+              applyVisibility();
+              return;
+            }
+            activeFilter = filterValue;
+            applyVisibility();
+          });
+        });
+
+        rows.forEach(function (row) {
+          updateToggleGlyph(row);
+          var toggle = row.querySelector(".tree-toggle");
+          if (toggle) {
+            toggle.addEventListener("click", function () {
+              var expanded = row.getAttribute("data-expanded") !== "false";
+              row.setAttribute("data-expanded", expanded ? "false" : "true");
+              updateToggleGlyph(row);
+              applyVisibility();
+            });
+          }
+        });
+
+        actionButtons.forEach(function (button) {
+          button.addEventListener("click", function () {
+            var action = button.getAttribute("data-explorer-action");
+            if (action === "expand-all") {
+              dirRows.forEach(function (row) { row.setAttribute("data-expanded", "true"); updateToggleGlyph(row); });
+            } else if (action === "collapse-all") {
+              dirRows.forEach(function (row, index) { row.setAttribute("data-expanded", index === 0 ? "true" : "false"); updateToggleGlyph(row); });
+            } else if (action === "clear-filters") {
+              resetViewState();
+            }
+            sortSiblingRows();
+            applyVisibility();
+          });
+        });
+
+        if (filterSelect) {
+          filterSelect.addEventListener("change", function () {
+            activeFilter = filterSelect.value || "all";
+            applyVisibility();
+          });
+        }
+
+        languageButtons.forEach(function (button) {
+          button.addEventListener("click", function () {
+            activeLanguage = (button.getAttribute("data-language-filter") || "").toLowerCase();
+            updateLanguageButtons();
+            applyVisibility();
+          });
+        });
+
+        sortButtons.forEach(function (button) {
+          button.addEventListener("click", function () {
+            var sortKey = button.getAttribute("data-sort-key");
+            if (currentSortKey === sortKey) {
+              currentSortOrder = currentSortOrder === "asc" ? "desc" : "asc";
+            } else {
+              currentSortKey = sortKey;
+              currentSortOrder = "asc";
+            }
+            sortSiblingRows();
+            applyVisibility();
+          });
+        });
+
+        if (searchInput) {
+          searchInput.addEventListener("input", function () {
+            searchTerm = searchInput.value.trim().toLowerCase();
+            applyVisibility();
+          });
+        }
+
+        updateLanguageButtons();
+        sortSiblingRows();
+        applyVisibility();
+      }
+
       function loadPreview() {
         if (!previewPanel || !pathInput) return;
         var path = pathInput.value || "samples/basic";
+        var includeValue = includeGlobsInput ? includeGlobsInput.value : "";
+        var excludeValue = excludeGlobsInput ? excludeGlobsInput.value : "";
         previewPanel.innerHTML = '<div class="preview-error">Refreshing preview...</div>';
-        fetch("/preview?path=" + encodeURIComponent(path))
+        var previewUrl = "/preview?path=" + encodeURIComponent(path)
+          + "&include_globs=" + encodeURIComponent(includeValue)
+          + "&exclude_globs=" + encodeURIComponent(excludeValue);
+        fetch(previewUrl)
           .then(function (response) { return response.text(); })
           .then(function (html) {
             previewPanel.innerHTML = html;
+            attachPreviewInteractions();
             syncPythonVisibility();
             updateReview();
           })
@@ -1538,12 +2447,12 @@ struct LanguageSummaryRow {
           });
       }
 
-      function pickDirectory(targetInput) {
-        fetch("/pick-directory")
+      function pickDirectory(targetInput, kind) {
+        fetch("/pick-directory?kind=" + encodeURIComponent(kind || "project") + "&current=" + encodeURIComponent(targetInput.value || ""))
           .then(function (response) { return response.json(); })
           .then(function (data) {
-            if (data && data.path) {
-              targetInput.value = data.path;
+            if (data && data.selected_path) {
+              targetInput.value = data.selected_path;
               if (targetInput === pathInput) {
                 updateReportTitleFromPath();
                 loadPreview();
@@ -1567,6 +2476,12 @@ struct LanguageSummaryRow {
       stepButtons.forEach(function (button) {
         button.addEventListener("click", function () {
           setStep(Number(button.getAttribute("data-step-target")));
+        });
+      });
+
+      Array.prototype.slice.call(document.querySelectorAll(".jump-step")).forEach(function (button) {
+        button.addEventListener("click", function () {
+          setStep(Number(button.getAttribute("data-step-target")) || 1);
         });
       });
 
@@ -1598,9 +2513,9 @@ struct LanguageSummaryRow {
         });
       }
 
-      if (browsePath) browsePath.addEventListener("click", function () { pickDirectory(pathInput); });
-      if (browseOutputDir) browseOutputDir.addEventListener("click", function () { pickDirectory(outputDirInput); });
-      if (refreshButton) refreshButton.addEventListener("click", loadPreview);
+      if (browsePath) browsePath.addEventListener("click", function () { pickDirectory(pathInput, "project"); });
+      if (browseOutputDir) browseOutputDir.addEventListener("click", function () { pickDirectory(outputDirInput, "output"); });
+
       if (refreshPreviewInline) refreshPreviewInline.addEventListener("click", loadPreview);
 
       if (pathInput) {
@@ -1610,6 +2525,26 @@ struct LanguageSummaryRow {
           previewTimer = setTimeout(loadPreview, 280);
         });
       }
+
+      [includeGlobsInput, excludeGlobsInput].forEach(function (node) {
+        if (!node) return;
+        node.addEventListener("input", function () {
+          updateReview();
+          if (previewTimer) clearTimeout(previewTimer);
+          previewTimer = setTimeout(loadPreview, 280);
+        });
+      });
+
+      if (outputDirInput) {
+        outputDirInput.addEventListener("input", function () {
+          updateReview();
+        });
+      }
+
+      ["generated_file_detection", "minified_file_detection", "vendor_directory_detection", "include_lockfiles", "binary_file_behavior"].forEach(function (id) {
+        var node = document.getElementById(id);
+        if (node) node.addEventListener("change", updateReview);
+      });
 
       if (reportTitleInput) {
         reportTitleInput.addEventListener("input", function () {
@@ -1621,7 +2556,7 @@ struct LanguageSummaryRow {
 
       if (mixedLinePolicy) mixedLinePolicy.addEventListener("change", function () { updateMixedPolicyUI(); updateReview(); });
       if (pythonDocstrings) pythonDocstrings.addEventListener("change", function () { updatePythonDocstringUI(); updateReview(); });
-      if (scanPreset) scanPreset.addEventListener("change", function () { updatePresetDescriptions(); updateReview(); });
+      if (scanPreset) scanPreset.addEventListener("change", function () { applyScanPreset(); updatePresetDescriptions(); updateReview(); });
       if (artifactPreset) artifactPreset.addEventListener("change", function () { updatePresetDescriptions(); applyArtifactPreset(); updateReview(); });
 
       artifactCards.forEach(function (card) {
@@ -1643,6 +2578,7 @@ struct LanguageSummaryRow {
       updateReportTitleFromPath();
       updateMixedPolicyUI();
       updatePythonDocstringUI();
+      applyScanPreset();
       updatePresetDescriptions();
       applyArtifactPreset();
       updateReview();
@@ -1651,14 +2587,14 @@ struct LanguageSummaryRow {
   </script>
 </body>
 </html>
-"#,
+"##,
     ext = "html"
 )]
 struct IndexTemplate {}
 
 #[derive(Template)]
 #[template(
-    source = r#"
+    source = r##"
 <!doctype html>
 <html lang="en">
 <head>
@@ -2003,7 +2939,7 @@ struct IndexTemplate {}
   </div>
 </body>
 </html>
-"#,
+"##,
     ext = "html"
 )]
 struct ResultTemplate {
@@ -2030,7 +2966,7 @@ struct ResultTemplate {
 
 #[derive(Template)]
 #[template(
-    source = r#"
+    source = r##"
 <!doctype html>
 <html lang="en">
 <head>
@@ -2077,7 +3013,7 @@ struct ResultTemplate {
   </div>
 </body>
 </html>
-"#,
+"##,
     ext = "html"
 )]
 struct ErrorTemplate {

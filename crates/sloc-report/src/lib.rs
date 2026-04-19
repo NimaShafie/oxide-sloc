@@ -42,6 +42,9 @@ pub fn render_html(run: &AnalysisRun) -> Result<String> {
         warning_count: run.warnings.len(),
         warning_summary_rows,
         warning_opportunity_rows,
+        warning_console_preview: build_warning_console_preview(&run.warnings, 12),
+        warning_console_full: build_warning_console(&run.warnings),
+        warning_preview_truncated: run.warnings.len() > 12,
     };
 
     template.render().context("failed to render HTML report")
@@ -82,8 +85,12 @@ pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
         "--disable-gpu",
         "--allow-file-access-from-files",
         "--run-all-compositor-stages-before-draw",
-        "--virtual-time-budget=3000",
+        "--virtual-time-budget=5000",
+        "--hide-scrollbars",
+        "--no-first-run",
+        "--no-default-browser-check",
         "--no-pdf-header-footer",
+        "--window-size=1600,2200",
         print_to_pdf.as_str(),
         file_url.as_str(),
     ];
@@ -271,6 +278,45 @@ fn normalize_timestamp_utc(raw: impl ToString) -> String {
     } else {
         without_z.to_string()
     }
+}
+
+fn build_warning_console(warnings: &[String]) -> String {
+    if warnings.is_empty() {
+        return "No top-level warnings.".to_string();
+    }
+
+    warnings
+        .iter()
+        .enumerate()
+        .map(|(index, warning)| {
+            format!(
+                "[{index:03}] {warning}",
+                index = index + 1,
+                warning = warning
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn build_warning_console_preview(warnings: &[String], limit: usize) -> String {
+    if warnings.is_empty() {
+        return "No top-level warnings.".to_string();
+    }
+
+    warnings
+        .iter()
+        .take(limit)
+        .enumerate()
+        .map(|(index, warning)| {
+            format!(
+                "[{index:03}] {warning}",
+                index = index + 1,
+                warning = warning
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn summarize_warnings(warnings: &[String]) -> Vec<WarningSummaryRow> {
@@ -574,7 +620,7 @@ struct WarningOpportunityRow {
     .status-analyzedbesteffort, .status-skippedbypolicy { background: var(--warn-bg); color: var(--warn-text); border-color: rgba(146,96,0,0.18); }
     .status-skippedunsupported, .status-skippedbinary { background: var(--danger-bg); color: var(--danger-text); border-color: rgba(179,59,59,0.18); }
     .stack { display:grid; gap:22px; }
-    .two-col { display:grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr); gap: 18px; align-items:start; }
+    .report-stack { display:grid; gap: 18px; align-items:start; }
     pre { background: var(--surface-2); border: 1px solid var(--line); border-radius: 16px; padding: 16px; overflow: auto; font-size: 12px; color: var(--text); }
     .warn-list { margin: 0; padding-left: 18px; line-height: 1.6; }
     .sort-indicator { color: var(--muted-2); font-size: 11px; margin-left: 6px; }
@@ -589,13 +635,16 @@ struct WarningOpportunityRow {
     details { border: 1px solid var(--line); border-radius: 14px; background: var(--surface-2); }
     summary { cursor: pointer; padding: 14px 16px; font-weight: 700; }
     details > div { padding: 0 16px 16px; }
+    .warning-console { margin: 0; padding: 14px 16px; border-radius: 12px; border:1px solid var(--line); background: #16120f; color: #d4f0d0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; line-height: 1.55; max-height: 260px; overflow: auto; }
+    .warning-console-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top: 12px; }
+    .warning-console.hidden { display:none; }
     @media (max-width: 1200px) {
-      .summary-grid, .warning-grid, .two-col { grid-template-columns: 1fr 1fr; }
+      .summary-grid, .warning-grid { grid-template-columns: 1fr 1fr; }
     }
     @media (max-width: 960px) {
       .top-nav-inner { grid-template-columns: 1fr; }
       .nav-project-slot, .nav-status { justify-content:flex-start; }
-      .summary-grid, .warning-grid, .two-col { grid-template-columns: 1fr; }
+      .summary-grid, .warning-grid, .report-stack { grid-template-columns: 1fr; }
       .hero-top { flex-direction: column; }
       .search { min-width: 100%; width: 100%; }
     }
@@ -664,77 +713,7 @@ struct WarningOpportunityRow {
       </div>
     </section>
 
-    <div class="two-col">
-      <section class="panel stack">
-        <div>
-          <div class="toolbar"><div class="toolbar-left"><h2>Language breakdown</h2></div><div class="pill-row"><span class="pill good">Click any column header to sort</span></div></div>
-          <div class="table-shell">
-            <table data-sort-table>
-              <thead>
-                <tr>
-                  <th data-sort-type="text">Language</th>
-                  <th data-sort-type="number">Files</th>
-                  <th data-sort-type="number">Physical</th>
-                  <th data-sort-type="number">Code</th>
-                  <th data-sort-type="number">Comments</th>
-                  <th data-sort-type="number">Blank</th>
-                  <th data-sort-type="number">Mixed separate</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for row in language_rows %}
-                <tr>
-                  <td>{{ row.language }}</td>
-                  <td>{{ row.files }}</td>
-                  <td>{{ row.total_physical_lines }}</td>
-                  <td>{{ row.code_lines }}</td>
-                  <td>{{ row.comment_lines }}</td>
-                  <td>{{ row.blank_lines }}</td>
-                  <td>{{ row.mixed_lines_separate }}</td>
-                </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div>
-          <div class="toolbar"><div class="toolbar-left"><h2>Per-file detail</h2><input class="search" type="search" placeholder="Filter files, languages, status, warnings..." data-table-filter="per-file-table" /></div><div class="pill-row"><span class="pill good">Counts shown as analyzed by the selected policy</span></div></div>
-          <div class="table-shell">
-            <table id="per-file-table" data-sort-table>
-              <thead>
-                <tr>
-                  <th data-sort-type="text">File</th>
-                  <th data-sort-type="text">Language</th>
-                  <th data-sort-type="number">Physical</th>
-                  <th data-sort-type="number">Code</th>
-                  <th data-sort-type="number">Comments</th>
-                  <th data-sort-type="number">Blank</th>
-                  <th data-sort-type="number">Mixed separate</th>
-                  <th data-sort-type="text">Status</th>
-                  <th data-sort-type="text">Warnings</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for row in file_rows %}
-                <tr>
-                  <td class="mono">{{ row.relative_path }}</td>
-                  <td>{{ row.language }}</td>
-                  <td>{{ row.total_physical_lines }}</td>
-                  <td>{{ row.code_lines }}</td>
-                  <td>{{ row.comment_lines }}</td>
-                  <td>{{ row.blank_lines }}</td>
-                  <td>{{ row.mixed_lines_separate }}</td>
-                  <td><span class="status-tag status-{{ row.status_class }}">{{ row.status }}</span></td>
-                  <td class="small">{{ row.warnings }}</td>
-                </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
+    <div class="report-stack">
       <section class="panel stack">
         <div>
           <div class="toolbar"><div class="toolbar-left"><h2>Warnings and next improvements</h2></div><div class="pill-row"><span class="pill info">{{ warning_count }} total warnings</span></div></div>
@@ -777,43 +756,117 @@ struct WarningOpportunityRow {
           </div>
           {% endif %}
         </div>
+      </section>
 
+      <section class="panel stack">
         <div>
-          <div class="toolbar"><div class="toolbar-left"><h2>Skipped files</h2><input class="search" type="search" placeholder="Filter skipped files, reasons, warnings..." data-table-filter="skipped-table" /></div></div>
+          <div class="toolbar"><div class="toolbar-left"><h2>Language breakdown</h2></div><div class="pill-row"><span class="pill good">Click any column header to sort</span></div></div>
           <div class="table-shell">
-            <table id="skipped-table" data-sort-table>
+            <table data-sort-table>
               <thead>
                 <tr>
-                  <th data-sort-type="text">File</th>
-                  <th data-sort-type="text">Status</th>
-                  <th data-sort-type="text">Warnings</th>
+                  <th data-sort-type="text">Language</th>
+                  <th data-sort-type="number">Files</th>
+                  <th data-sort-type="number">Physical</th>
+                  <th data-sort-type="number">Code</th>
+                  <th data-sort-type="number">Comments</th>
+                  <th data-sort-type="number">Blank</th>
+                  <th data-sort-type="number">Mixed separate</th>
                 </tr>
               </thead>
               <tbody>
-                {% for row in skipped_rows %}
+                {% for row in language_rows %}
                 <tr>
-                  <td class="mono">{{ row.relative_path }}</td>
-                  <td><span class="status-tag status-{{ row.status_class }}">{{ row.status }}</span></td>
-                  <td class="small">{{ row.warnings }}</td>
+                  <td>{{ row.language }}</td>
+                  <td>{{ row.files }}</td>
+                  <td>{{ row.total_physical_lines }}</td>
+                  <td>{{ row.code_lines }}</td>
+                  <td>{{ row.comment_lines }}</td>
+                  <td>{{ row.blank_lines }}</td>
+                  <td>{{ row.mixed_lines_separate }}</td>
                 </tr>
                 {% endfor %}
               </tbody>
             </table>
           </div>
         </div>
+      </section>
 
+      <section class="panel stack">
+        <div class="toolbar"><div class="toolbar-left"><h2>Per-file detail</h2><input class="search" type="search" placeholder="Filter files, languages, status, warnings..." data-table-filter="per-file-table" /></div><div class="pill-row"><span class="pill good">Counts shown as analyzed by the selected policy</span></div></div>
+        <div class="table-shell">
+          <table id="per-file-table" data-sort-table>
+            <thead>
+              <tr>
+                <th data-sort-type="text">File</th>
+                <th data-sort-type="text">Language</th>
+                <th data-sort-type="number">Physical</th>
+                <th data-sort-type="number">Code</th>
+                <th data-sort-type="number">Comments</th>
+                <th data-sort-type="number">Blank</th>
+                <th data-sort-type="number">Mixed separate</th>
+                <th data-sort-type="text">Status</th>
+                <th data-sort-type="text">Warnings</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in file_rows %}
+              <tr>
+                <td class="mono">{{ row.relative_path }}</td>
+                <td>{{ row.language }}</td>
+                <td>{{ row.total_physical_lines }}</td>
+                <td>{{ row.code_lines }}</td>
+                <td>{{ row.comment_lines }}</td>
+                <td>{{ row.blank_lines }}</td>
+                <td>{{ row.mixed_lines_separate }}</td>
+                <td><span class="status-tag status-{{ row.status_class }}">{{ row.status }}</span></td>
+                <td class="small">{{ row.warnings }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel stack">
+        <div class="toolbar"><div class="toolbar-left"><h2>Skipped files</h2><input class="search" type="search" placeholder="Filter skipped files, reasons, warnings..." data-table-filter="skipped-table" /></div></div>
+        <div class="table-shell">
+          <table id="skipped-table" data-sort-table>
+            <thead>
+              <tr>
+                <th data-sort-type="text">File</th>
+                <th data-sort-type="text">Status</th>
+                <th data-sort-type="text">Warnings</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in skipped_rows %}
+              <tr>
+                <td class="mono">{{ row.relative_path }}</td>
+                <td><span class="status-tag status-{{ row.status_class }}">{{ row.status }}</span></td>
+                <td class="small">{{ row.warnings }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel stack">
         <div>
           <details>
-            <summary>Detailed run warnings</summary>
+            <summary>Detailed run warnings ({{ warning_count }})</summary>
             <div>
               {% if !has_run_warnings %}
                 <div class="pill good">No top-level warnings.</div>
               {% else %}
-                <ul class="warn-list">
-                  {% for warning in run.warnings %}
-                  <li>{{ warning }}</li>
-                  {% endfor %}
-                </ul>
+                <pre class="warning-console" id="warning-console-preview">{{ warning_console_preview }}</pre>
+                {% if warning_preview_truncated %}
+                <div class="warning-console-actions">
+                  <button type="button" class="header-button" data-expand-warnings>Show all warnings</button>
+                </div>
+                <pre class="warning-console hidden" id="warning-console-full">{{ warning_console_full }}</pre>
+                {% endif %}
               {% endif %}
             </div>
           </details>
@@ -835,6 +888,7 @@ struct WarningOpportunityRow {
       var copyLinkButtons = Array.prototype.slice.call(document.querySelectorAll('[data-copy-link]'));
       var shareButtons = Array.prototype.slice.call(document.querySelectorAll('[data-share-report]'));
       var printButtons = Array.prototype.slice.call(document.querySelectorAll('[data-print-report]'));
+      var expandWarningsButton = document.querySelector('[data-expand-warnings]');
 
       function applyTheme(theme) {
         body.classList.toggle('dark-theme', theme === 'dark');
@@ -887,6 +941,16 @@ struct WarningOpportunityRow {
           window.print();
         });
       });
+
+      if (expandWarningsButton) {
+        expandWarningsButton.addEventListener('click', function () {
+          var preview = document.getElementById('warning-console-preview');
+          var full = document.getElementById('warning-console-full');
+          if (preview) preview.classList.add('hidden');
+          if (full) full.classList.remove('hidden');
+          expandWarningsButton.classList.add('hidden');
+        });
+      }
 
       function detectType(value) {
         return /^-?\d+(?:\.\d+)?$/.test(value.trim()) ? parseFloat(value) : value.toLowerCase();
@@ -946,4 +1010,7 @@ struct ReportTemplate<'a> {
     warning_count: usize,
     warning_summary_rows: Vec<WarningSummaryRow>,
     warning_opportunity_rows: Vec<WarningOpportunityRow>,
+    warning_console_preview: String,
+    warning_console_full: String,
+    warning_preview_truncated: bool,
 }

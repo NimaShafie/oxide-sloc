@@ -353,10 +353,6 @@ async fn analyze_handler(
             .html_path
             .as_ref()
             .map(|_| format!("/runs/{run_id}/html")),
-        pdf_url: artifacts
-            .pdf_path
-            .as_ref()
-            .map(|_| format!("/runs/{run_id}/pdf")),
         json_url: artifacts
             .json_path
             .as_ref()
@@ -454,7 +450,15 @@ async fn artifact_handler(
                         )
                             .into_response()
                     } else {
-                        ([(header::CONTENT_TYPE, "application/pdf")], bytes).into_response()
+                        (
+                            [
+                                (header::CONTENT_TYPE, "application/pdf"),
+                                (header::CONTENT_DISPOSITION, "inline; filename=report.pdf"),
+                                (header::CACHE_CONTROL, "no-store"),
+                            ],
+                            bytes,
+                        )
+                            .into_response()
                     }
                 }
                 Err(_) => StatusCode::NOT_FOUND.into_response(),
@@ -1357,9 +1361,11 @@ struct LanguageSummaryRow {
     .field-help-grid.coupled-help { margin-top: 12px; }
     .field-help-grid.preset-grid { align-items: start; }
     .counting-intro { margin-bottom: 22px; }
-    .counting-top-grid { gap: 20px; margin-top: 12px; align-items: start; }
-    .counting-top-grid .field { padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
-    .counting-top-grid .hint { margin-top: 14px; padding: 12px 14px; border-left: 4px solid var(--oxide); background: linear-gradient(180deg, rgba(184,93,51,0.06), transparent), var(--surface-2); border-radius: 10px; }
+    .counting-policy-grid { display:grid; grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr); gap: 20px; margin-top: 12px; align-items: start; }
+    .counting-policy-field { padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+    .counting-policy-field .hint { margin-top: 14px; padding: 12px 14px; border-left: 4px solid var(--oxide); background: linear-gradient(180deg, rgba(184,93,51,0.06), transparent), var(--surface-2); border-radius: 10px; }
+    .mixed-policy-side-card { min-height: 100%; }
+    .mixed-policy-side-card .code-sample { margin-top: 14px; }
     .subsection-bar { margin: 24px 0 14px; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--line); background: linear-gradient(180deg, rgba(37,99,235,0.05), transparent), var(--surface-2); font-size: 12px; font-weight: 900; color: var(--muted-2); text-transform: uppercase; letter-spacing: 0.08em; }
     .section-spacer-top { margin-top: 28px; }
     .explainer-card { padding: 18px; background: linear-gradient(180deg, rgba(184,93,51,0.05), transparent), var(--surface); }
@@ -1377,11 +1383,22 @@ struct LanguageSummaryRow {
     .checkbox { display:flex; align-items:flex-start; gap: 10px; font-size: 15px; font-weight:700; }
     .checkbox input { width: 16px; height: 16px; margin-top: 3px; accent-color: var(--accent); }
     .advanced-rule-table { display:grid; gap: 12px; margin-top: 18px; }
-    .advanced-rule-row { display:grid; grid-template-columns: 220px 220px minmax(0, 1fr); gap: 14px; align-items:start; padding: 16px; border:1px solid var(--line); border-radius: 14px; background: var(--surface-2); }
-    .advanced-rule-row.static-note { grid-template-columns: 220px minmax(0, 1fr); }
+    .advanced-rule-row { display:grid; grid-template-columns: 220px 220px minmax(0, 1fr); gap: 14px; align-items:center; padding: 16px; border:1px solid var(--line); border-radius: 14px; background: var(--surface-2); }
+    .advanced-rule-row.static-note { grid-template-columns: 220px minmax(0, 1fr); background: color-mix(in srgb, var(--surface-2) 82%, white 18%); border-style: dashed; }
+    .advanced-rule-head { align-self:center; }
     .advanced-rule-head h4 { margin: 6px 0 0; font-size: 16px; }
+    .advanced-rule-body { display:grid; gap: 10px; min-width: 0; }
     .advanced-rule-description { color: var(--muted); font-size: 13px; line-height: 1.6; }
     .advanced-rule-description strong { color: var(--text); }
+    .advanced-rule-example { margin-top: 0; padding: 12px 14px; border-radius: 12px; border:1px solid var(--line); background: rgba(255,255,255,0.42); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; font-size: 12px; color: var(--text); }
+    body.dark-theme .advanced-rule-example { background: rgba(255,255,255,0.03); }
+    .step3-intro { margin-bottom: 28px; }
+    .step3-select-grid { gap: 26px; align-items: start; }
+    .step3-select-grid .field, .step3-output-grid .field { padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: linear-gradient(180deg, rgba(255,255,255,0.24), transparent), var(--surface); }
+    .step3-select-grid select, .step3-output-grid input[type="text"], .step3-output-grid .input-group.compact { max-width: 640px; }
+    .step3-select-grid .hint { margin-top: 10px; }
+    .step3-output-grid { display:grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 26px; align-items:start; margin-top: 26px; }
+    .step3-output-grid .input-group.compact { grid-template-columns: minmax(0, 1fr) auto auto; }
     .output-identity-grid { display:grid; grid-template-columns: 1.15fr 0.95fr; gap: 18px; align-items:start; margin-top: 22px; }
     .review-card-head { display:flex; justify-content:space-between; align-items:flex-start; gap: 10px; margin-bottom: 8px; }
     .review-link { border:none; background: transparent; color: var(--accent-2); font-size: 12px; font-weight: 800; cursor: pointer; padding: 0; }
@@ -1401,6 +1418,7 @@ struct LanguageSummaryRow {
     .review-card h4 { margin: 0 0 8px; font-size: 17px; }
     .review-card p, .review-card li { color: var(--muted); font-size: 14px; line-height: 1.62; }
     .review-card ul { padding-left: 18px; margin: 0; }
+    .review-mini-callout { margin-top: 12px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: linear-gradient(180deg, rgba(37,99,235,0.04), transparent), var(--surface-2); color: var(--muted); font-size: 13px; line-height: 1.58; }
         .explorer-wrap { display:grid; gap: 16px; margin-top: 18px; }
     .explorer-toolbar { display:flex; justify-content:space-between; gap: 12px; align-items:flex-start; }
     .explorer-toolbar.compact { padding: 0; border-bottom: none; }
@@ -1478,8 +1496,9 @@ struct LanguageSummaryRow {
     @keyframes pulseBar { 0% { transform: translateX(-35%); width:25%; } 50% { transform: translateX(130%); width:44%; } 100% { transform: translateX(250%); width:25%; } }
     .hidden { display:none !important; }
     @media (max-width: 1280px) { .layout { grid-template-columns: 230px 1fr; } .scope-stats, .explorer-meta-grid, .explorer-meta-grid.split { grid-template-columns: 1fr 1fr; } }
-    @media (max-width: 980px) { .summary-grid, .field-grid, .artifact-grid, .review-grid, .scope-stats, .explorer-meta-grid, .explorer-meta-grid.split, .glob-guidance-grid { grid-template-columns: 1fr; } .layout { grid-template-columns: 1fr; } .step-nav { position:static; } .top-nav-inner { grid-template-columns: 1fr; justify-items: stretch; } .nav-project-slot, .nav-status { justify-content:flex-start; } .input-group { grid-template-columns: 1fr 1fr; } .input-group.compact { grid-template-columns: 1fr 1fr; } .better-spacing { justify-content:flex-start; } .file-explorer-controls { flex-direction: column; align-items:flex-start; flex-wrap: wrap; } .file-explorer-search-row { margin-left: 0; flex-wrap: wrap; width: 100%; } .explorer-search { min-width: 0; width: 100%; } .file-explorer-header, .tree-row { grid-template-columns: minmax(0, 1fr) 110px 110px 140px; } .advanced-rule-row, .advanced-rule-row.static-note, .output-identity-grid, .counting-top-grid { grid-template-columns: 1fr; } .wizard-progress { max-width: none; } }
-  </style>
+    @media (max-width: 980px) { .summary-grid, .field-grid, .artifact-grid, .review-grid, .scope-stats, .explorer-meta-grid, .explorer-meta-grid.split, .glob-guidance-grid { grid-template-columns: 1fr; } .layout { grid-template-columns: 1fr; } .step-nav { position:static; } .top-nav-inner { grid-template-columns: 1fr; justify-items: stretch; } .nav-project-slot, .nav-status { justify-content:flex-start; } .input-group { grid-template-columns: 1fr 1fr; } .input-group.compact { grid-template-columns: 1fr 1fr; } .better-spacing { justify-content:flex-start; } .file-explorer-controls { flex-direction: column; align-items:flex-start; flex-wrap: wrap; } .file-explorer-search-row { margin-left: 0; flex-wrap: wrap; width: 100%; } .explorer-search { min-width: 0; width: 100%; } .file-explorer-header, .tree-row { grid-template-columns: minmax(0, 1fr) 110px 110px 140px; } .advanced-rule-row, .advanced-rule-row.static-note, .output-identity-grid, .counting-policy-grid, .step3-output-grid, .step3-select-grid { grid-template-columns: 1fr; } .wizard-progress { max-width: none; } }
+  
+    </style>
 </head>
 <body>
   <div class="background-watermarks" aria-hidden="true">
@@ -1672,69 +1691,89 @@ struct LanguageSummaryRow {
                 <h2>Choose counting behavior</h2>
                 <p class="card-subtitle counting-intro">These settings decide how mixed code-plus-comment lines and Python docstrings are classified. Pure comment lines, block comments, physical lines, and blank lines are still tracked by supported analyzers even when they do not share a line with executable code.</p>
                 <div class="subsection-bar">Primary line classification</div>
-                <div class="field-grid counting-top-grid">
-                  <div class="field">
-                    <label for="mixed_line_policy">Mixed-line policy</label>
-                    <select id="mixed_line_policy" name="mixed_line_policy">
-                      <option value="code_only">Code only</option>
-                      <option value="code_and_comment">Code and comment</option>
-                      <option value="comment_only">Comment only</option>
-                      <option value="separate_mixed_category">Separate mixed category</option>
-                    </select>
-                    <div class="hint">Mixed lines are lines that contain executable code and inline comment text at the same time. Use this to decide whether those lines stay in code totals, comment totals, both, or a dedicated mixed bucket.</div>
-                  </div>
-                  <div class="field python-docstring-wrap" id="python-docstring-wrap">
-                    <label>Python docstrings</label>
-                    <div class="toggle-card">
-                      <label class="checkbox">
-                        <input id="python_docstrings_as_comments" name="python_docstrings_as_comments" type="checkbox" checked />
-                        <span>Count Python docstrings as comment-style lines</span>
-                      </label>
-                      <div class="hint" id="python-docstring-live-help">Useful when you treat docstrings as documentation rather than executable logic.</div>
-                    </div>
-                  </div>
+              <div class="counting-policy-grid">
+                <div class="field counting-policy-field">
+                  <label for="mixed_line_policy">Mixed-line policy</label>
+                  <select id="mixed_line_policy" name="mixed_line_policy">
+                    <option value="code_only">Code only</option>
+                    <option value="code_and_comment">Code and comment</option>
+                    <option value="comment_only">Comment only</option>
+                    <option value="separate_mixed_category">Separate mixed category</option>
+                  </select>
+                  <div class="hint">Mixed lines contain executable code and inline comment text on the same line. Pick whether they stay in code totals, comment totals, both, or a separate mixed bucket.</div>
                 </div>
-              </div>
-
-              <div class="field-help-grid coupled-help">
-                <div class="explainer-card prominent">
+                <div class="explainer-card prominent mixed-policy-side-card">
                   <div class="field-help-title">Mixed-line policy explanation</div>
                   <div class="explainer-body" id="mixed-policy-description"></div>
                   <div class="code-sample" id="mixed-policy-example"></div>
-                </div>
-                <div class="explainer-card prominent python-docstring-wrap" id="python-docstring-example-card">
-                  <div class="field-help-title">Python docstring example</div>
-                  <div class="explainer-body" id="python-docstring-description"></div>
-                  <div class="code-sample" id="python-docstring-example"></div>
                 </div>
               </div>
 
               <div class="subsection-bar">Additional scan rules</div>
               <div class="advanced-rule-table">
+                <div class="advanced-rule-row python-docstring-wrap" id="python-docstring-wrap">
+                  <div class="advanced-rule-head"><div class="field-help-title">Python documentation</div><h4>Python docstrings</h4></div>
+                  <select id="python_docstrings_as_comments_select"><option value="enabled" selected>Enabled</option><option value="disabled">Disabled</option></select>
+                  <div class="advanced-rule-body">
+                    <div class="advanced-rule-description" id="python-docstring-description"></div>
+                    <div class="advanced-rule-example" id="python-docstring-example"></div>
+                  </div>
+                  <input id="python_docstrings_as_comments" name="python_docstrings_as_comments" type="checkbox" checked class="hidden" />
+                </div>
                 <div class="advanced-rule-row">
                   <div class="advanced-rule-head"><div class="field-help-title">Generated files</div><h4>Generated-file detection</h4></div>
                   <select name="generated_file_detection" id="generated_file_detection"><option value="enabled" selected>Enabled</option><option value="disabled">Disabled</option></select>
-                  <div class="advanced-rule-description"><strong>Purpose:</strong> Keep generated code or generated assets out of the totals by default.<br /><strong>Good default when:</strong> you want authored source only.<br /><strong>Turn it off when:</strong> you intentionally want generated SDKs, compiled templates, or codegen output included.</div>
+                  <div class="advanced-rule-body"><div class="advanced-rule-description"><strong>Purpose:</strong> Keep generated code or generated assets out of the totals by default.<br /><strong>Good default when:</strong> you want authored source only.<br /><strong>Turn it off when:</strong> you intentionally want generated SDKs, compiled templates, or codegen output included.</div><div class="advanced-rule-example">Example:
+- generated/api/client.py
+- build/schema.gen.rs
+
+Enabled result:
+- generated output is skipped from authored-source totals</div></div>
                 </div>
                 <div class="advanced-rule-row">
                   <div class="advanced-rule-head"><div class="field-help-title">Minified files</div><h4>Minified-file detection</h4></div>
                   <select name="minified_file_detection" id="minified_file_detection"><option value="enabled" selected>Enabled</option><option value="disabled">Disabled</option></select>
-                  <div class="advanced-rule-description"><strong>Purpose:</strong> Prevent compressed assets from distorting file and line counts.<br /><strong>Good default when:</strong> your repo includes built JavaScript or bundled web assets.<br /><strong>Turn it off when:</strong> minified files are the actual subject of the review.</div>
+                  <div class="advanced-rule-body"><div class="advanced-rule-description"><strong>Purpose:</strong> Prevent compressed assets from distorting file and line counts.<br /><strong>Good default when:</strong> your repo includes built JavaScript or bundled web assets.<br /><strong>Turn it off when:</strong> minified files are the actual subject of the review.</div><div class="advanced-rule-example">Example:
+- static/app.min.js
+- public/vendor.bundle.min.css
+
+Enabled result:
+- compressed assets do not dominate code totals</div></div>
                 </div>
                 <div class="advanced-rule-row">
                   <div class="advanced-rule-head"><div class="field-help-title">Vendor directories</div><h4>Vendor-directory detection</h4></div>
                   <select name="vendor_directory_detection" id="vendor_directory_detection"><option value="enabled" selected>Enabled</option><option value="disabled">Disabled</option></select>
-                  <div class="advanced-rule-description"><strong>Purpose:</strong> Skip bundled third-party dependencies so the totals reflect your project more closely.<br /><strong>Good default when:</strong> you only want first-party code in the report.<br /><strong>Turn it off when:</strong> vendored code is part of what you need to measure.</div>
+                  <div class="advanced-rule-body"><div class="advanced-rule-description"><strong>Purpose:</strong> Skip bundled third-party dependencies so the totals reflect your project more closely.<br /><strong>Good default when:</strong> you only want first-party code in the report.<br /><strong>Turn it off when:</strong> vendored code is part of what you need to measure.</div><div class="advanced-rule-example">Example:
+- vendor/**
+- third_party/**
+- deps/sqlite/**
+
+Enabled result:
+- bundled dependency trees stay out of repository-owned counts</div></div>
                 </div>
                 <div class="advanced-rule-row">
                   <div class="advanced-rule-head"><div class="field-help-title">Lockfiles and manifests</div><h4>Include lockfiles</h4></div>
                   <select name="include_lockfiles" id="include_lockfiles"><option value="disabled" selected>Disabled</option><option value="enabled">Enabled</option></select>
-                  <div class="advanced-rule-description"><strong>Purpose:</strong> Decide whether package lockfiles and similar generated manifests belong in the scan scope.<br /><strong>Keep disabled when:</strong> you want implementation-focused totals.<br /><strong>Enable when:</strong> your review includes dependency metadata or repository footprint.</div>
+                  <div class="advanced-rule-body"><div class="advanced-rule-description"><strong>Purpose:</strong> Decide whether package lockfiles and similar generated manifests belong in the scan scope.<br /><strong>Keep disabled when:</strong> you want implementation-focused totals.<br /><strong>Enable when:</strong> your review includes dependency metadata or repository footprint.</div><div class="advanced-rule-example">Example:
+- Cargo.lock
+- package-lock.json
+- poetry.lock
+
+Enabled result:
+- dependency manifests become part of the measured scope</div></div>
                 </div>
                 <div class="advanced-rule-row">
                   <div class="advanced-rule-head"><div class="field-help-title">Binary handling</div><h4>Binary file behavior</h4></div>
                   <select name="binary_file_behavior" id="binary_file_behavior"><option value="skip" selected>Skip binary files</option><option value="fail">Fail on binary files</option></select>
-                  <div class="advanced-rule-description"><strong>Purpose:</strong> Control how the scan reacts when binaries are encountered inside the selected scope.<br /><strong>Skip binary files:</strong> best for typical local runs.<br /><strong>Fail on binary files:</strong> useful when you want the run to stop and force cleanup of the selected path or include rules.</div>
+                  <div class="advanced-rule-body"><div class="advanced-rule-description"><strong>Purpose:</strong> Control how the scan reacts when binaries are encountered inside the selected scope.<br /><strong>Skip binary files:</strong> best for typical local runs.<br /><strong>Fail on binary files:</strong> useful when you want the run to stop and force cleanup of the selected path or include rules.</div><div class="advanced-rule-example">Example:
+- tools/archive.tar.xz
+- assets/logo.psd
+- installer.exe
+
+Skip result:
+- binaries are logged and ignored
+Fail result:
+- the run stops so you can tighten scope first</div></div>
                 </div>
                 <div class="advanced-rule-row static-note">
                   <div class="advanced-rule-head"><div class="field-help-title">Always tracked</div><h4>Comment and blank-line basics</h4></div>
@@ -1756,8 +1795,8 @@ struct LanguageSummaryRow {
               <div class="section">
                 <div class="section-kicker">Step 3</div>
                 <h2>Output and report identity</h2>
-                <p class="card-subtitle">Choose where generated files should be saved, what the exported report title should be, and which artifact bundle fits your workflow.</p>
-                <div class="field-grid">
+                <p class="card-subtitle step3-intro">Choose where generated files should be saved, what the exported report title should be, and which artifact bundle fits your workflow.</p>
+                <div class="field-grid step3-select-grid">
                   <div class="field">
                     <label for="scan_preset">Scan preset</label>
                     <select id="scan_preset">
@@ -1798,7 +1837,7 @@ struct LanguageSummaryRow {
               </div>
 
               <div class="section section-spacer-top">
-                <div class="output-identity-grid">
+                <div class="output-identity-grid step3-output-grid">
                   <div class="field">
                     <label for="output_dir">Output directory</label>
                     <div class="input-group compact">
@@ -1876,6 +1915,7 @@ struct LanguageSummaryRow {
                   <div class="review-card highlight">
                     <div class="review-card-head"><h4>What will be scanned</h4><button type="button" class="review-link jump-step" data-step-target="1">Edit step 1</button></div>
                     <ul id="review-scan-summary"></ul>
+                    <div class="review-mini-callout" id="review-scan-note">Scope notes appear here once a project path is selected and previewed.</div>
                   </div>
                   <div class="review-card highlight">
                     <div class="review-card-head"><h4>How it will be counted</h4><button type="button" class="review-link jump-step" data-step-target="2">Edit step 2</button></div>
@@ -1894,7 +1934,7 @@ struct LanguageSummaryRow {
                     <ul id="review-preview-summary"></ul>
                   </div>
                   <div class="review-card highlight">
-                    <div class="review-card-head"><h4>Run readiness</h4><button type="button" class="review-link jump-step" data-step-target="4">Current step</button></div>
+                    <div class="review-card-head"><h4>Run readiness</h4><button type="button" class="review-link jump-step" data-step-target="4">Review run</button></div>
                     <ul id="review-readiness-summary"></ul>
                   </div>
                 </div>
@@ -1932,6 +1972,7 @@ struct LanguageSummaryRow {
       var themeToggle = document.getElementById("theme-toggle");
       var mixedLinePolicy = document.getElementById("mixed_line_policy");
       var pythonDocstrings = document.getElementById("python_docstrings_as_comments");
+      var pythonDocstringsSelect = document.getElementById("python_docstrings_as_comments_select");
       var pythonWraps = document.querySelectorAll(".python-docstring-wrap");
       var scanPreset = document.getElementById("scan_preset");
       var artifactPreset = document.getElementById("artifact_preset");
@@ -1944,8 +1985,22 @@ struct LanguageSummaryRow {
       var breadcrumbTitle = document.getElementById("breadcrumb-title");
       var wizardProgressFill = document.getElementById("wizard-progress-fill");
       var wizardProgressValue = document.getElementById("wizard-progress-value");
+
+      function normalizeWizardPanels() {
+        if (!form) return;
+        var panels = Array.prototype.slice.call(form.querySelectorAll(".wizard-step"));
+        if (!panels.length) return;
+        panels.forEach(function (panel) {
+          if (panel.parentElement !== form) {
+            form.appendChild(panel);
+          }
+        });
+      }
+
+      normalizeWizardPanels();
+
       var stepButtons = Array.prototype.slice.call(document.querySelectorAll(".step-button"));
-      var stepPanels = Array.prototype.slice.call(document.querySelectorAll(".wizard-step"));
+      var stepPanels = Array.prototype.slice.call(form.querySelectorAll(".wizard-step"));
       var artifactCards = Array.prototype.slice.call(document.querySelectorAll(".artifact-card"));
       var reportTitleTouched = false;
       var currentStep = 1;
@@ -2050,6 +2105,11 @@ struct LanguageSummaryRow {
           button.classList.toggle("active", Number(button.getAttribute("data-step-target")) === step);
         });
         updateWizardProgress(step);
+        try {
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        } catch (e) {
+          window.scrollTo(0, 0);
+        }
       }
 
       function inferTitleFromPath(value) {
@@ -2090,16 +2150,15 @@ struct LanguageSummaryRow {
       }
 
       function updatePythonDocstringUI() {
+        if (pythonDocstringsSelect) { pythonDocstrings.checked = pythonDocstringsSelect.value !== "disabled"; }
         var checked = !!pythonDocstrings.checked;
         document.getElementById("python-docstring-description").textContent = checked
           ? "Enabled: docstrings are treated as comment-style documentation lines. This is useful when you want narrative documentation to contribute to comment totals."
           : "Disabled: docstrings are not treated as comment content. This keeps comment totals closer to inline comments and explicit commented lines only.";
         document.getElementById("python-docstring-example").textContent = checked
-          ? 'Example:\n\ndef greet():\n    """Greet the user."""\n    print("hi")\n\nResult:\n- the docstring contributes to comment-style totals'
-          : 'Example:\n\ndef greet():\n    """Greet the user."""\n    print("hi")\n\nResult:\n- the docstring is not counted as comment content';
-        document.getElementById("python-docstring-live-help").textContent = checked
-          ? "Enabled for documentation-oriented counting."
-          : "Disabled for stricter executable-vs-comment separation.";
+          ? 'Example:\n\ndef greet():\n    """Greet the user."""\n    print("hi")\n\nEnabled result:\n- the docstring contributes to comment-style totals'
+          : 'Example:\n\ndef greet():\n    """Greet the user."""\n    print("hi")\n\nDisabled result:\n- the docstring stays out of comment-style totals';
+        if (pythonDocstringsSelect) { pythonDocstringsSelect.value = checked ? "enabled" : "disabled"; }
       }
 
       function renderPresetChips(targetId, chips) {
@@ -2127,6 +2186,7 @@ struct LanguageSummaryRow {
         if (!info || !info.apply) return;
         mixedLinePolicy.value = info.apply.mixed;
         pythonDocstrings.checked = !!info.apply.docstrings;
+        if (pythonDocstringsSelect) { pythonDocstringsSelect.value = pythonDocstrings.checked ? "enabled" : "disabled"; }
         document.getElementById("generated_file_detection").value = info.apply.generated;
         document.getElementById("minified_file_detection").value = info.apply.minified;
         document.getElementById("vendor_directory_detection").value = info.apply.vendor;
@@ -2169,14 +2229,23 @@ struct LanguageSummaryRow {
         var excludeText = document.getElementById("exclude_globs").value.trim();
         var sidePathPreview = document.getElementById("side-path-preview");
         var sideOutputPreview = document.getElementById("side-output-preview");
+        var reviewScanNote = document.getElementById("review-scan-note");
 
         if (sidePathPreview) { sidePathPreview.textContent = pathInput.value || "samples/basic"; }
         if (sideOutputPreview) { sideOutputPreview.textContent = outputDirInput.value || "out/web"; }
 
+        var inferredProject = inferTitleFromPath(pathInput.value || "samples/basic");
         scanSummary.innerHTML = ""
           + "<li>Path: " + escapeHtml(pathInput.value || "samples/basic") + "</li>"
+          + "<li>Project label: " + escapeHtml(inferredProject) + "</li>"
           + "<li>Include filters: " + escapeHtml(includeText || "none") + "</li>"
-          + "<li>Exclude filters: " + escapeHtml(excludeText || "none") + "</li>";
+          + "<li>Exclude filters: " + escapeHtml(excludeText || "none") + "</li>"
+          + "<li>Scope shape: " + escapeHtml(includeText ? "Focused by include rules" : "Entire project path, then trimmed by exclusions") + "</li>";
+        if (reviewScanNote) {
+          reviewScanNote.textContent = includeText
+            ? "The scan starts from the selected project path, then narrows to the include patterns you provided before exclusions are applied."
+            : "No include globs are set, so the full project path is eligible first. Exclude globs and scan-rule policies then trim noisy files and folders away.";
+        }
 
         countSummary.innerHTML = ""
           + "<li>Mixed-line policy: " + escapeHtml(mixedLinePolicy.options[mixedLinePolicy.selectedIndex].text) + "</li>"
@@ -2215,10 +2284,12 @@ struct LanguageSummaryRow {
 
           if (readinessSummary) {
             var selectedArtifactsCount = selectedArtifacts.length;
+            var previewLoaded = statButtons.length > 0;
             readinessSummary.innerHTML = ''
-              + '<li>Current step completion: ' + escapeHtml(String(Math.max(25, Math.min(100, currentStep * 25)))) + '%</li>'
               + '<li>Project path set: ' + (pathInput.value ? 'yes' : 'no') + '</li>'
+              + '<li>Scope preview loaded: ' + (previewLoaded ? 'yes' : 'no') + '</li>'
               + '<li>Artifact count selected: ' + escapeHtml(String(selectedArtifactsCount)) + '</li>'
+              + '<li>Output destination: ' + escapeHtml(outputDirInput.value || 'out/web') + '</li>'
               + '<li>Ready to run: ' + ((pathInput.value && selectedArtifactsCount > 0) ? 'yes' : 'no') + '</li>';
           }
         }
@@ -2243,6 +2314,11 @@ struct LanguageSummaryRow {
         pythonWraps.forEach(function (node) {
           node.classList.toggle("hidden", !hasPython);
         });
+        if (!hasPython && pythonDocstringsSelect) {
+          pythonDocstringsSelect.value = "enabled";
+          pythonDocstrings.checked = true;
+          updatePythonDocstringUI();
+        }
       }
 
       function attachPreviewInteractions() {
@@ -2630,7 +2706,7 @@ struct LanguageSummaryRow {
       }
 
       if (mixedLinePolicy) mixedLinePolicy.addEventListener("change", function () { updateMixedPolicyUI(); updateReview(); });
-      if (pythonDocstrings) pythonDocstrings.addEventListener("change", function () { updatePythonDocstringUI(); updateReview(); });
+      if (pythonDocstringsSelect) pythonDocstringsSelect.addEventListener("change", function () { updatePythonDocstringUI(); updateReview(); });
       if (scanPreset) scanPreset.addEventListener("change", function () { applyScanPreset(); updatePresetDescriptions(); updateReview(); });
       if (artifactPreset) artifactPreset.addEventListener("change", function () { updatePresetDescriptions(); applyArtifactPreset(); updateReview(); });
 
@@ -2659,8 +2735,10 @@ struct LanguageSummaryRow {
       updateReview();
       loadPreview();
     })();
-  </script>
-</body>
+  
+    </script>
+
+  </body>
 </html>
 "##,
     ext = "html"
@@ -2774,7 +2852,7 @@ struct IndexTemplate {}
     .path-item { padding: 14px; background: var(--surface-2); }
     .path-item strong { display: block; margin-bottom: 6px; }
     code { display: inline-block; max-width: 100%; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--surface-3); border: 1px solid var(--line); padding: 2px 6px; border-radius: 8px; color: var(--text); }
-    .two-col { display: grid; grid-template-columns: 0.95fr 1.05fr; gap: 18px; align-items: start; }
+    .result-stack { display: grid; gap: 18px; align-items: start; }
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
     th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); }
     th { color: var(--muted); font-weight: 700; }
@@ -2786,9 +2864,10 @@ struct IndexTemplate {}
     .soft-chip { display:inline-flex; align-items:center; min-height: 32px; padding: 0 12px; border-radius: 999px; border:1px solid var(--line); background: var(--surface-2); color: var(--text); font-size: 13px; font-weight: 700; }
     .soft-chip.success { background: var(--success-bg); color: var(--success-text); }
     .toolbar-row { display:flex; justify-content:space-between; align-items:flex-start; gap: 12px; margin-bottom: 12px; }
+    .action-note { margin-top: 10px; color: var(--muted); font-size: 12px; line-height: 1.55; }
     .muted { color: var(--muted); }
     @media (max-width: 1180px) {
-      .top-nav-inner, .two-col, .action-grid { grid-template-columns: 1fr; }
+      .top-nav-inner, .action-grid { grid-template-columns: 1fr; }
       .nav-project-slot, .nav-status { justify-content:flex-start; }
       .hero-top { flex-direction: column; }
     }
@@ -2854,19 +2933,16 @@ struct IndexTemplate {}
         <div class="action-card">
           <h3>PDF report</h3>
           <div class="action-buttons">
-            {% match pdf_url %}
-              {% when Some with (url) %}
-                <a class="button" href="{{ url }}" target="_blank" rel="noopener">Open PDF</a>
-              {% when None %}{% endmatch %}
             {% match pdf_download_url %}
               {% when Some with (url) %}
-                <a class="button secondary" href="{{ url }}">Download PDF</a>
+                <a class="button" href="{{ url }}">Save PDF</a>
               {% when None %}{% endmatch %}
             {% match pdf_path %}
               {% when Some with (path) %}
                 <button type="button" class="copy-button secondary" data-copy-value="{{ path }}">Copy PDF path</button>
               {% when None %}{% endmatch %}
           </div>
+          <div class="action-note">PDF delivery is download-first to avoid blank in-browser tabs seen in some Chromium and Brave setups.</div>
         </div>
         <div class="action-card">
           <h3>JSON report</h3>
@@ -2903,7 +2979,7 @@ struct IndexTemplate {}
       </div>
     </section>
 
-    <div class="two-col">
+    <div class="result-stack">
       <section class="panel">
         <div class="toolbar-row">
           <div>
@@ -2944,7 +3020,7 @@ struct IndexTemplate {}
         <div class="toolbar-row">
           <div>
             <h2>Report preview</h2>
-            <p class="muted">This preview uses the saved HTML artifact for the run. It now follows the current workbench styling and carries its own theme toggle, sharing controls, and improved warning summary.</p>
+            <p class="muted">This preview uses the saved HTML artifact for the run. It now has a dedicated full-width row so the embedded saved report has enough room for tables, warning summaries, and sharing controls.</p>
           </div>
         </div>
 
@@ -3024,7 +3100,6 @@ struct ResultTemplate {
     blank_lines: u64,
     mixed_lines: u64,
     html_url: Option<String>,
-    pdf_url: Option<String>,
     json_url: Option<String>,
     html_download_url: Option<String>,
     pdf_download_url: Option<String>,

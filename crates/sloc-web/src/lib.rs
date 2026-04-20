@@ -28,12 +28,15 @@ struct AppState {
     artifacts: Arc<Mutex<HashMap<String, RunArtifacts>>>,
 }
 
+type PendingPdf = Option<(PathBuf, PathBuf, bool)>;
+
 #[derive(Clone, Debug)]
 struct RunArtifacts {
     output_dir: PathBuf,
     html_path: Option<PathBuf>,
     pdf_path: Option<PathBuf>,
     json_path: Option<PathBuf>,
+    report_title: String,
 }
 
 pub async fn serve(config: AppConfig) -> Result<()> {
@@ -55,8 +58,23 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         .await
         .with_context(|| format!("failed to bind local web UI on {bind_address}"))?;
 
-    println!("OxideSLOC local web UI running at http://{bind_address}/");
+    let url = format!("http://{bind_address}/");
+    println!("OxideSLOC local web UI running at {url}");
     println!("Press Ctrl+C to stop the server.");
+
+    let open_url = url.clone();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(target_os = "windows")]
+        let _ = std::process::Command::new("cmd")
+            .args(["/c", "start", "", &open_url])
+            .spawn();
+        #[cfg(target_os = "macos")]
+        let _ = std::process::Command::new("open").arg(&open_url).spawn();
+        #[cfg(target_os = "linux")]
+        let _ = std::process::Command::new("xdg-open")
+            .arg(&open_url)
+            .spawn();
+    });
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
@@ -293,9 +311,10 @@ async fn analyze_handler(
         form.generate_json.is_some(),
         form.generate_html.is_some(),
         form.generate_pdf.is_some(),
+        &run.effective_configuration.reporting.report_title,
     );
 
-    let artifacts = match artifact_result {
+    let (artifacts, pending_pdf) = match artifact_result {
         Ok(value) => value,
         Err(err) => {
             let template = ErrorTemplate {
@@ -313,6 +332,24 @@ async fn analyze_handler(
     {
         let mut registry = state.artifacts.lock().await;
         registry.insert(run_id.clone(), artifacts.clone());
+    }
+
+    if let Some((pdf_src, pdf_dst, cleanup_src)) = pending_pdf {
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                let r = write_pdf_from_html(&pdf_src, &pdf_dst);
+                if cleanup_src {
+                    let _ = fs::remove_file(&pdf_src);
+                }
+                r
+            })
+            .await;
+            match result {
+                Ok(Err(err)) => eprintln!("[oxide-sloc][pdf] background PDF failed: {err}"),
+                Err(err) => eprintln!("[oxide-sloc][pdf] background PDF task panicked: {err}"),
+                Ok(Ok(())) => {}
+            }
+        });
     }
 
     let language_rows = run
@@ -353,6 +390,10 @@ async fn analyze_handler(
             .html_path
             .as_ref()
             .map(|_| format!("/runs/{run_id}/html")),
+        pdf_url: artifacts
+            .pdf_path
+            .as_ref()
+            .map(|_| format!("/runs/{run_id}/pdf")),
         json_url: artifacts
             .json_path
             .as_ref()
@@ -438,27 +479,36 @@ async fn artifact_handler(
             match fs::read(&path) {
                 Ok(bytes) => {
                     if wants_download {
+                        let safe_title = artifact_set
+                            .report_title
+                            .chars()
+                            .map(|c| {
+                                if c.is_alphanumeric() || c == '-' || c == '_' {
+                                    c
+                                } else {
+                                    '_'
+                                }
+                            })
+                            .collect::<String>();
+                        let filename = format!(
+                            "{}.pdf",
+                            if safe_title.is_empty() {
+                                "report".to_string()
+                            } else {
+                                safe_title
+                            }
+                        );
+                        let disposition = format!("attachment; filename=\"{}\"", filename);
                         (
                             [
-                                (header::CONTENT_TYPE, "application/pdf"),
-                                (
-                                    header::CONTENT_DISPOSITION,
-                                    "attachment; filename=report.pdf",
-                                ),
+                                (header::CONTENT_TYPE, "application/pdf".to_string()),
+                                (header::CONTENT_DISPOSITION, disposition),
                             ],
                             bytes,
                         )
                             .into_response()
                     } else {
-                        (
-                            [
-                                (header::CONTENT_TYPE, "application/pdf"),
-                                (header::CONTENT_DISPOSITION, "inline; filename=report.pdf"),
-                                (header::CACHE_CONTROL, "no-store"),
-                            ],
-                            bytes,
-                        )
-                            .into_response()
+                        ([(header::CONTENT_TYPE, "application/pdf")], bytes).into_response()
                     }
                 }
                 Err(_) => StatusCode::NOT_FOUND.into_response(),
@@ -505,13 +555,15 @@ fn persist_run_artifacts(
     generate_json: bool,
     generate_html: bool,
     generate_pdf: bool,
-) -> Result<RunArtifacts> {
+    report_title: &str,
+) -> Result<(RunArtifacts, PendingPdf)> {
     fs::create_dir_all(run_dir)
         .with_context(|| format!("failed to create output directory {}", run_dir.display()))?;
 
     let mut html_path = None;
     let mut pdf_path = None;
     let mut json_path = None;
+    let mut pending_pdf: Option<(PathBuf, PathBuf, bool)> = None;
 
     if generate_html {
         let path = run_dir.join("report.html");
@@ -543,21 +595,22 @@ fn persist_run_artifacts(
             temp_html
         };
 
-        let path = run_dir.join("report.pdf");
-        write_pdf_from_html(&source_html_path, &path)?;
-        pdf_path = Some(path);
-
-        if !generate_html {
-            let _ = fs::remove_file(source_html_path);
-        }
+        let pdf_dest = run_dir.join("report.pdf");
+        let cleanup_src = !generate_html;
+        pdf_path = Some(pdf_dest.clone());
+        pending_pdf = Some((source_html_path, pdf_dest, cleanup_src));
     }
 
-    Ok(RunArtifacts {
-        output_dir: run_dir.to_path_buf(),
-        html_path,
-        pdf_path,
-        json_path,
-    })
+    Ok((
+        RunArtifacts {
+            output_dir: run_dir.to_path_buf(),
+            html_path,
+            pdf_path,
+            json_path,
+            report_title: report_title.to_string(),
+        },
+        pending_pdf,
+    ))
 }
 
 fn resolve_output_root(raw: Option<&str>) -> Result<PathBuf> {
@@ -1262,19 +1315,11 @@ struct LanguageSummaryRow {
     body { overflow-x: hidden; transition: background 0.18s ease, color 0.18s ease; }
     .top-nav, .page, .loading { position: relative; z-index: 2; }
     .background-watermarks { position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
-    .background-watermarks img { position: absolute; opacity: 0.04; filter: blur(0.3px); user-select: none; max-width: none; }
-    .background-watermarks img:nth-child(1) { top: 5%; left: 4%; width: 180px; transform: rotate(-10deg); }
-    .background-watermarks img:nth-child(2) { top: 10%; right: 8%; width: 230px; transform: rotate(8deg); }
-    .background-watermarks img:nth-child(3) { top: 27%; left: 11%; width: 210px; transform: rotate(-6deg); }
-    .background-watermarks img:nth-child(4) { top: 34%; right: 13%; width: 170px; transform: rotate(12deg); }
-    .background-watermarks img:nth-child(5) { top: 52%; left: 5%; width: 250px; transform: rotate(-9deg); }
-    .background-watermarks img:nth-child(6) { top: 58%; right: 6%; width: 220px; transform: rotate(7deg); }
-    .background-watermarks img:nth-child(7) { bottom: 13%; left: 20%; width: 190px; transform: rotate(-5deg); }
-    .background-watermarks img:nth-child(8) { bottom: 8%; right: 17%; width: 235px; transform: rotate(10deg); }
+    .background-watermarks img { position: absolute; opacity: 0.18; filter: blur(0.3px); user-select: none; max-width: none; }
     .top-nav { position: sticky; top: 0; z-index: 30; background: linear-gradient(180deg, var(--nav), var(--nav-2)); border-bottom: 1px solid rgba(255,255,255,0.12); box-shadow: 0 4px 14px rgba(0,0,0,0.18); }
-    .top-nav-inner { max-width: 1720px; margin: 0 auto; padding: 10px 24px; min-height: 64px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 460px) auto; align-items: center; gap: 18px; }
+    .top-nav-inner { max-width: 1720px; margin: 0 auto; padding: 4px 24px; min-height: 56px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 460px) auto; align-items: center; gap: 18px; }
     .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
-    .brand-logo { width: 42px; height: 42px; object-fit: contain; flex: 0 0 auto; filter: drop-shadow(0 4px 10px rgba(0,0,0,0.22)); }
+    .brand-logo { width: 52px; height: 52px; object-fit: contain; flex: 0 0 auto; filter: drop-shadow(0 4px 10px rgba(0,0,0,0.22)); }
     .brand-copy { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
     .brand-title { margin: 0; color: #fff; font-size: 17px; font-weight: 800; line-height: 1.1; }
     .brand-subtitle { color: rgba(255,255,255,0.85); font-size: 12px; line-height: 1.2; margin-top: 2px; }
@@ -1356,16 +1401,23 @@ struct LanguageSummaryRow {
     button.primary { background: linear-gradient(180deg, var(--accent), var(--accent-2)); color:#fff; border-color: transparent; }
     button.secondary { background: var(--surface); }
     .wizard-actions { display:flex; justify-content:space-between; align-items:center; gap: 12px; margin-top: 22px; padding-top: 18px; border-top:1px solid var(--line); }
+    .section + .wizard-actions { border-top: none; padding-top: 0; }
     .wizard-actions .left, .wizard-actions .right { display:flex; gap: 10px; flex-wrap:wrap; }
     .field-help-grid { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
     .field-help-grid.coupled-help { margin-top: 12px; }
     .field-help-grid.preset-grid { align-items: start; }
+    .preset-inline-row { display:grid; grid-template-columns: minmax(220px, 360px) 1fr; gap: 20px; align-items:start; margin-bottom: 16px; }
+    .preset-inline-row .field { margin: 0; }
+    .preset-inline-row .explainer-card { margin: 0; }
+    .output-field-row { display:grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items:start; }
+    .output-field-row .field { margin: 0; }
+    .output-field-aside { padding: 16px 18px; border-radius: 14px; border: 1px solid var(--line); background: var(--surface-2); font-size: 14px; color: var(--muted); line-height: 1.6; }
+    .output-field-aside strong { display:block; font-size: 13px; font-weight: 800; letter-spacing: 0.04em; color: var(--text); margin-bottom: 6px; }
+    .step3-subtitle { margin-bottom: 28px; }
     .counting-intro { margin-bottom: 22px; }
-    .counting-policy-grid { display:grid; grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr); gap: 20px; margin-top: 12px; align-items: start; }
-    .counting-policy-field { padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
-    .counting-policy-field .hint { margin-top: 14px; padding: 12px 14px; border-left: 4px solid var(--oxide); background: linear-gradient(180deg, rgba(184,93,51,0.06), transparent), var(--surface-2); border-radius: 10px; }
-    .mixed-policy-side-card { min-height: 100%; }
-    .mixed-policy-side-card .code-sample { margin-top: 14px; }
+    .counting-top-grid { gap: 20px; margin-top: 12px; align-items: start; }
+    .counting-top-grid .field { padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+    .counting-top-grid .hint { margin-top: 14px; padding: 12px 14px; border-left: 4px solid var(--oxide); background: linear-gradient(180deg, rgba(184,93,51,0.06), transparent), var(--surface-2); border-radius: 10px; }
     .subsection-bar { margin: 24px 0 14px; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--line); background: linear-gradient(180deg, rgba(37,99,235,0.05), transparent), var(--surface-2); font-size: 12px; font-weight: 900; color: var(--muted-2); text-transform: uppercase; letter-spacing: 0.08em; }
     .section-spacer-top { margin-top: 28px; }
     .explainer-card { padding: 18px; background: linear-gradient(180deg, rgba(184,93,51,0.05), transparent), var(--surface); }
@@ -1383,22 +1435,19 @@ struct LanguageSummaryRow {
     .checkbox { display:flex; align-items:flex-start; gap: 10px; font-size: 15px; font-weight:700; }
     .checkbox input { width: 16px; height: 16px; margin-top: 3px; accent-color: var(--accent); }
     .advanced-rule-table { display:grid; gap: 12px; margin-top: 18px; }
-    .advanced-rule-row { display:grid; grid-template-columns: 220px 220px minmax(0, 1fr); gap: 14px; align-items:center; padding: 16px; border:1px solid var(--line); border-radius: 14px; background: var(--surface-2); }
-    .advanced-rule-row.static-note { grid-template-columns: 220px minmax(0, 1fr); background: color-mix(in srgb, var(--surface-2) 82%, white 18%); border-style: dashed; }
-    .advanced-rule-head { align-self:center; }
+    .advanced-rule-row { display:grid; grid-template-columns: 220px 220px minmax(0, 1fr); gap: 14px; align-items:start; padding: 16px; border:1px solid var(--line); border-radius: 14px; background: var(--surface-2); }
+    .advanced-rule-row.static-note { grid-template-columns: 220px minmax(0, 1fr); }
+    .toggle-card.compact { padding: 0; background: none; border: none; box-shadow: none; }
+    .docstring-example-inset { padding: 14px 16px 14px 32px; background: var(--surface-2); border-left: 3px solid var(--line-strong); border-radius: 0 0 10px 10px; margin-top: -1px; }
+    .docstring-example-inset .field-help-title { margin-bottom: 6px; }
+    .always-tracked-tip { display:flex; align-items:flex-start; gap: 14px; padding: 16px 18px; border-radius: 14px; border: 1px solid rgba(37,99,235,0.18); background: linear-gradient(135deg, rgba(37,99,235,0.05), rgba(37,99,235,0.02)); margin-top: 8px; }
+    .always-tracked-tip-icon { flex: 0 0 auto; width: 28px; height: 28px; border-radius: 50%; background: rgba(37,99,235,0.12); color: var(--accent-2); display:flex; align-items:center; justify-content:center; font-size: 14px; font-weight: 900; margin-top: 2px; }
+    .always-tracked-tip-body .field-help-title { color: var(--accent-2); }
+    .always-tracked-tip-body h4 { margin: 2px 0 6px; font-size: 15px; }
+    .always-tracked-tip-body .advanced-rule-description { font-size: 14px; color: var(--muted); line-height: 1.6; }
     .advanced-rule-head h4 { margin: 6px 0 0; font-size: 16px; }
-    .advanced-rule-body { display:grid; gap: 10px; min-width: 0; }
     .advanced-rule-description { color: var(--muted); font-size: 13px; line-height: 1.6; }
     .advanced-rule-description strong { color: var(--text); }
-    .advanced-rule-example { margin-top: 0; padding: 12px 14px; border-radius: 12px; border:1px solid var(--line); background: rgba(255,255,255,0.42); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; font-size: 12px; color: var(--text); }
-    body.dark-theme .advanced-rule-example { background: rgba(255,255,255,0.03); }
-    .step3-intro { margin-bottom: 28px; }
-    .step3-select-grid { gap: 26px; align-items: start; }
-    .step3-select-grid .field, .step3-output-grid .field { padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: linear-gradient(180deg, rgba(255,255,255,0.24), transparent), var(--surface); }
-    .step3-select-grid select, .step3-output-grid input[type="text"], .step3-output-grid .input-group.compact { max-width: 640px; }
-    .step3-select-grid .hint { margin-top: 10px; }
-    .step3-output-grid { display:grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 26px; align-items:start; margin-top: 26px; }
-    .step3-output-grid .input-group.compact { grid-template-columns: minmax(0, 1fr) auto auto; }
     .output-identity-grid { display:grid; grid-template-columns: 1.15fr 0.95fr; gap: 18px; align-items:start; margin-top: 22px; }
     .review-card-head { display:flex; justify-content:space-between; align-items:flex-start; gap: 10px; margin-bottom: 8px; }
     .review-link { border:none; background: transparent; color: var(--accent-2); font-size: 12px; font-weight: 800; cursor: pointer; padding: 0; }
@@ -1418,7 +1467,10 @@ struct LanguageSummaryRow {
     .review-card h4 { margin: 0 0 8px; font-size: 17px; }
     .review-card p, .review-card li { color: var(--muted); font-size: 14px; line-height: 1.62; }
     .review-card ul { padding-left: 18px; margin: 0; }
-    .review-mini-callout { margin-top: 12px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: linear-gradient(180deg, rgba(37,99,235,0.04), transparent), var(--surface-2); color: var(--muted); font-size: 13px; line-height: 1.58; }
+    .review-scan-note { margin-top: 14px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-2); }
+    .review-scan-note-label { font-size: 11px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+    .review-scan-note p { margin: 4px 0 0; font-size: 13px; }
+    .review-scan-note code { display:inline; padding: 1px 5px; border-radius: 5px; font-size: 12px; }
         .explorer-wrap { display:grid; gap: 16px; margin-top: 18px; }
     .explorer-toolbar { display:flex; justify-content:space-between; gap: 12px; align-items:flex-start; }
     .explorer-toolbar.compact { padding: 0; border-bottom: none; }
@@ -1495,13 +1547,19 @@ struct LanguageSummaryRow {
     .progress-bar span { display:block; width:42%; height:100%; background: linear-gradient(90deg, var(--accent), #6b8cff); animation: pulseBar 1.4s ease-in-out infinite; }
     @keyframes pulseBar { 0% { transform: translateX(-35%); width:25%; } 50% { transform: translateX(130%); width:44%; } 100% { transform: translateX(250%); width:25%; } }
     .hidden { display:none !important; }
+    .site-footer { position: relative; z-index: 2; margin-top: 48px; padding: 20px 24px; border-top: 1px solid var(--line); background: rgba(0,0,0,0.04); text-align: center; color: var(--muted); font-size: 13px; line-height: 1.7; }
+    .site-footer a { color: var(--muted-2); font-weight: 700; text-decoration: none; }
+    .site-footer a:hover { color: var(--text); text-decoration: underline; }
     @media (max-width: 1280px) { .layout { grid-template-columns: 230px 1fr; } .scope-stats, .explorer-meta-grid, .explorer-meta-grid.split { grid-template-columns: 1fr 1fr; } }
-    @media (max-width: 980px) { .summary-grid, .field-grid, .artifact-grid, .review-grid, .scope-stats, .explorer-meta-grid, .explorer-meta-grid.split, .glob-guidance-grid { grid-template-columns: 1fr; } .layout { grid-template-columns: 1fr; } .step-nav { position:static; } .top-nav-inner { grid-template-columns: 1fr; justify-items: stretch; } .nav-project-slot, .nav-status { justify-content:flex-start; } .input-group { grid-template-columns: 1fr 1fr; } .input-group.compact { grid-template-columns: 1fr 1fr; } .better-spacing { justify-content:flex-start; } .file-explorer-controls { flex-direction: column; align-items:flex-start; flex-wrap: wrap; } .file-explorer-search-row { margin-left: 0; flex-wrap: wrap; width: 100%; } .explorer-search { min-width: 0; width: 100%; } .file-explorer-header, .tree-row { grid-template-columns: minmax(0, 1fr) 110px 110px 140px; } .advanced-rule-row, .advanced-rule-row.static-note, .output-identity-grid, .counting-policy-grid, .step3-output-grid, .step3-select-grid { grid-template-columns: 1fr; } .wizard-progress { max-width: none; } }
-  
-    </style>
+    @media (max-width: 980px) { .summary-grid, .field-grid, .artifact-grid, .review-grid, .scope-stats, .explorer-meta-grid, .explorer-meta-grid.split, .glob-guidance-grid { grid-template-columns: 1fr; } .layout { grid-template-columns: 1fr; } .step-nav { position:static; } .top-nav-inner { grid-template-columns: 1fr; justify-items: stretch; } .nav-project-slot, .nav-status { justify-content:flex-start; } .input-group { grid-template-columns: 1fr 1fr; } .input-group.compact { grid-template-columns: 1fr 1fr; } .better-spacing { justify-content:flex-start; } .file-explorer-controls { flex-direction: column; align-items:flex-start; flex-wrap: wrap; } .file-explorer-search-row { margin-left: 0; flex-wrap: wrap; width: 100%; } .explorer-search { min-width: 0; width: 100%; } .file-explorer-header, .tree-row { grid-template-columns: minmax(0, 1fr) 110px 110px 140px; } .advanced-rule-row, .advanced-rule-row.static-note, .output-identity-grid, .counting-top-grid, .preset-inline-row { grid-template-columns: 1fr; } .wizard-progress { max-width: none; } }
+  </style>
 </head>
 <body>
   <div class="background-watermarks" aria-hidden="true">
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
     <img src="/images/logo/logo-text.png" alt="" />
     <img src="/images/logo/logo-text.png" alt="" />
     <img src="/images/logo/logo-text.png" alt="" />
@@ -1638,7 +1696,6 @@ struct LanguageSummaryRow {
                     <input id="path" name="path" type="text" value="samples/basic" placeholder="/path/to/repository" required />
                     <button type="button" class="mini-button oxide" id="browse-path">Browse</button>
                     <button type="button" class="mini-button" id="use-sample-path">Use sample</button>
-                    <button type="button" class="mini-button primary-lite" id="refresh-preview-inline">Preview</button>
                   </div>
                   <div class="hint">Browse opens the native folder picker through the Rust backend, so you do not need to type local paths manually.</div>
                 </div>
@@ -1691,93 +1748,107 @@ struct LanguageSummaryRow {
                 <h2>Choose counting behavior</h2>
                 <p class="card-subtitle counting-intro">These settings decide how mixed code-plus-comment lines and Python docstrings are classified. Pure comment lines, block comments, physical lines, and blank lines are still tracked by supported analyzers even when they do not share a line with executable code.</p>
                 <div class="subsection-bar">Primary line classification</div>
-              <div class="counting-policy-grid">
-                <div class="field counting-policy-field">
-                  <label for="mixed_line_policy">Mixed-line policy</label>
-                  <select id="mixed_line_policy" name="mixed_line_policy">
-                    <option value="code_only">Code only</option>
-                    <option value="code_and_comment">Code and comment</option>
-                    <option value="comment_only">Comment only</option>
-                    <option value="separate_mixed_category">Separate mixed category</option>
-                  </select>
-                  <div class="hint">Mixed lines contain executable code and inline comment text on the same line. Pick whether they stay in code totals, comment totals, both, or a separate mixed bucket.</div>
-                </div>
-                <div class="explainer-card prominent mixed-policy-side-card">
-                  <div class="field-help-title">Mixed-line policy explanation</div>
-                  <div class="explainer-body" id="mixed-policy-description"></div>
-                  <div class="code-sample" id="mixed-policy-example"></div>
+                <div class="preset-inline-row" style="align-items:start;">
+                  <div class="field" style="margin:0;">
+                    <label for="mixed_line_policy">Mixed-line policy</label>
+                    <select id="mixed_line_policy" name="mixed_line_policy">
+                      <option value="code_only">Code only</option>
+                      <option value="code_and_comment">Code and comment</option>
+                      <option value="comment_only">Comment only</option>
+                      <option value="separate_mixed_category">Separate mixed category</option>
+                    </select>
+                    <div class="hint">Mixed lines share executable code and an inline comment on the same line.</div>
+                  </div>
+                  <div class="explainer-card prominent" style="margin:0;">
+                    <div class="field-help-title" id="mixed-policy-label">Mixed-line policy explanation</div>
+                    <div class="explainer-body" id="mixed-policy-description"></div>
+                    <div class="code-sample" id="mixed-policy-example"></div>
+                  </div>
                 </div>
               </div>
 
               <div class="subsection-bar">Additional scan rules</div>
               <div class="advanced-rule-table">
-                <div class="advanced-rule-row python-docstring-wrap" id="python-docstring-wrap">
-                  <div class="advanced-rule-head"><div class="field-help-title">Python documentation</div><h4>Python docstrings</h4></div>
-                  <select id="python_docstrings_as_comments_select"><option value="enabled" selected>Enabled</option><option value="disabled">Disabled</option></select>
-                  <div class="advanced-rule-body">
-                    <div class="advanced-rule-description" id="python-docstring-description"></div>
-                    <div class="advanced-rule-example" id="python-docstring-example"></div>
-                  </div>
-                  <input id="python_docstrings_as_comments" name="python_docstrings_as_comments" type="checkbox" checked class="hidden" />
-                </div>
                 <div class="advanced-rule-row">
                   <div class="advanced-rule-head"><div class="field-help-title">Generated files</div><h4>Generated-file detection</h4></div>
                   <select name="generated_file_detection" id="generated_file_detection"><option value="enabled" selected>Enabled</option><option value="disabled">Disabled</option></select>
-                  <div class="advanced-rule-body"><div class="advanced-rule-description"><strong>Purpose:</strong> Keep generated code or generated assets out of the totals by default.<br /><strong>Good default when:</strong> you want authored source only.<br /><strong>Turn it off when:</strong> you intentionally want generated SDKs, compiled templates, or codegen output included.</div><div class="advanced-rule-example">Example:
-- generated/api/client.py
-- build/schema.gen.rs
-
-Enabled result:
-- generated output is skipped from authored-source totals</div></div>
+                  <div>
+                    <div class="advanced-rule-description"><strong>Purpose:</strong> Keep generated code and assets out of SLOC totals so counts reflect authored source.<br /><strong>Good default when:</strong> you want implementation-only totals.<br /><strong>Turn it off when:</strong> you intentionally want generated SDKs, compiled templates, or codegen output included.</div>
+                    <div class="code-sample" style="margin-top:8px;font-size:12px;"># generated_file_detection = "enabled"
+# Files matching codegen patterns are excluded:
+#   *.generated.cs  *.pb.go  *.g.dart</div>
+                  </div>
                 </div>
                 <div class="advanced-rule-row">
                   <div class="advanced-rule-head"><div class="field-help-title">Minified files</div><h4>Minified-file detection</h4></div>
                   <select name="minified_file_detection" id="minified_file_detection"><option value="enabled" selected>Enabled</option><option value="disabled">Disabled</option></select>
-                  <div class="advanced-rule-body"><div class="advanced-rule-description"><strong>Purpose:</strong> Prevent compressed assets from distorting file and line counts.<br /><strong>Good default when:</strong> your repo includes built JavaScript or bundled web assets.<br /><strong>Turn it off when:</strong> minified files are the actual subject of the review.</div><div class="advanced-rule-example">Example:
-- static/app.min.js
-- public/vendor.bundle.min.css
-
-Enabled result:
-- compressed assets do not dominate code totals</div></div>
+                  <div>
+                    <div class="advanced-rule-description"><strong>Purpose:</strong> Prevent compressed assets from distorting file and line counts.<br /><strong>Good default when:</strong> your repo includes built JavaScript or bundled web assets.<br /><strong>Turn it off when:</strong> minified files are the actual subject of the review.</div>
+                    <div class="code-sample" style="margin-top:8px;font-size:12px;"># minified_file_detection = "enabled"
+# Heuristic: very long lines + low whitespace ratio
+#   jquery.min.js  bundle.min.css  → skipped</div>
+                  </div>
                 </div>
                 <div class="advanced-rule-row">
                   <div class="advanced-rule-head"><div class="field-help-title">Vendor directories</div><h4>Vendor-directory detection</h4></div>
                   <select name="vendor_directory_detection" id="vendor_directory_detection"><option value="enabled" selected>Enabled</option><option value="disabled">Disabled</option></select>
-                  <div class="advanced-rule-body"><div class="advanced-rule-description"><strong>Purpose:</strong> Skip bundled third-party dependencies so the totals reflect your project more closely.<br /><strong>Good default when:</strong> you only want first-party code in the report.<br /><strong>Turn it off when:</strong> vendored code is part of what you need to measure.</div><div class="advanced-rule-example">Example:
-- vendor/**
-- third_party/**
-- deps/sqlite/**
-
-Enabled result:
-- bundled dependency trees stay out of repository-owned counts</div></div>
+                  <div>
+                    <div class="advanced-rule-description"><strong>Purpose:</strong> Skip bundled third-party dependencies so totals reflect your first-party code.<br /><strong>Good default when:</strong> you only want authored source in the report.<br /><strong>Turn it off when:</strong> vendored code is part of what you need to measure.</div>
+                    <div class="code-sample" style="margin-top:8px;font-size:12px;"># vendor_directory_detection = "enabled"
+# Directories named vendor/ node_modules/ third_party/
+#   → entire subtree is excluded from totals</div>
+                  </div>
                 </div>
                 <div class="advanced-rule-row">
                   <div class="advanced-rule-head"><div class="field-help-title">Lockfiles and manifests</div><h4>Include lockfiles</h4></div>
                   <select name="include_lockfiles" id="include_lockfiles"><option value="disabled" selected>Disabled</option><option value="enabled">Enabled</option></select>
-                  <div class="advanced-rule-body"><div class="advanced-rule-description"><strong>Purpose:</strong> Decide whether package lockfiles and similar generated manifests belong in the scan scope.<br /><strong>Keep disabled when:</strong> you want implementation-focused totals.<br /><strong>Enable when:</strong> your review includes dependency metadata or repository footprint.</div><div class="advanced-rule-example">Example:
-- Cargo.lock
-- package-lock.json
-- poetry.lock
-
-Enabled result:
-- dependency manifests become part of the measured scope</div></div>
+                  <div>
+                    <div class="advanced-rule-description"><strong>Purpose:</strong> Decide whether package lockfiles and generated manifests belong in the scan scope.<br /><strong>Good default when:</strong> you want implementation-focused totals.<br /><strong>Turn it off when:</strong> your review needs to include dependency metadata or footprint accounting.</div>
+                    <div class="code-sample" style="margin-top:8px;font-size:12px;"># include_lockfiles = false  (default)
+# Files like package-lock.json  Cargo.lock  yarn.lock
+#   → skipped unless this is enabled</div>
+                  </div>
                 </div>
                 <div class="advanced-rule-row">
                   <div class="advanced-rule-head"><div class="field-help-title">Binary handling</div><h4>Binary file behavior</h4></div>
                   <select name="binary_file_behavior" id="binary_file_behavior"><option value="skip" selected>Skip binary files</option><option value="fail">Fail on binary files</option></select>
-                  <div class="advanced-rule-body"><div class="advanced-rule-description"><strong>Purpose:</strong> Control how the scan reacts when binaries are encountered inside the selected scope.<br /><strong>Skip binary files:</strong> best for typical local runs.<br /><strong>Fail on binary files:</strong> useful when you want the run to stop and force cleanup of the selected path or include rules.</div><div class="advanced-rule-example">Example:
-- tools/archive.tar.xz
-- assets/logo.psd
-- installer.exe
-
-Skip result:
-- binaries are logged and ignored
-Fail result:
-- the run stops so you can tighten scope first</div></div>
+                  <div>
+                    <div class="advanced-rule-description"><strong>Purpose:</strong> Control how the scan reacts when binaries are found inside the selected scope.<br /><strong>Good default when:</strong> your repo has images, fonts, or other assets alongside source.<br /><strong>Turn it off when:</strong> you want the run to fail-fast and force cleanup of binary assets in the path.</div>
+                    <div class="code-sample" style="margin-top:8px;font-size:12px;"># binary_file_behavior = "skip"  (default)
+# Detected via long lines + low whitespace heuristic
+#   .png  .exe  .so  → skipped silently</div>
+                  </div>
                 </div>
-                <div class="advanced-rule-row static-note">
-                  <div class="advanced-rule-head"><div class="field-help-title">Always tracked</div><h4>Comment and blank-line basics</h4></div>
-                  <div class="advanced-rule-description"><strong>Always included by supported analyzers:</strong> pure comment lines, multi-line comment blocks, blank lines, and total physical lines. The mixed-line policy above only changes what happens when executable code and comment text share the same line.</div>
+                <div class="advanced-rule-row python-docstring-wrap" id="python-docstring-wrap">
+                  <div class="advanced-rule-head"><div class="field-help-title">Python docstrings</div><h4>Docstring counting</h4></div>
+                  <div class="toggle-card compact">
+                    <label class="checkbox">
+                      <input id="python_docstrings_as_comments" name="python_docstrings_as_comments" type="checkbox" checked />
+                      <span>Count as comment-style lines</span>
+                    </label>
+                  </div>
+                  <div>
+                    <div class="advanced-rule-description" id="python-docstring-live-help">Enabled: docstrings contribute to comment-style totals. Disable to count only inline comments and explicit comment lines.</div>
+                    <div class="code-sample" id="python-docstring-example" style="margin-top:8px;font-size:12px;white-space:pre;"></div>
+                  </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:4px;">
+                  <div class="always-tracked-tip">
+                    <div class="always-tracked-tip-icon">ℹ</div>
+                    <div class="always-tracked-tip-body">
+                      <div class="field-help-title">Always tracked — not configurable</div>
+                      <h4>Comment and blank-line basics</h4>
+                      <div class="advanced-rule-description">Pure comment lines, multi-line comment blocks, blank lines, and total physical lines are always included by every supported analyzer. The mixed-line policy above only affects lines where executable code and comment text share the same line.</div>
+                    </div>
+                  </div>
+                  <div class="always-tracked-tip">
+                    <div class="always-tracked-tip-icon">→</div>
+                    <div class="always-tracked-tip-body">
+                      <div class="field-help-title">What these settings change</div>
+                      <h4>Lines on the boundary</h4>
+                      <div class="advanced-rule-description">The rules on this page only affect lines that live on the boundary between code and comments. A line like <code style="font-size:12px;">x = 1  # counter</code> is the boundary case — it contains both executable code and inline comment text. Every other category is always counted the same regardless of these settings.</div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -1795,8 +1866,8 @@ Fail result:
               <div class="section">
                 <div class="section-kicker">Step 3</div>
                 <h2>Output and report identity</h2>
-                <p class="card-subtitle step3-intro">Choose where generated files should be saved, what the exported report title should be, and which artifact bundle fits your workflow.</p>
-                <div class="field-grid step3-select-grid">
+                <p class="card-subtitle step3-subtitle">Choose where generated files should be saved, what the exported report title should be, and which artifact bundle fits your workflow.</p>
+                <div class="preset-inline-row">
                   <div class="field">
                     <label for="scan_preset">Scan preset</label>
                     <select id="scan_preset">
@@ -1805,8 +1876,17 @@ Fail result:
                       <option value="comment_audit">Comment audit</option>
                       <option value="deep_review">Deep review</option>
                     </select>
-                    <div class="hint">A scan preset is a starting point. It applies recommended defaults for the kind of review you want to do.</div>
+                    <div class="hint">A scan preset applies recommended defaults for the kind of review you want to do.</div>
                   </div>
+                  <div class="explainer-card">
+                    <div class="field-help-title">Selected scan preset</div>
+                    <div class="explainer-body" id="scan-preset-description"></div>
+                    <div class="preset-summary-row" id="scan-preset-summary"></div>
+                    <div class="code-sample" id="scan-preset-example"></div>
+                    <div class="preset-note" id="scan-preset-note"></div>
+                  </div>
+                </div>
+                <div class="preset-inline-row">
                   <div class="field">
                     <label for="artifact_preset">Artifact preset</label>
                     <select id="artifact_preset">
@@ -1815,29 +1895,19 @@ Fail result:
                       <option value="html_only">HTML only</option>
                       <option value="machine">Machine bundle</option>
                     </select>
-                    <div class="hint">An artifact preset toggles the output cards below for browser review, handoff, or automation use cases.</div>
+                    <div class="hint">An artifact preset toggles the outputs below for browser review, handoff, or automation.</div>
+                  </div>
+                  <div class="explainer-card">
+                    <div class="field-help-title">Selected artifact preset</div>
+                    <div class="explainer-body" id="artifact-preset-description"></div>
+                    <div class="preset-summary-row" id="artifact-preset-summary"></div>
+                    <div class="code-sample" id="artifact-preset-example"></div>
                   </div>
                 </div>
               </div>
 
-              <div class="field-help-grid preset-grid">
-                <div class="explainer-card">
-                  <div class="field-help-title">Selected scan preset</div>
-                  <div class="explainer-body" id="scan-preset-description"></div>
-                  <div class="preset-summary-row" id="scan-preset-summary"></div>
-                  <div class="code-sample" id="scan-preset-example"></div>
-                  <div class="preset-note" id="scan-preset-note"></div>
-                </div>
-                <div class="explainer-card">
-                  <div class="field-help-title">Selected artifact preset</div>
-                  <div class="explainer-body" id="artifact-preset-description"></div>
-                  <div class="preset-summary-row" id="artifact-preset-summary"></div>
-                  <div class="code-sample" id="artifact-preset-example"></div>
-                </div>
-              </div>
-
               <div class="section section-spacer-top">
-                <div class="output-identity-grid step3-output-grid">
+                <div class="output-field-row">
                   <div class="field">
                     <label for="output_dir">Output directory</label>
                     <div class="input-group compact">
@@ -1845,14 +1915,26 @@ Fail result:
                       <button type="button" class="mini-button oxide" id="browse-output-dir">Browse</button>
                       <button type="button" class="mini-button" id="use-default-output">Use default</button>
                     </div>
-                    <div class="hint">This is where run folders are created. It is separate from the project path and does not affect what gets scanned.</div>
+                    <div class="hint">Run folders are created inside this directory.</div>
                   </div>
+                  <div class="output-field-aside">
+                    <strong>Where reports land</strong>
+                    Each run creates a timestamped subfolder here containing the selected artifacts. This path is separate from the project being scanned and does not affect what files are analyzed.
+                  </div>
+                </div>
+              </div>
+
+              <div class="section section-spacer-top">
+                <div class="output-field-row">
                   <div class="field">
                     <label for="report_title">Report title</label>
                     <input id="report_title" name="report_title" type="text" value="samples/basic" placeholder="Project report title" />
-                    <div class="hint">This title appears in exported HTML and PDF outputs. It also stays visible in the page header while you configure the run.</div>
+                    <div class="hint">Appears in HTML and PDF output headers.</div>
                   </div>
-
+                  <div class="output-field-aside">
+                    <strong>Shown in exported artifacts</strong>
+                    This title is embedded in the HTML and PDF reports and stays visible in the workbench header while you configure the run. It defaults to the last folder name of the selected project path.
+                  </div>
                 </div>
               </div>
 
@@ -1915,7 +1997,11 @@ Fail result:
                   <div class="review-card highlight">
                     <div class="review-card-head"><h4>What will be scanned</h4><button type="button" class="review-link jump-step" data-step-target="1">Edit step 1</button></div>
                     <ul id="review-scan-summary"></ul>
-                    <div class="review-mini-callout" id="review-scan-note">Scope notes appear here once a project path is selected and previewed.</div>
+                    <div class="review-scan-note">
+                      <div class="review-scan-note-label">Analyzer coverage</div>
+                      <p>Supported: C, C++, C#, Python, Shell, PowerShell. Files outside this set appear as unsupported in the scope preview and are excluded from code totals.</p>
+                      <p>The scan respects <code>.gitignore</code> rules and skips vendor directories, generated files, and lockfiles unless explicitly enabled in counting rules.</p>
+                    </div>
                   </div>
                   <div class="review-card highlight">
                     <div class="review-card-head"><h4>How it will be counted</h4><button type="button" class="review-link jump-step" data-step-target="2">Edit step 2</button></div>
@@ -1934,7 +2020,7 @@ Fail result:
                     <ul id="review-preview-summary"></ul>
                   </div>
                   <div class="review-card highlight">
-                    <div class="review-card-head"><h4>Run readiness</h4><button type="button" class="review-link jump-step" data-step-target="4">Review run</button></div>
+                    <div class="review-card-head"><h4>Run readiness</h4><button type="button" class="review-link jump-step" data-step-target="4">Current step</button></div>
                     <ul id="review-readiness-summary"></ul>
                   </div>
                 </div>
@@ -1972,7 +2058,6 @@ Fail result:
       var themeToggle = document.getElementById("theme-toggle");
       var mixedLinePolicy = document.getElementById("mixed_line_policy");
       var pythonDocstrings = document.getElementById("python_docstrings_as_comments");
-      var pythonDocstringsSelect = document.getElementById("python_docstrings_as_comments_select");
       var pythonWraps = document.querySelectorAll(".python-docstring-wrap");
       var scanPreset = document.getElementById("scan_preset");
       var artifactPreset = document.getElementById("artifact_preset");
@@ -1985,22 +2070,8 @@ Fail result:
       var breadcrumbTitle = document.getElementById("breadcrumb-title");
       var wizardProgressFill = document.getElementById("wizard-progress-fill");
       var wizardProgressValue = document.getElementById("wizard-progress-value");
-
-      function normalizeWizardPanels() {
-        if (!form) return;
-        var panels = Array.prototype.slice.call(form.querySelectorAll(".wizard-step"));
-        if (!panels.length) return;
-        panels.forEach(function (panel) {
-          if (panel.parentElement !== form) {
-            form.appendChild(panel);
-          }
-        });
-      }
-
-      normalizeWizardPanels();
-
       var stepButtons = Array.prototype.slice.call(document.querySelectorAll(".step-button"));
-      var stepPanels = Array.prototype.slice.call(form.querySelectorAll(".wizard-step"));
+      var stepPanels = Array.prototype.slice.call(document.querySelectorAll(".wizard-step"));
       var artifactCards = Array.prototype.slice.call(document.querySelectorAll(".artifact-card"));
       var reportTitleTouched = false;
       var currentStep = 1;
@@ -2105,11 +2176,21 @@ Fail result:
           button.classList.toggle("active", Number(button.getAttribute("data-step-target")) === step);
         });
         updateWizardProgress(step);
+
+        var wizardTop =
+          document.querySelector(".page-shell") ||
+          document.querySelector(".page") ||
+          document.querySelector(".card") ||
+          document.body;
+
+        var top = 0;
         try {
-          window.scrollTo({ top: 0, behavior: "smooth" });
+          top = Math.max(0, wizardTop.getBoundingClientRect().top + window.scrollY - 16);
         } catch (e) {
-          window.scrollTo(0, 0);
+          top = 0;
         }
+
+        window.scrollTo({ top: top, behavior: "smooth" });
       }
 
       function inferTitleFromPath(value) {
@@ -2150,15 +2231,13 @@ Fail result:
       }
 
       function updatePythonDocstringUI() {
-        if (pythonDocstringsSelect) { pythonDocstrings.checked = pythonDocstringsSelect.value !== "disabled"; }
         var checked = !!pythonDocstrings.checked;
-        document.getElementById("python-docstring-description").textContent = checked
-          ? "Enabled: docstrings are treated as comment-style documentation lines. This is useful when you want narrative documentation to contribute to comment totals."
-          : "Disabled: docstrings are not treated as comment content. This keeps comment totals closer to inline comments and explicit commented lines only.";
         document.getElementById("python-docstring-example").textContent = checked
-          ? 'Example:\n\ndef greet():\n    """Greet the user."""\n    print("hi")\n\nEnabled result:\n- the docstring contributes to comment-style totals'
-          : 'Example:\n\ndef greet():\n    """Greet the user."""\n    print("hi")\n\nDisabled result:\n- the docstring stays out of comment-style totals';
-        if (pythonDocstringsSelect) { pythonDocstringsSelect.value = checked ? "enabled" : "disabled"; }
+          ? 'def greet():\n    """Greet the user."""  ← comment\n    print("hi")'
+          : 'def greet():\n    """Greet the user."""  ← not counted\n    print("hi")';
+        document.getElementById("python-docstring-live-help").textContent = checked
+          ? "Enabled: docstrings contribute to comment-style totals."
+          : "Disabled: docstrings are not counted as comment content.";
       }
 
       function renderPresetChips(targetId, chips) {
@@ -2186,7 +2265,6 @@ Fail result:
         if (!info || !info.apply) return;
         mixedLinePolicy.value = info.apply.mixed;
         pythonDocstrings.checked = !!info.apply.docstrings;
-        if (pythonDocstringsSelect) { pythonDocstringsSelect.value = pythonDocstrings.checked ? "enabled" : "disabled"; }
         document.getElementById("generated_file_detection").value = info.apply.generated;
         document.getElementById("minified_file_detection").value = info.apply.minified;
         document.getElementById("vendor_directory_detection").value = info.apply.vendor;
@@ -2229,23 +2307,14 @@ Fail result:
         var excludeText = document.getElementById("exclude_globs").value.trim();
         var sidePathPreview = document.getElementById("side-path-preview");
         var sideOutputPreview = document.getElementById("side-output-preview");
-        var reviewScanNote = document.getElementById("review-scan-note");
 
         if (sidePathPreview) { sidePathPreview.textContent = pathInput.value || "samples/basic"; }
         if (sideOutputPreview) { sideOutputPreview.textContent = outputDirInput.value || "out/web"; }
 
-        var inferredProject = inferTitleFromPath(pathInput.value || "samples/basic");
         scanSummary.innerHTML = ""
           + "<li>Path: " + escapeHtml(pathInput.value || "samples/basic") + "</li>"
-          + "<li>Project label: " + escapeHtml(inferredProject) + "</li>"
           + "<li>Include filters: " + escapeHtml(includeText || "none") + "</li>"
-          + "<li>Exclude filters: " + escapeHtml(excludeText || "none") + "</li>"
-          + "<li>Scope shape: " + escapeHtml(includeText ? "Focused by include rules" : "Entire project path, then trimmed by exclusions") + "</li>";
-        if (reviewScanNote) {
-          reviewScanNote.textContent = includeText
-            ? "The scan starts from the selected project path, then narrows to the include patterns you provided before exclusions are applied."
-            : "No include globs are set, so the full project path is eligible first. Exclude globs and scan-rule policies then trim noisy files and folders away.";
-        }
+          + "<li>Exclude filters: " + escapeHtml(excludeText || "none") + "</li>";
 
         countSummary.innerHTML = ""
           + "<li>Mixed-line policy: " + escapeHtml(mixedLinePolicy.options[mixedLinePolicy.selectedIndex].text) + "</li>"
@@ -2284,12 +2353,10 @@ Fail result:
 
           if (readinessSummary) {
             var selectedArtifactsCount = selectedArtifacts.length;
-            var previewLoaded = statButtons.length > 0;
             readinessSummary.innerHTML = ''
+              + '<li>Current step completion: ' + escapeHtml(String(Math.max(25, Math.min(100, currentStep * 25)))) + '%</li>'
               + '<li>Project path set: ' + (pathInput.value ? 'yes' : 'no') + '</li>'
-              + '<li>Scope preview loaded: ' + (previewLoaded ? 'yes' : 'no') + '</li>'
               + '<li>Artifact count selected: ' + escapeHtml(String(selectedArtifactsCount)) + '</li>'
-              + '<li>Output destination: ' + escapeHtml(outputDirInput.value || 'out/web') + '</li>'
               + '<li>Ready to run: ' + ((pathInput.value && selectedArtifactsCount > 0) ? 'yes' : 'no') + '</li>';
           }
         }
@@ -2314,11 +2381,6 @@ Fail result:
         pythonWraps.forEach(function (node) {
           node.classList.toggle("hidden", !hasPython);
         });
-        if (!hasPython && pythonDocstringsSelect) {
-          pythonDocstringsSelect.value = "enabled";
-          pythonDocstrings.checked = true;
-          updatePythonDocstringUI();
-        }
       }
 
       function attachPreviewInteractions() {
@@ -2599,20 +2661,37 @@ Fail result:
       }
 
       function pickDirectory(targetInput, kind) {
+        var browseButton = targetInput === pathInput ? browsePath : browseOutputDir;
+        if (browseButton) browseButton.disabled = true;
+
+        if (previewPanel && targetInput === pathInput) {
+          previewPanel.innerHTML = '<div class="preview-error">Opening folder picker...</div>';
+        }
+
         fetch("/pick-directory?kind=" + encodeURIComponent(kind || "project") + "&current=" + encodeURIComponent(targetInput.value || ""))
           .then(function (response) { return response.json(); })
           .then(function (data) {
             if (data && data.selected_path) {
               targetInput.value = data.selected_path;
+
               if (targetInput === pathInput) {
                 updateReportTitleFromPath();
                 loadPreview();
               }
+
               updateReview();
+            } else if (previewPanel && targetInput === pathInput) {
+              previewPanel.innerHTML = '<div class="preview-error">No folder selected.</div>';
             }
           })
           .catch(function () {
             window.alert("Directory picker request failed.");
+            if (previewPanel && targetInput === pathInput) {
+              previewPanel.innerHTML = '<div class="preview-error">Directory picker request failed.</div>';
+            }
+          })
+          .finally(function () {
+            if (browseButton) browseButton.disabled = false;
           });
       }
 
@@ -2706,7 +2785,7 @@ Fail result:
       }
 
       if (mixedLinePolicy) mixedLinePolicy.addEventListener("change", function () { updateMixedPolicyUI(); updateReview(); });
-      if (pythonDocstringsSelect) pythonDocstringsSelect.addEventListener("change", function () { updatePythonDocstringUI(); updateReview(); });
+      if (pythonDocstrings) pythonDocstrings.addEventListener("change", function () { updatePythonDocstringUI(); updateReview(); });
       if (scanPreset) scanPreset.addEventListener("change", function () { applyScanPreset(); updatePresetDescriptions(); updateReview(); });
       if (artifactPreset) artifactPreset.addEventListener("change", function () { updatePresetDescriptions(); applyArtifactPreset(); updateReview(); });
 
@@ -2734,11 +2813,48 @@ Fail result:
       applyArtifactPreset();
       updateReview();
       loadPreview();
-    })();
-  
-    </script>
 
-  </body>
+      (function randomizeWatermarks() {
+        var wms = Array.prototype.slice.call(document.querySelectorAll(".background-watermarks img"));
+        if (!wms.length) return;
+        var placed = [];
+        function tooClose(top, left) {
+          for (var i = 0; i < placed.length; i++) {
+            var dt = Math.abs(placed[i][0] - top);
+            var dl = Math.abs(placed[i][1] - left);
+            if (dt < 16 && dl < 12) return true;
+          }
+          return false;
+        }
+        function pick(leftBand) {
+          for (var attempt = 0; attempt < 50; attempt++) {
+            var top = Math.random() * 88 + 2;
+            var left = leftBand ? Math.random() * 24 + 1 : Math.random() * 24 + 74;
+            if (!tooClose(top, left)) { placed.push([top, left]); return [top, left]; }
+          }
+          var top = Math.random() * 88 + 2;
+          var left = leftBand ? Math.random() * 24 + 1 : Math.random() * 24 + 74;
+          placed.push([top, left]);
+          return [top, left];
+        }
+        var half = Math.floor(wms.length / 2);
+        wms.forEach(function (img, i) {
+          var pos = pick(i < half);
+          var size = Math.floor(Math.random() * 80 + 110);
+          var rot = (Math.random() * 360).toFixed(1);
+          var op = (Math.random() * 0.08 + 0.13).toFixed(2);
+          img.style.cssText = "width:" + size + "px;top:" + pos[0].toFixed(1) + "%;left:" + pos[1].toFixed(1) + "%;transform:rotate(" + rot + "deg);opacity:" + op + ";";
+        });
+      })();
+    })();
+  </script>
+  <footer class="site-footer">
+    oxide-sloc — local source line analysis workbench &nbsp;·&nbsp;
+    Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
+    &nbsp;·&nbsp; <a href="https://github.com/NimaShafie/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
+    &nbsp;·&nbsp; Licensed AGPL-3.0-or-later
+  </footer>
+</body>
 </html>
 "##,
     ext = "html"
@@ -2807,10 +2923,13 @@ struct IndexTemplate {}
     * { box-sizing: border-box; }
     html, body { margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); }
     body { overflow-x: hidden; transition: background 0.18s ease, color 0.18s ease; }
+    .background-watermarks { position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
+    .background-watermarks img { position: absolute; opacity: 0.18; filter: blur(0.3px); user-select: none; max-width: none; }
     .top-nav, .page { position: relative; z-index: 2; }
     .top-nav { position: sticky; top: 0; z-index: 30; background: linear-gradient(180deg, var(--nav), var(--nav-2)); border-bottom: 1px solid rgba(255,255,255,0.12); box-shadow: 0 4px 14px rgba(0,0,0,0.18); }
-    .top-nav-inner { max-width: 1720px; margin: 0 auto; padding: 10px 24px; min-height: 64px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 380px) auto; align-items: center; gap: 18px; }
+    .top-nav-inner { max-width: 1720px; margin: 0 auto; padding: 4px 24px; min-height: 56px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 380px) auto; align-items: center; gap: 18px; }
     .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
+    .brand-logo { width: 42px; height: 46px; object-fit: contain; flex: 0 0 auto; filter: drop-shadow(0 4px 10px rgba(0,0,0,0.22)); }
     .brand-mark { width: 42px; height: 42px; border-radius: 14px; background: radial-gradient(circle at 35% 35%, #f2a578, var(--oxide) 58%, var(--oxide-2)); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), 0 8px 18px rgba(0,0,0,0.22); flex: 0 0 auto; }
     .brand-copy { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
     .brand-title { margin: 0; color: #fff; font-size: 17px; font-weight: 800; line-height: 1.1; }
@@ -2852,7 +2971,7 @@ struct IndexTemplate {}
     .path-item { padding: 14px; background: var(--surface-2); }
     .path-item strong { display: block; margin-bottom: 6px; }
     code { display: inline-block; max-width: 100%; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--surface-3); border: 1px solid var(--line); padding: 2px 6px; border-radius: 8px; color: var(--text); }
-    .result-stack { display: grid; gap: 18px; align-items: start; }
+    .two-col { display: grid; grid-template-columns: 0.95fr 1.05fr; gap: 18px; align-items: start; }
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
     th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); }
     th { color: var(--muted); font-weight: 700; }
@@ -2864,20 +2983,36 @@ struct IndexTemplate {}
     .soft-chip { display:inline-flex; align-items:center; min-height: 32px; padding: 0 12px; border-radius: 999px; border:1px solid var(--line); background: var(--surface-2); color: var(--text); font-size: 13px; font-weight: 700; }
     .soft-chip.success { background: var(--success-bg); color: var(--success-text); }
     .toolbar-row { display:flex; justify-content:space-between; align-items:flex-start; gap: 12px; margin-bottom: 12px; }
-    .action-note { margin-top: 10px; color: var(--muted); font-size: 12px; line-height: 1.55; }
     .muted { color: var(--muted); }
+    .site-footer { position: relative; z-index: 2; margin-top: 48px; padding: 20px 24px; border-top: 1px solid var(--line); background: rgba(0,0,0,0.04); text-align: center; color: var(--muted); font-size: 13px; line-height: 1.7; }
+    .site-footer a { color: var(--muted-2); font-weight: 700; text-decoration: none; }
+    .site-footer a:hover { color: var(--text); text-decoration: underline; }
     @media (max-width: 1180px) {
-      .top-nav-inner, .action-grid { grid-template-columns: 1fr; }
+      .top-nav-inner, .two-col, .action-grid { grid-template-columns: 1fr; }
       .nav-project-slot, .nav-status { justify-content:flex-start; }
       .hero-top { flex-direction: column; }
     }
   </style>
 </head>
 <body>
+  <div class="background-watermarks" aria-hidden="true">
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+  </div>
   <div class="top-nav">
     <div class="top-nav-inner">
       <div class="brand">
-        <div class="brand-mark"></div>
+        <img class="brand-logo" src="/images/logo/small-logo.png" alt="OxideSLOC logo" />
         <div class="brand-copy">
           <div class="brand-title">OxideSLOC Local analysis workbench</div>
           <div class="brand-subtitle">Run complete</div>
@@ -2933,16 +3068,19 @@ struct IndexTemplate {}
         <div class="action-card">
           <h3>PDF report</h3>
           <div class="action-buttons">
+            {% match pdf_url %}
+              {% when Some with (url) %}
+                <a class="button" href="{{ url }}" target="_blank" rel="noopener">Open PDF</a>
+              {% when None %}{% endmatch %}
             {% match pdf_download_url %}
               {% when Some with (url) %}
-                <a class="button" href="{{ url }}">Save PDF</a>
+                <a class="button secondary" href="{{ url }}">Download PDF</a>
               {% when None %}{% endmatch %}
             {% match pdf_path %}
               {% when Some with (path) %}
                 <button type="button" class="copy-button secondary" data-copy-value="{{ path }}">Copy PDF path</button>
               {% when None %}{% endmatch %}
           </div>
-          <div class="action-note">PDF delivery is download-first to avoid blank in-browser tabs seen in some Chromium and Brave setups.</div>
         </div>
         <div class="action-card">
           <h3>JSON report</h3>
@@ -2979,8 +3117,7 @@ struct IndexTemplate {}
       </div>
     </section>
 
-    <div class="result-stack">
-      <section class="panel">
+    <section class="panel" style="margin-bottom: 18px;">
         <div class="toolbar-row">
           <div>
             <h2>Language breakdown</h2>
@@ -3014,13 +3151,13 @@ struct IndexTemplate {}
             {% endfor %}
           </tbody>
         </table>
-      </section>
+    </section>
 
-      <section class="panel">
+    <section class="panel">
         <div class="toolbar-row">
           <div>
             <h2>Report preview</h2>
-            <p class="muted">This preview uses the saved HTML artifact for the run. It now has a dedicated full-width row so the embedded saved report has enough room for tables, warning summaries, and sharing controls.</p>
+            <p class="muted">Embedded view of the saved HTML artifact. Opens full-screen using the Open HTML button above.</p>
           </div>
         </div>
 
@@ -3038,8 +3175,7 @@ struct IndexTemplate {}
             </div>
           {% endif %}
         </div>
-      </section>
-    </div>
+    </section>
   </div>
 
   <script>
@@ -3080,8 +3216,47 @@ struct IndexTemplate {}
       });
 
       loadSavedTheme();
+
+      (function randomizeWatermarks() {
+        var wms = Array.prototype.slice.call(document.querySelectorAll(".background-watermarks img"));
+        if (!wms.length) return;
+        var placed = [];
+        function tooClose(top, left) {
+          for (var i = 0; i < placed.length; i++) {
+            var dt = Math.abs(placed[i][0] - top);
+            var dl = Math.abs(placed[i][1] - left);
+            if (dt < 16 && dl < 12) return true;
+          }
+          return false;
+        }
+        function pick(leftBand) {
+          for (var attempt = 0; attempt < 50; attempt++) {
+            var top = Math.random() * 88 + 2;
+            var left = leftBand ? Math.random() * 24 + 1 : Math.random() * 24 + 74;
+            if (!tooClose(top, left)) { placed.push([top, left]); return [top, left]; }
+          }
+          var top = Math.random() * 88 + 2;
+          var left = leftBand ? Math.random() * 24 + 1 : Math.random() * 24 + 74;
+          placed.push([top, left]);
+          return [top, left];
+        }
+        var half = Math.floor(wms.length / 2);
+        wms.forEach(function (img, i) {
+          var pos = pick(i < half);
+          var size = Math.floor(Math.random() * 80 + 110);
+          var rot = (Math.random() * 360).toFixed(1);
+          var op = (Math.random() * 0.08 + 0.13).toFixed(2);
+          img.style.cssText = "width:" + size + "px;top:" + pos[0].toFixed(1) + "%;left:" + pos[1].toFixed(1) + "%;transform:rotate(" + rot + "deg);opacity:" + op + ";";
+        });
+      })();
     })();
   </script>
+  <footer class="site-footer">
+    oxide-sloc — local source line analysis workbench &nbsp;·&nbsp;
+    Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
+    &nbsp;·&nbsp; <a href="https://github.com/NimaShafie/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
+    &nbsp;·&nbsp; Licensed AGPL-3.0-or-later
+  </footer>
 </body>
 </html>
 "##,
@@ -3100,6 +3275,7 @@ struct ResultTemplate {
     blank_lines: u64,
     mixed_lines: u64,
     html_url: Option<String>,
+    pdf_url: Option<String>,
     json_url: Option<String>,
     html_download_url: Option<String>,
     pdf_download_url: Option<String>,
@@ -3118,45 +3294,155 @@ struct ResultTemplate {
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC error</title>
   <style>
-    body {
+    :root {
+      --bg: #f5efe8;
+      --surface: rgba(255,255,255,0.86);
+      --surface-2: #fbf7f2;
+      --line: #e6d0bf;
+      --line-strong: #dcb89f;
+      --text: #43342d;
+      --muted: #7b675b;
+      --nav: #b85d33;
+      --nav-2: #7a371b;
+      --accent: #6f9bff;
+      --accent-2: #4a78ee;
+      --shadow: 0 18px 42px rgba(77, 44, 20, 0.12);
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
       margin: 0;
       min-height: 100vh;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      background: linear-gradient(135deg, #0b1020, #121935 48%, #1f2b58);
-      color: #edf2ff;
-      padding: 32px;
+      background: var(--bg);
+      color: var(--text);
     }
-    .panel {
-      max-width: 900px;
+
+    .top-nav {
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      background: linear-gradient(180deg, var(--nav), var(--nav-2));
+      border-bottom: 1px solid rgba(255,255,255,0.12);
+      box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+    }
+
+    .top-nav-inner {
+      max-width: 1400px;
       margin: 0 auto;
+      padding: 10px 24px;
+      min-height: 64px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand-mark {
+      width: 42px;
+      height: 42px;
+      border-radius: 14px;
+      background: radial-gradient(circle at 35% 35%, #f2a578, #d37a4c 58%, #b35428);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), 0 8px 18px rgba(0,0,0,0.22);
+      flex: 0 0 auto;
+    }
+
+    .brand-copy {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-width: 0;
+    }
+
+    .brand-title {
+      margin: 0;
+      color: #fff;
+      font-size: 17px;
+      font-weight: 800;
+      line-height: 1.1;
+    }
+
+    .brand-subtitle {
+      color: rgba(255,255,255,0.85);
+      font-size: 12px;
+      line-height: 1.2;
+      margin-top: 2px;
+    }
+
+    .page {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 28px 24px 40px;
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
       border-radius: 24px;
-      border: 1px solid rgba(120, 155, 255, 0.28);
-      background: rgba(18, 25, 53, 0.92);
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28);
-      padding: 24px;
+      box-shadow: var(--shadow);
+      padding: 28px;
     }
-    pre {
-      white-space: pre-wrap;
-      background: rgba(9, 15, 34, 0.70);
-      border: 1px solid rgba(120, 155, 255, 0.18);
-      padding: 16px;
+
+    h1 {
+      margin: 0 0 18px;
+      font-size: 28px;
+      font-weight: 850;
+      letter-spacing: -0.03em;
+      color: #b35428;
+    }
+
+    .error-box {
       border-radius: 16px;
-      overflow: auto;
+      border: 1px solid var(--line);
+      background: #fff;
+      padding: 16px 18px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      line-height: 1.55;
     }
+
+    .actions {
+      margin-top: 18px;
+    }
+
     a {
-      color: #9ab6ff;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      padding: 0 16px;
+      border-radius: 14px;
+      border: 1px solid rgba(111, 144, 255, 0.30);
       text-decoration: none;
-      font-weight: 700;
+      color: white;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      font-weight: 800;
+      box-shadow: 0 12px 24px rgba(73, 106, 255, 0.22);
     }
   </style>
 </head>
 <body>
-  <div class="panel">
-    <h1>Analysis failed</h1>
-    <pre>{{ message }}</pre>
-    <p><a href="/">Back to setup</a></p>
+  <div class="top-nav">
+    <div class="top-nav-inner">
+      <div class="brand-mark"></div>
+      <div class="brand-copy">
+        <div class="brand-title">OxideSLOC Local analysis workbench</div>
+        <div class="brand-subtitle">Run failed</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="page">
+    <div class="panel">
+      <h1>Analysis failed</h1>
+      <div class="error-box">{{ message }}</div>
+      <div class="actions">
+        <a href="/">Back to setup</a>
+      </div>
+    </div>
   </div>
 </body>
 </html>

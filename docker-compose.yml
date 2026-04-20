@@ -1,0 +1,20 @@
+services:
+  oxidesloc:
+    build: .
+    image: oxide-sloc
+    ports:
+      - "3000:3000"
+    environment:
+      - SLOC_BROWSER=/usr/bin/chromium
+      - RUST_LOG=info
+    volumes:
+      # Mount a host directory to analyze it via the web UI or CLI.
+      # Example: docker compose run oxidesloc analyze /repo --plain
+      - type: bind
+        source: ${SLOC_TARGET:-./tmp-sloc}
+        target: /repo
+        read_only: true
+      # Persist generated reports across restarts.
+      - type: bind
+        source: ./out
+        target: /app/out

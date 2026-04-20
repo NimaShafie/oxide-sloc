@@ -1,0 +1,29 @@
+# oxide-sloc CI configuration — full scope (include everything)
+#
+# Counts everything: lockfiles, vendored code, generated files.
+# Use for audits or repository-footprint reporting.
+# Use with: oxidesloc analyze . --config ci/sloc-ci-full-scope.toml
+
+[discovery]
+honor_ignore_files    = false
+ignore_hidden_files   = false
+follow_symlinks       = false
+max_file_size_bytes   = 10485760
+excluded_directories  = [".git"]
+
+[analysis]
+mixed_line_policy             = "code_and_comment"
+python_docstrings_as_comments = true
+generated_file_detection      = false   # include generated code
+minified_file_detection       = false   # include minified assets
+vendor_directory_detection    = false   # include vendored dependencies
+include_lockfiles             = true    # include lockfiles
+binary_file_behavior          = "skip"
+decode_failure_behavior       = "warn_skip"
+parse_failure_behavior        = "warn_skip"
+
+[reporting]
+report_title               = "oxide-sloc Full-Scope Audit"
+include_summary_charts     = true
+include_skipped_files_section = true
+include_warnings_section   = true

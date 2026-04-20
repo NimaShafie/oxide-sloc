@@ -1,0 +1,8 @@
+target/
+out/
+tmp-sloc/
+*.log
+*.tmp
+.git/
+.vscode/
+.idea/

@@ -2,30 +2,102 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
 
+env:
+  RUST_LOG: warn
+  OUT_DIR: ci-out
+
 jobs:
-  rust:
+  check:
+    name: Quality gates
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install Rust
+      - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Check formatting
+      - name: Format check
         run: cargo fmt --all -- --check
 
-      - name: Lint
+      - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Build
         run: cargo build --workspace --all-features
 
-      - name: Test
+      - name: Unit tests
         run: cargo test --workspace --all-features
+
+  smoke:
+    name: CLI smoke tests
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release -p oxidesloc
+
+      - name: Plain summary
+        run: ./target/release/oxidesloc analyze samples/basic --plain
+
+      - name: Per-file breakdown
+        run: ./target/release/oxidesloc analyze samples/basic --per-file --plain
+
+      - name: JSON + HTML reports
+        run: |
+          mkdir -p $OUT_DIR
+          ./target/release/oxidesloc analyze samples/basic \
+            --report-title "CI run ${{ github.run_number }}" \
+            --json-out $OUT_DIR/result.json \
+            --html-out $OUT_DIR/report.html
+          test -s $OUT_DIR/result.json
+          test -s $OUT_DIR/report.html
+
+      - name: Re-render from saved JSON
+        run: |
+          ./target/release/oxidesloc report $OUT_DIR/result.json \
+            --html-out $OUT_DIR/re-rendered.html
+          test -s $OUT_DIR/re-rendered.html
+
+      - name: Policy variants
+        run: |
+          for policy in code-only code-and-comment comment-only separate-mixed-category; do
+            echo "--- policy: $policy ---"
+            ./target/release/oxidesloc analyze samples/basic \
+              --plain --mixed-line-policy "$policy"
+          done
+
+      - name: HTML content sanity
+        run: grep -q "OxideSLOC" $OUT_DIR/report.html
+
+      - name: Web UI health check
+        run: |
+          ./target/release/oxidesloc serve &
+          SERVER_PID=$!
+          sleep 4
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:4317/)
+          kill $SERVER_PID 2>/dev/null || true
+          [ "$HTTP_CODE" = "200" ] || (echo "Expected 200, got $HTTP_CODE" && exit 1)
+
+      - name: Upload CI reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-reports-${{ github.run_number }}
+          path: ci-out/
+          if-no-files-found: ignore

@@ -1,0 +1,30 @@
+# oxide-sloc CI configuration — default / balanced
+#
+# Equivalent to running the web UI with all defaults.
+# Use with: oxidesloc analyze ./src --config ci/sloc-ci-default.toml
+#           oxidesloc analyze ./src --config ci/sloc-ci-default.toml \
+#               --json-out out/result.json --html-out out/report.html
+
+[discovery]
+honor_ignore_files    = true
+ignore_hidden_files   = true
+follow_symlinks       = false
+max_file_size_bytes   = 2097152
+excluded_directories  = [".git", "node_modules", "target", ".venv", "__pycache__", "dist", "build"]
+
+[analysis]
+mixed_line_policy             = "code_only"
+python_docstrings_as_comments = true
+generated_file_detection      = true
+minified_file_detection       = true
+vendor_directory_detection    = true
+include_lockfiles             = false
+binary_file_behavior          = "skip"
+decode_failure_behavior       = "warn_skip"
+parse_failure_behavior        = "warn_skip"
+
+[reporting]
+report_title               = "oxide-sloc CI Report"
+include_summary_charts     = true
+include_skipped_files_section = true
+include_warnings_section   = true

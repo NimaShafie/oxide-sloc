@@ -1,150 +1,288 @@
 # oxide-sloc
 
 [![CI](https://github.com/NimaShafie/oxide-sloc/actions/workflows/ci.yml/badge.svg)](https://github.com/NimaShafie/oxide-sloc/actions/workflows/ci.yml)
+[![Release](https://github.com/NimaShafie/oxide-sloc/actions/workflows/release.yml/badge.svg)](https://github.com/NimaShafie/oxide-sloc/actions/workflows/release.yml)
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](./LICENSE)
 
 **oxide-sloc** is a Rust-based source line analysis tool built for teams that want more than a simple line counter.
 
-It is designed around one shared analysis core with multiple delivery surfaces:
-- CLI
-- localhost web UI
-- rich HTML reports
-- optional PDF export
-- policy-aware counting for mixed code/comment lines and Python docstrings
+One shared analysis core with multiple delivery surfaces:
 
-## Repository
+- **CLI** — `oxidesloc analyze / report / serve`
+- **Localhost web UI** — guided multi-step flow with light/dark theme
+- **Rich HTML reports** — per-file breakdown, language summaries, warnings
+- **PDF export** — via any locally installed Chromium-based browser
+- **Policy-aware counting** — mixed code/comment lines, Python docstrings
 
-- Product name: **oxide-sloc**
-- Binary name: **oxidesloc**
-- License: **AGPL-3.0-or-later**
-- GitHub: **https://github.com/NimaShafie/oxide-sloc**
+---
 
-## Positioning
+## Installation
 
-oxide-sloc is intended to be a fast, extensible SLOC and line-analysis platform built in Rust for:
-- local development
-- CI/CD pipelines
-- internal reporting
-- future commercial packaging and support
+### Option 1 — Pre-built binary (no Rust required)
 
-This public repository is the main codebase for the project. A paid offering can still exist later through:
-- commercial support
-- hosted services
-- proprietary add-ons in a separate codebase
-- dual licensing for specific customers
+Download the latest binary for your platform from the [Releases page](https://github.com/NimaShafie/oxide-sloc/releases):
 
-## Current status
+| Platform | File |
+|---|---|
+| Linux x86-64 | `oxidesloc-linux-x86_64` |
+| Windows x86-64 | `oxidesloc-windows-x86_64.exe` |
+| macOS x86-64 | `oxidesloc-macos-x86_64` |
+| macOS Apple Silicon | `oxidesloc-macos-arm64` |
 
-This repository is an early but runnable Rust workspace.
+```bash
+# Linux / macOS — make executable and move to PATH
+chmod +x oxidesloc-linux-x86_64
+mv oxidesloc-linux-x86_64 /usr/local/bin/oxidesloc
 
-Working today:
-- CLI analysis
-- local web UI on localhost
-- HTML report generation
-- PDF export through a locally installed Chromium-based browser
-- mixed-line policy handling
-- Python docstring policy handling
+# Windows — rename and add to PATH
+ren oxidesloc-windows-x86_64.exe oxidesloc.exe
+```
 
-Currently supported languages:
-- C
-- C++
-- C#
-- Python
-- Shell
-- PowerShell
+### Option 2 — Docker (no Rust required)
 
-Important:
-If you run oxide-sloc against this Rust workspace itself, most files will currently be skipped because Rust, TOML, Markdown, YAML, and similar repository files are not yet supported.
+```bash
+# Pull and run the web UI
+docker pull ghcr.io/nimashafie/oxide-sloc:latest
+docker run -p 3000:3000 ghcr.io/nimashafie/oxide-sloc:latest
 
-## Minimal local verification
+# Or build locally and run
+docker compose up
+```
 
-Create a tiny sample directory with supported file types, then run:
+Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-cargo run -p oxidesloc -- analyze tmp-sloc --plain
-cargo run -p oxidesloc -- analyze tmp-sloc --per-file
-cargo run -p oxidesloc -- analyze tmp-sloc --json-out out/tmp.json --html-out out/tmp.html
+To analyze a directory from the CLI via Docker:
+
+```bash
+docker run --rm \
+  -v /path/to/your/repo:/repo:ro \
+  ghcr.io/nimashafie/oxide-sloc:latest \
+  analyze /repo --plain
+```
+
+### Option 3 — Build from source (requires Rust 1.78+)
+
+```bash
+cargo install --path crates/sloc-cli
+```
+
+Or build without installing:
+
+```bash
+cargo build --release -p oxidesloc
+./target/release/oxidesloc --help
+```
+
+---
+
+## Usage
+
+### CLI
+
+```bash
+# Analyze a directory, print summary to terminal
+oxidesloc analyze ./my-repo --plain
+
+# Full output: JSON + HTML report
+oxidesloc analyze ./my-repo \
+  --json-out result.json \
+  --html-out result.html
+
+# Per-file breakdown
+oxidesloc analyze ./my-repo --per-file
+
+# Re-render a report from a saved JSON (useful for changing output format)
+oxidesloc report result.json --pdf-out result.pdf
+
+# Start the web UI
+oxidesloc serve
+```
+
+### Web UI
+
+```bash
+oxidesloc serve
+# → http://localhost:3000
+```
+
+The web UI walks through directory selection, analysis options, and report generation in a guided flow.
+
+### Configuration
+
+Copy the example config and edit it:
+
+```bash
+cp sloc.example.toml sloc.toml
+```
+
+All CLI flags override the config file. Run `oxidesloc --help` for the full flag list.
+
+---
+
+## Currently supported languages
+
+| Language | Extensions |
+|---|---|
+| C | `.c`, `.h` |
+| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp` |
+| C# | `.cs` |
+| Python | `.py` |
+| Shell | `.sh`, `.bash`, `.zsh`, `.ksh` |
+| PowerShell | `.ps1`, `.psm1`, `.psd1` |
+
+> **Note:** Rust, TOML, Markdown, and YAML are not yet supported. Running oxide-sloc against its own repository will skip most files.
+
+---
+
+## PDF export
+
+PDF generation requires a locally installed Chromium-based browser (Chrome, Edge, Brave, Vivaldi, or Opera).
+
+If browser discovery fails, set the path manually:
+
+```bash
+export SLOC_BROWSER=/usr/bin/chromium
+oxidesloc report result.json --pdf-out result.pdf
+```
+
+In Docker, Chromium is bundled in the image — no extra setup needed.
+
+---
+
+## Local development
+
+### Prerequisites
+
+- [Rust](https://rustup.rs) 1.78 or later
+- `make` (Linux/macOS) — optional but recommended
+
+### Make targets
+
+```bash
+make help         # list all targets
+
+make check        # fmt + lint + test  ← run before every push
+make dev          # fmt + lint + test + serve
+
+make fmt          # cargo fmt --all
+make lint         # cargo clippy -D warnings
+make test         # cargo test --workspace
+make build        # release binary → target/release/oxidesloc
+make serve        # start web UI on http://localhost:3000
+make analyze DIR=./my-repo   # CLI analyze
+
+make docker-build # build Docker image locally
+make docker-run   # run web UI in Docker on port 3000
+
+make clean        # cargo clean
+```
+
+### Without make (Windows / raw commands)
+
+```bash
+cargo fmt --all
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace
 cargo run -p oxidesloc -- serve
+```
+
+### Formatting
+
+Configured in `rustfmt.toml`: `edition = "2021"`, `max_width = 100`.
+
+---
+
+## CI/CD
+
+### GitHub Actions
+
+Two workflows ship in `.github/workflows/`:
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `ci.yml` | push to `main`, all PRs | fmt check → clippy → build → test |
+| `release.yml` | push a `v*` tag | cross-compile for 4 platforms → publish GitHub Release |
+
+To cut a release:
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+GitHub Actions builds binaries for Linux, Windows, macOS x86-64, and macOS ARM, then creates a release with auto-generated notes.
+
+### Jenkins
+
+A `Jenkinsfile` is included at the repo root. It runs the same gates as the GitHub Actions CI workflow and archives the release binary as a Jenkins artifact.
+
+**Setup:**
+
+1. Create a new **Pipeline** job in Jenkins.
+2. Set **Definition** → `Pipeline script from SCM`.
+3. Point it at this repository.
+4. Jenkins will auto-discover the `Jenkinsfile`.
+
+The pipeline auto-installs Rust via `rustup` on the agent if it is not already present — no pre-configuration of the Jenkins node is required.
+
+**Stages:**
+
+```
+Install Rust → Format → Lint → Test → Build → Archive binary
+```
+
+**Environment variables you can set in Jenkins:**
+
+| Variable | Purpose |
+|---|---|
+| `RUST_LOG` | Tracing verbosity (`info`, `debug`) |
+| `SLOC_BROWSER` | Path to Chromium binary for PDF export |
+
+---
 
 ## Repository layout
 
-```text
+```
 .
-|-- crates/
-|   |-- sloc-cli/         # CLI entrypoint and commands
-|   |-- sloc-config/      # Shared config schema and validation
-|   |-- sloc-core/        # Discovery, decoding, aggregation, JSON model
-|   |-- sloc-languages/   # Language detection and analyzers
-|   |-- sloc-report/      # HTML rendering and PDF export
-|   `-- sloc-web/         # Localhost web UI
-|-- docs/
-|   `-- licensing.md
-|-- .github/
-|-- .gitignore
-|-- CHANGELOG.md
-|-- CODE_OF_CONDUCT.md
-|-- CONTRIBUTING.md
-|-- LICENSE
-|-- LICENSE-COMMERCIAL.md
-|-- NOTICE
-|-- README.md
-|-- SECURITY.md
-`-- sloc.example.toml
+├── crates/
+│   ├── sloc-cli/         # CLI entry point and commands
+│   ├── sloc-config/      # Config schema and TOML parsing
+│   ├── sloc-core/        # File discovery, decoding, aggregation, JSON model
+│   ├── sloc-languages/   # Language detection and lexical analyzers
+│   ├── sloc-report/      # HTML rendering and PDF export
+│   └── sloc-web/         # Localhost web UI (Axum)
+├── .github/
+│   └── workflows/
+│       ├── ci.yml        # PR / push checks
+│       └── release.yml   # Cross-platform binary releases
+├── docs/
+│   └── licensing.md
+├── Dockerfile
+├── docker-compose.yml
+├── Makefile
+├── Jenkinsfile
+├── sloc.example.toml
+└── Cargo.toml
 ```
 
-## Licensing approach
-
-This repository currently uses **AGPL-3.0-or-later**.
-
-That means:
-- the repository remains genuinely open source
-- commercial use is allowed under the license terms
-- modified networked deployments must provide corresponding source under AGPL terms
-- you can still sell services, support, private add-ons, or separate commercial arrangements as the copyright holder
-
-See `docs/licensing.md` for the practical tradeoffs and how this can evolve.
-
-## Build
-
-```bash
-cargo build --workspace
-```
-
-## Run
-
-Analyze a project and emit JSON and HTML:
-
-```bash
-cargo run -p oxidesloc -- analyze ./my-repo --json-out result.json --html-out result.html
-```
-
-Render a PDF from a saved JSON result:
-
-```bash
-cargo run -p oxidesloc -- report result.json --pdf-out result.pdf
-```
-
-Start the localhost web UI:
-
-```bash
-cargo run -p oxidesloc -- serve
-```
-
-## PDF export note
-
-PDF generation currently depends on a locally installed Chromium-based browser. Set `SLOC_BROWSER` if browser discovery fails.
+---
 
 ## Near-term roadmap
 
-1. Run `cargo check` locally and fix dependency or API drift.
-2. Add tree-sitter-backed adapters starting with Python and C/C++.
-3. Add validation corpus and golden tests.
-4. Add SMTP and webhook delivery support.
-5. Publish release binaries and GitHub releases.
+1. Fix PDF generation in the web UI
+2. Add tree-sitter-backed adapters (Python and C/C++ first)
+3. Add validation corpus and golden tests
+4. Add SMTP and webhook delivery (`send` command)
+5. Publish Docker image to GitHub Container Registry
+
+---
+
+## License
+
+[AGPL-3.0-or-later](./LICENSE). Commercial support, hosted services, and proprietary add-ons are available through separate arrangements. See `docs/licensing.md`.
+
+---
 
 ## Maintainer
 
-Maintained by **Nima Shafie**.
-
-## Legal note
-
-This repository does not constitute legal advice. Before a public launch with outside contributors or a significant paid offering, review the licensing and commercial model with counsel.
+**Nima Shafie** — [github.com/NimaShafie](https://github.com/NimaShafie)

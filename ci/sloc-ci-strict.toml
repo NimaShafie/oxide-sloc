@@ -1,0 +1,29 @@
+# oxide-sloc CI configuration — strict / fail-fast
+#
+# Fails the pipeline if binary files are found in source paths.
+# Good for enforcing clean source trees in automated review gates.
+# Use with: oxidesloc analyze ./src --config ci/sloc-ci-strict.toml
+
+[discovery]
+honor_ignore_files    = true
+ignore_hidden_files   = true
+follow_symlinks       = false
+max_file_size_bytes   = 1048576
+excluded_directories  = [".git", "node_modules", "target", ".venv", "__pycache__", "dist", "build"]
+
+[analysis]
+mixed_line_policy             = "separate_mixed_category"
+python_docstrings_as_comments = true
+generated_file_detection      = true
+minified_file_detection       = true
+vendor_directory_detection    = true
+include_lockfiles             = false
+binary_file_behavior          = "fail"    # pipeline fails if binaries found in source
+decode_failure_behavior       = "warn_skip"
+parse_failure_behavior        = "warn_skip"
+
+[reporting]
+report_title               = "oxide-sloc Strict CI Gate"
+include_summary_charts     = true
+include_skipped_files_section = true
+include_warnings_section   = true

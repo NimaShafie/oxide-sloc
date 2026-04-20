@@ -17,3 +17,6 @@ result.pdf
 # local test output
 out/
 tmp-sloc/
+
+# Claude Code
+CLAUDE.md

@@ -57,13 +57,17 @@ pub fn write_html(run: &AnalysisRun, output_path: &Path) -> Result<()> {
 }
 
 pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
+    eprintln!("[oxide-sloc][pdf] starting");
+
     let browser = discover_browser().context(
         "no supported Chromium-based browser found; set SLOC_BROWSER/BROWSER or install Chrome, Chromium, Edge, Brave, Vivaldi, or Opera",
     )?;
+    eprintln!("[oxide-sloc][pdf] browser = {}", browser.display());
 
     let absolute_html = html_path
         .canonicalize()
         .with_context(|| format!("failed to canonicalize {}", html_path.display()))?;
+    eprintln!("[oxide-sloc][pdf] html = {}", absolute_html.display());
 
     let absolute_pdf = if pdf_path.is_absolute() {
         pdf_path.to_path_buf()
@@ -72,6 +76,7 @@ pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
             .context("failed to resolve current working directory")?
             .join(pdf_path)
     };
+    eprintln!("[oxide-sloc][pdf] pdf = {}", absolute_pdf.display());
 
     if let Some(parent) = absolute_pdf.parent() {
         fs::create_dir_all(parent).with_context(|| {
@@ -79,53 +84,179 @@ pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
         })?;
     }
 
-    let file_url = file_url(&absolute_html);
-    let print_to_pdf = format!("--print-to-pdf={}", absolute_pdf.display());
-    let common_args = [
-        "--disable-gpu",
-        "--allow-file-access-from-files",
-        "--run-all-compositor-stages-before-draw",
-        "--virtual-time-budget=5000",
-        "--hide-scrollbars",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--no-pdf-header-footer",
-        "--window-size=1600,2200",
-        print_to_pdf.as_str(),
-        file_url.as_str(),
-    ];
+    let html_for_url = PathBuf::from(
+        absolute_html
+            .to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .to_string(),
+    );
+    let file_url = file_url(&html_for_url);
+    eprintln!("[oxide-sloc][pdf] url = {}", file_url);
 
-    let try_new_headless = Command::new(&browser)
-        .arg("--headless=new")
-        .args(common_args)
-        .status();
+    let html_parent = absolute_html
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
 
-    let status = match try_new_headless {
-        Ok(status) if status.success() => status,
-        _ => Command::new(&browser)
-            .arg("--headless")
-            .args(common_args)
-            .status()
-            .with_context(|| format!("failed to launch browser {}", browser.display()))?,
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+
+    let profile_dir =
+        std::env::temp_dir().join(format!("oxidesloc-pdf-{}-{}", std::process::id(), nonce));
+
+    fs::create_dir_all(&profile_dir).with_context(|| {
+        format!(
+            "failed to create temporary browser profile {}",
+            profile_dir.display()
+        )
+    })?;
+    eprintln!("[oxide-sloc][pdf] profile = {}", profile_dir.display());
+
+    let run_once = |headless_flag: &str| -> Result<()> {
+        eprintln!("[oxide-sloc][pdf] launching {}", headless_flag);
+
+        if absolute_pdf.exists() {
+            let _ = fs::remove_file(&absolute_pdf);
+        }
+
+        let mut child = Command::new(&browser)
+            .current_dir(&html_parent)
+            .args([
+                headless_flag,
+                "--disable-gpu",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--disable-sync",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--allow-file-access-from-files",
+                "--allow-running-insecure-content",
+                "--disable-default-apps",
+                "--hide-scrollbars",
+                "--mute-audio",
+                "--print-to-pdf-no-header",
+                "--run-all-compositor-stages-before-draw",
+                "--virtual-time-budget=4000",
+                "--window-size=1600,1100",
+                &format!("--user-data-dir={}", profile_dir.display()),
+                &format!("--print-to-pdf={}", absolute_pdf.display()),
+                &file_url,
+            ])
+            .spawn()
+            .with_context(|| format!("failed to launch browser {}", browser.display()))?;
+
+        let started = std::time::Instant::now();
+        let mut last_size: Option<u64> = None;
+        let mut stable_polls: u32 = 0;
+
+        loop {
+            if let Ok(meta) = fs::metadata(&absolute_pdf) {
+                let size = meta.len();
+                if size > 0 {
+                    if last_size == Some(size) {
+                        stable_polls += 1;
+                    } else {
+                        last_size = Some(size);
+                        stable_polls = 0;
+                    }
+
+                    if stable_polls >= 3 {
+                        eprintln!("[oxide-sloc][pdf] file ready at {} bytes", size);
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Ok(());
+                    }
+                }
+            }
+
+            if let Some(status) = child
+                .try_wait()
+                .with_context(|| format!("failed while waiting for {}", browser.display()))?
+            {
+                eprintln!(
+                    "[oxide-sloc][pdf] {} exit = {:?}",
+                    headless_flag,
+                    status.code()
+                );
+
+                if status.success() && absolute_pdf.exists() {
+                    return Ok(());
+                }
+
+                if status.success() {
+                    anyhow::bail!("browser exited successfully but PDF file was not created");
+                }
+
+                anyhow::bail!(
+                    "browser exited with status {} while generating PDF",
+                    status
+                        .code()
+                        .map(|code| code.to_string())
+                        .unwrap_or_else(|| "unknown".into())
+                );
+            }
+
+            if started.elapsed() > std::time::Duration::from_secs(45) {
+                let _ = child.kill();
+                let _ = child.wait();
+
+                if let Ok(meta) = fs::metadata(&absolute_pdf) {
+                    if meta.len() > 0 {
+                        eprintln!(
+                            "[oxide-sloc][pdf] timeout reached but PDF exists at {} bytes",
+                            meta.len()
+                        );
+                        return Ok(());
+                    }
+                }
+
+                anyhow::bail!("browser timed out while generating PDF");
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
     };
 
-    if !status.success() {
-        anyhow::bail!(
-            "browser exited with status {} while generating PDF",
-            status
-                .code()
-                .map(|code| code.to_string())
-                .unwrap_or_else(|| "unknown".into())
-        );
+    let result = run_once("--headless=old").or_else(|err| {
+        eprintln!("[oxide-sloc][pdf] --headless=old failed ({err}), trying --headless");
+        run_once("--headless")
+    });
+
+    if let Err(err) = &result {
+        eprintln!("[oxide-sloc][pdf] --headless failed: {}", err);
     }
 
+    let _ = fs::remove_dir_all(&profile_dir);
+
+    result?;
+    eprintln!("[oxide-sloc][pdf] done");
     Ok(())
+}
+
+fn normalize_browser_env_path(raw: &str) -> PathBuf {
+    let trimmed = raw.trim();
+    #[cfg(windows)]
+    {
+        let bytes = trimmed.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0] == b'/'
+            && bytes[2] == b'/'
+            && bytes[1].is_ascii_alphabetic()
+        {
+            let drive = (bytes[1] as char).to_ascii_uppercase();
+            let rest = &trimmed[3..];
+            return PathBuf::from(format!("{drive}:/{}", rest));
+        }
+    }
+    PathBuf::from(trimmed)
 }
 
 fn discover_browser() -> Option<PathBuf> {
     for var_name in ["SLOC_BROWSER", "BROWSER"] {
         if let Ok(path) = std::env::var(var_name) {
-            let candidate = PathBuf::from(path);
+            let candidate = normalize_browser_env_path(&path);
             if candidate.is_file() {
                 return Some(candidate);
             }
@@ -568,7 +699,7 @@ struct WarningOpportunityRow {
     .top-nav { position: sticky; top: 0; z-index: 30; background: linear-gradient(180deg, var(--nav), var(--nav-2)); border-bottom: 1px solid rgba(255,255,255,0.12); box-shadow: 0 4px 14px rgba(0,0,0,0.18); }
     .top-nav-inner { max-width: 1720px; margin: 0 auto; padding: 10px 24px; min-height: 64px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 420px) auto; align-items: center; gap: 18px; }
     .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
-    .brand-mark { width: 42px; height: 42px; border-radius: 14px; background: radial-gradient(circle at 35% 35%, #f2a578, var(--oxide) 58%, var(--oxide-2)); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), 0 8px 18px rgba(0,0,0,0.22); flex: 0 0 auto; }
+    .brand-mark { width: 42px; height: 42px; border-radius: 14px; background: radial-gradient(circle at 35% 35%, #f2a578, var(--oxide) 58%, var(--oxide-2)); background-image: url("data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20viewBox%3D%270%200%20240%20240%27%3E%0A%3Cdefs%3E%0A%20%20%3ClinearGradient%20id%3D%27g%27%20x1%3D%270%27%20y1%3D%270%27%20x2%3D%271%27%20y2%3D%271%27%3E%0A%20%20%20%20%3Cstop%20offset%3D%270%27%20stop-color%3D%27%23f2a578%27/%3E%0A%20%20%20%20%3Cstop%20offset%3D%270.55%27%20stop-color%3D%27%23d37a4c%27/%3E%0A%20%20%20%20%3Cstop%20offset%3D%271%27%20stop-color%3D%27%23b35428%27/%3E%0A%20%20%3C/linearGradient%3E%0A%3C/defs%3E%0A%3Crect%20x%3D%2724%27%20y%3D%2724%27%20width%3D%27192%27%20height%3D%27192%27%20rx%3D%2754%27%20fill%3D%27url%28%23g%29%27/%3E%0A%3Cpath%20d%3D%27M74%20150l30-42%2024%2031%2018-24%2024%2035%27%20fill%3D%27none%27%20stroke%3D%27white%27%20stroke-width%3D%2710%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%20opacity%3D%270.94%27/%3E%0A%3Ccircle%20cx%3D%27164%27%20cy%3D%2782%27%20r%3D%2712%27%20fill%3D%27white%27%20opacity%3D%270.94%27/%3E%0A%3C/svg%3E"); background-size: cover; background-repeat: no-repeat; background-position: center; box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), 0 8px 18px rgba(0,0,0,0.22); flex: 0 0 auto; }
     .brand-copy { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
     .brand-title { margin: 0; color: #fff; font-size: 17px; font-weight: 800; line-height: 1.1; }
     .brand-subtitle { color: rgba(255,255,255,0.85); font-size: 12px; line-height: 1.2; margin-top: 2px; }
@@ -652,9 +783,173 @@ struct WarningOpportunityRow {
       body { background: white; }
       .top-nav, .toolbar, .hero-actions { display:none !important; }
       .hero, .panel, .metric, .table-shell, pre, .warning-card { box-shadow:none; break-inside: avoid; }
+      .table-shell { max-height: none !important; overflow: visible !important; }
       th { position: static; }
     }
-  </style>
+  
+    @page {
+      size: Letter landscape;
+      margin: 0.38in;
+    }
+
+    @media print {
+      html, body {
+        background: #ffffff !important;
+      }
+
+      .page,
+      .panel,
+      .hero,
+      .section,
+      .saved-report-shell,
+      .saved-panel,
+      .report-shell {
+        max-width: none !important;
+        width: auto !important;
+        box-shadow: none !important;
+      }
+
+      table {
+        width: 100% !important;
+        table-layout: fixed !important;
+        font-size: 11px !important;
+      }
+
+      th, td {
+        white-space: normal !important;
+        overflow-wrap: anywhere !important;
+        word-break: break-word !important;
+        padding: 7px 8px !important;
+      }
+
+      pre, code {
+        white-space: pre-wrap !important;
+        overflow-wrap: anywhere !important;
+        word-break: break-word !important;
+      }
+    }
+
+
+    .warnings-show-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(111, 144, 255, 0.35);
+      background: #eef3ff;
+      color: #2f5fe3 !important;
+      font-weight: 800;
+      text-decoration: none;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.45);
+    }
+
+    body.dark-theme .warnings-show-link {
+      background: #1c2847;
+      color: #a9c1ff !important;
+      border-color: rgba(169, 193, 255, 0.32);
+    }
+
+    .effective-config-note {
+      margin: 8px 0 14px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+
+    .top-nav,
+    .page {
+      position: relative;
+      z-index: 1;
+    }
+
+    .brand {
+      position: relative;
+    }
+
+    .brand img,
+    img[alt="OxideSLOC logo"],
+    img[alt="oxide-sloc logo"] {
+      opacity: 0 !important;
+    }
+
+    .brand::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 42px;
+      height: 42px;
+      border-radius: 14px;
+      background-image: url("data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20viewBox%3D%270%200%20240%20240%27%3E%0A%3Cdefs%3E%0A%20%20%3ClinearGradient%20id%3D%27g%27%20x1%3D%270%27%20y1%3D%270%27%20x2%3D%271%27%20y2%3D%271%27%3E%0A%20%20%20%20%3Cstop%20offset%3D%270%27%20stop-color%3D%27%23f2a578%27/%3E%0A%20%20%20%20%3Cstop%20offset%3D%270.55%27%20stop-color%3D%27%23d37a4c%27/%3E%0A%20%20%20%20%3Cstop%20offset%3D%271%27%20stop-color%3D%27%23b35428%27/%3E%0A%20%20%3C/linearGradient%3E%0A%3C/defs%3E%0A%3Crect%20x%3D%2724%27%20y%3D%2724%27%20width%3D%27192%27%20height%3D%27192%27%20rx%3D%2754%27%20fill%3D%27url%28%23g%29%27/%3E%0A%3Cpath%20d%3D%27M74%20150l30-42%2024%2031%2018-24%2024%2035%27%20fill%3D%27none%27%20stroke%3D%27white%27%20stroke-width%3D%2710%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%20opacity%3D%270.94%27/%3E%0A%3Ccircle%20cx%3D%27164%27%20cy%3D%2782%27%20r%3D%2712%27%20fill%3D%27white%27%20opacity%3D%270.94%27/%3E%0A%3C/svg%3E");
+      background-size: cover;
+      background-repeat: no-repeat;
+      background-position: center;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), 0 8px 18px rgba(0,0,0,0.22);
+      pointer-events: none;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      right: 26px;
+      bottom: 26px;
+      width: 220px;
+      height: 220px;
+      background-image: url("data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20viewBox%3D%270%200%20240%20240%27%3E%0A%3Cdefs%3E%0A%20%20%3ClinearGradient%20id%3D%27g%27%20x1%3D%270%27%20y1%3D%270%27%20x2%3D%271%27%20y2%3D%271%27%3E%0A%20%20%20%20%3Cstop%20offset%3D%270%27%20stop-color%3D%27%23f2a578%27/%3E%0A%20%20%20%20%3Cstop%20offset%3D%270.55%27%20stop-color%3D%27%23d37a4c%27/%3E%0A%20%20%20%20%3Cstop%20offset%3D%271%27%20stop-color%3D%27%23b35428%27/%3E%0A%20%20%3C/linearGradient%3E%0A%3C/defs%3E%0A%3Crect%20x%3D%2724%27%20y%3D%2724%27%20width%3D%27192%27%20height%3D%27192%27%20rx%3D%2754%27%20fill%3D%27url%28%23g%29%27/%3E%0A%3Cpath%20d%3D%27M74%20150l30-42%2024%2031%2018-24%2024%2035%27%20fill%3D%27none%27%20stroke%3D%27white%27%20stroke-width%3D%2710%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%20opacity%3D%270.94%27/%3E%0A%3Ccircle%20cx%3D%27164%27%20cy%3D%2782%27%20r%3D%2712%27%20fill%3D%27white%27%20opacity%3D%270.94%27/%3E%0A%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: center;
+      background-size: contain;
+      opacity: 0.07;
+      pointer-events: none;
+      z-index: 0;
+      filter: saturate(0.9);
+    }
+
+    body.dark-theme::before {
+      opacity: 0.11;
+    }
+
+    body::after {
+      content: "";
+      position: fixed;
+      left: 22px;
+      top: 22px;
+      width: 160px;
+      height: 160px;
+      background-image: url("data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20viewBox%3D%270%200%20240%20240%27%3E%3Cdefs%3E%3ClinearGradient%20id%3D%27g2%27%20x1%3D%270%27%20y1%3D%270%27%20x2%3D%271%27%20y2%3D%271%27%3E%3Cstop%20offset%3D%270%27%20stop-color%3D%27%23f2a578%27/%3E%3Cstop%20offset%3D%270.55%27%20stop-color%3D%27%23d37a4c%27/%3E%3Cstop%20offset%3D%271%27%20stop-color%3D%27%23b35428%27/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20x%3D%2724%27%20y%3D%2724%27%20width%3D%27192%27%20height%3D%27192%27%20rx%3D%2754%27%20fill%3D%27url%28%23g2%29%27/%3E%3Cpath%20d%3D%27M74%20150l30-42%2024%2031%2018-24%2024%2035%27%20fill%3D%27none%27%20stroke%3D%27white%27%20stroke-width%3D%2710%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%20opacity%3D%270.94%27/%3E%3Ccircle%20cx%3D%27164%27%20cy%3D%2782%27%20r%3D%2712%27%20fill%3D%27white%27%20opacity%3D%270.94%27/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: center;
+      background-size: contain;
+      opacity: 0.06;
+      pointer-events: none;
+      z-index: 0;
+      filter: saturate(0.9);
+    }
+
+    @media print {
+      body::before {
+        opacity: 0.07;
+        right: 18px;
+        bottom: 18px;
+        width: 200px;
+        height: 200px;
+        position: fixed;
+      }
+      body::after {
+        opacity: 0.07;
+        left: 18px;
+        top: 50%;
+        transform: translateY(-50%) rotate(-12deg);
+        width: 160px;
+        height: 160px;
+        position: fixed;
+      }
+    }
+
+</style>
 </head>
 <body>
   <div class="top-nav">
@@ -863,7 +1158,7 @@ struct WarningOpportunityRow {
                 <pre class="warning-console" id="warning-console-preview">{{ warning_console_preview }}</pre>
                 {% if warning_preview_truncated %}
                 <div class="warning-console-actions">
-                  <button type="button" class="header-button" data-expand-warnings>Show all warnings</button>
+                  <button type="button" class="header-button" data-expand-warnings class="warnings-show-link">Show all warnings</button>
                 </div>
                 <pre class="warning-console hidden" id="warning-console-full">{{ warning_console_full }}</pre>
                 {% endif %}

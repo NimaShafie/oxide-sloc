@@ -1,0 +1,157 @@
+---
+# oxide-sloc GitLab CI/CD
+#
+# Mirrors the same pipeline stages as Jenkinsfile and .github/workflows/ci.yml.
+# Requires a runner with bash and curl; Rust is installed on first run and
+# cached via the .cargo / .rustup directories.
+#
+# Usage:
+#   1. Push this file to the root of your repo.
+#   2. GitLab will auto-detect it and run the pipeline on every push.
+
+image: debian:bookworm-slim
+
+variables:
+  CARGO_HOME: "${CI_PROJECT_DIR}/.cargo"
+  RUSTUP_HOME: "${CI_PROJECT_DIR}/.rustup"
+  PATH: "${CI_PROJECT_DIR}/.cargo/bin:${PATH}"
+  RUST_LOG: "warn"
+  OUT_DIR: "ci-out"
+
+cache:
+  key: "${CI_COMMIT_REF_SLUG}"
+  paths:
+    - .cargo/
+    - .rustup/
+    - target/
+
+before_script:
+  - apt-get update -qq && apt-get install -y -qq curl build-essential pkg-config libssl-dev ca-certificates
+  - |
+    if ! command -v cargo &>/dev/null; then
+      curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain stable --no-modify-path
+    fi
+  - export PATH="${CARGO_HOME}/bin:${PATH}"
+  - rustup show
+
+stages:
+  - quality
+  - build
+  - smoke
+  - archive
+
+# ── Quality gates ─────────────────────────────────────────────────────────────
+
+fmt:
+  stage: quality
+  script:
+    - rustup component add rustfmt
+    - cargo fmt --all -- --check
+
+clippy:
+  stage: quality
+  script:
+    - rustup component add clippy
+    - cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+test:
+  stage: quality
+  script:
+    - cargo test --workspace --all-features
+
+# ── Build ─────────────────────────────────────────────────────────────────────
+
+build:
+  stage: build
+  script:
+    - cargo build --release -p oxidesloc
+  artifacts:
+    paths:
+      - target/release/oxidesloc
+    expire_in: 1 hour
+
+# ── CLI smoke tests ───────────────────────────────────────────────────────────
+#
+# Each job below maps to a specific web UI configuration path:
+#
+#   Web UI step 1: choose project path     → CLI positional arg
+#   Web UI step 2: mixed-line policy       → --mixed-line-policy
+#   Web UI step 2: python docstrings       → enabled by default (no flag)
+#   Web UI step 3: output formats          → --json-out / --html-out / --pdf-out
+#   Web UI step 4: run                     → execute the binary
+
+smoke:plain:
+  stage: smoke
+  needs: [build]
+  script:
+    - ./target/release/oxidesloc analyze samples/basic --plain
+
+smoke:per-file:
+  stage: smoke
+  needs: [build]
+  script:
+    - ./target/release/oxidesloc analyze samples/basic --per-file --plain
+
+smoke:reports:
+  stage: smoke
+  needs: [build]
+  script:
+    - mkdir -p "${OUT_DIR}"
+    - |
+      ./target/release/oxidesloc analyze samples/basic \
+        --report-title "GitLab CI run ${CI_PIPELINE_IID}" \
+        --json-out "${OUT_DIR}/result.json" \
+        --html-out "${OUT_DIR}/report.html"
+    - test -s "${OUT_DIR}/result.json"
+    - test -s "${OUT_DIR}/report.html"
+    - grep -q "OxideSLOC" "${OUT_DIR}/report.html"
+  artifacts:
+    paths:
+      - ci-out/
+    expire_in: 7 days
+
+smoke:re-render:
+  stage: smoke
+  needs: [smoke:reports]
+  script:
+    - |
+      ./target/release/oxidesloc report "${OUT_DIR}/result.json" \
+        --html-out "${OUT_DIR}/re-rendered.html"
+    - test -s "${OUT_DIR}/re-rendered.html"
+
+smoke:policies:
+  stage: smoke
+  needs: [build]
+  script:
+    - |
+      for policy in code-only code-and-comment comment-only separate-mixed-category; do
+        echo "--- policy: $policy ---"
+        ./target/release/oxidesloc analyze samples/basic \
+          --plain --mixed-line-policy "$policy"
+      done
+
+smoke:web-ui:
+  stage: smoke
+  needs: [build]
+  script:
+    - ./target/release/oxidesloc serve &
+    - SERVER_PID=$!
+    - sleep 4
+    - HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:4317/ || echo "000")
+    - kill "${SERVER_PID}" 2>/dev/null || true
+    - wait "${SERVER_PID}" 2>/dev/null || true
+    - '[ "${HTTP_CODE}" = "200" ] || (echo "Web UI returned HTTP ${HTTP_CODE}" && exit 1)'
+
+# ── Archive ───────────────────────────────────────────────────────────────────
+
+archive:
+  stage: archive
+  needs: [smoke:reports]
+  script:
+    - echo "Artifacts already uploaded by smoke:reports job."
+  artifacts:
+    paths:
+      - target/release/oxidesloc
+      - ci-out/
+    expire_in: 30 days

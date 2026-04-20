@@ -373,6 +373,19 @@ Configured in `rustfmt.toml`: `edition = "2021"`, `max_width = 100`.
 
 ---
 
+## Security
+
+oxide-sloc is designed as a **localhost-only tool** — the web UI binds to `127.0.0.1:4317` and is not intended to be exposed to a network.
+
+- HTTP request bodies are capped at 10 MB
+- Error details are logged server-side only; generic messages are shown in the browser
+- PDF generation uses Rust's `Command::args([...])` (no shell interpolation)
+- Dependency CVEs are checked on every CI run via `cargo audit`
+
+To report a vulnerability privately, see [`SECURITY.md`](./SECURITY.md).
+
+---
+
 ## Roadmap
 
 1. Add tree-sitter-backed adapters (Python and C/C++ first)

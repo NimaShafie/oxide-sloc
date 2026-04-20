@@ -9,7 +9,7 @@ use std::{
 use anyhow::{Context, Result};
 use askama::Template;
 use axum::{
-    extract::{Form, Path as AxumPath, Query, State},
+    extract::{DefaultBodyLimit, Form, Path as AxumPath, Query, State},
     http::{header, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -49,6 +49,8 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         .route("/pick-directory", get(pick_directory_handler))
         .route("/images/:folder/:file", get(image_handler))
         .route("/runs/:run_id/:artifact", get(artifact_handler))
+        // Limit form/body size to 10 MB — analysis paths are short strings, no uploads expected
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(AppState {
             base_config: config,
             artifacts: Arc::new(Mutex::new(HashMap::new())),
@@ -273,13 +275,14 @@ async fn analyze_handler(
     let (run, report_html) = match analysis_result {
         Ok(value) => value,
         Err(err) => {
+            eprintln!("[oxide-sloc][analyze] analysis failed: {err:#}");
             let template = ErrorTemplate {
-                message: err.to_string(),
+                message: "Analysis failed. Check that the path exists and is readable.".to_string(),
             };
             return Html(
                 template
                     .render()
-                    .unwrap_or_else(|_| format!("<pre>{err}</pre>")),
+                    .unwrap_or_else(|_| "<pre>Analysis failed.</pre>".to_string()),
             )
             .into_response();
         }
@@ -289,13 +292,15 @@ async fn analyze_handler(
     let output_root = match resolve_output_root(form.output_dir.as_deref()) {
         Ok(path) => path,
         Err(err) => {
+            eprintln!("[oxide-sloc][analyze] output directory error: {err:#}");
             let template = ErrorTemplate {
-                message: err.to_string(),
+                message: "Could not create output directory. Check the output path setting."
+                    .to_string(),
             };
             return Html(
                 template
                     .render()
-                    .unwrap_or_else(|_| format!("<pre>{err}</pre>")),
+                    .unwrap_or_else(|_| "<pre>Output directory error.</pre>".to_string()),
             )
             .into_response();
         }
@@ -317,13 +322,14 @@ async fn analyze_handler(
     let (artifacts, pending_pdf) = match artifact_result {
         Ok(value) => value,
         Err(err) => {
+            eprintln!("[oxide-sloc][analyze] artifact write failed: {err:#}");
             let template = ErrorTemplate {
-                message: err.to_string(),
+                message: "Failed to save report artifacts. Check available disk space.".to_string(),
             };
             return Html(
                 template
                     .render()
-                    .unwrap_or_else(|_| format!("<pre>{err}</pre>")),
+                    .unwrap_or_else(|_| "<pre>Artifact write failed.</pre>".to_string()),
             )
             .into_response();
         }

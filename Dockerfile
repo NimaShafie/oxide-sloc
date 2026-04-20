@@ -1,5 +1,10 @@
 # Stage 1: build the release binary
-FROM rust:1.78-slim AS builder
+FROM rust:1.87-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libgtk-3-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY . .

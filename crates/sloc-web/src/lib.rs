@@ -219,7 +219,9 @@ async fn open_path_handler(Query(query): Query<OpenPathQuery>) -> impl IntoRespo
     };
 
     #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("explorer.exe").arg(&target).spawn();
+    let _ = std::process::Command::new("explorer.exe")
+        .arg(&target)
+        .spawn();
     #[cfg(target_os = "macos")]
     let _ = std::process::Command::new("open").arg(&target).spawn();
     #[cfg(target_os = "linux")]

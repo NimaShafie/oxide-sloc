@@ -48,6 +48,8 @@ docker compose up
 
 Open [http://localhost:4317](http://localhost:4317) in your browser.
 
+> **Note:** The first `docker compose up` will build the image, which takes a few minutes. Subsequent runs start instantly.
+
 To analyze a directory from the CLI via Docker:
 
 ```bash
@@ -356,7 +358,8 @@ Configured in `rustfmt.toml`: `edition = "2021"`, `max_width = 100`.
 │       ├── ci.yml        # PR / push checks + smoke tests
 │       └── release.yml   # Cross-platform binary releases
 ├── docs/
-│   └── licensing.md
+│   ├── licensing.md
+│   └── licensing-commercial.md
 ├── samples/
 │   └── basic/            # Fixture files used by CI smoke tests
 ├── Dockerfile
@@ -382,7 +385,7 @@ Configured in `rustfmt.toml`: `edition = "2021"`, `max_width = 100`.
 
 ## License
 
-[AGPL-3.0-or-later](./LICENSE). Commercial support, hosted services, and proprietary add-ons are available through separate arrangements. See `docs/licensing.md`.
+[AGPL-3.0-or-later](./LICENSE). Commercial support, hosted services, and proprietary add-ons are available through separate arrangements. See [`docs/licensing.md`](./docs/licensing.md) and [`docs/licensing-commercial.md`](./docs/licensing-commercial.md).
 
 ---
 

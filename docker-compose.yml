@@ -3,7 +3,7 @@ services:
     build: .
     image: oxide-sloc
     ports:
-      - "3000:3000"
+      - "4317:4317"
     environment:
       - SLOC_BROWSER=/usr/bin/chromium
       - RUST_LOG=info

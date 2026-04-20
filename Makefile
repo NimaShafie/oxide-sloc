@@ -10,7 +10,7 @@ help:
 	@echo "    make fmt            cargo fmt --all"
 	@echo "    make lint           cargo clippy -D warnings"
 	@echo "    make test           cargo test --workspace"
-	@echo "    make serve          start web UI on http://localhost:3000"
+	@echo "    make serve          start web UI on http://127.0.0.1:4317"
 	@echo "    make analyze DIR=.  analyze a directory from the CLI"
 	@echo ""
 	@echo "  Build"
@@ -19,7 +19,7 @@ help:
 	@echo ""
 	@echo "  Docker"
 	@echo "    make docker-build   build Docker image"
-	@echo "    make docker-run     run web UI in Docker on port 3000"
+	@echo "    make docker-run     run web UI in Docker on port 4317"
 	@echo ""
 
 # Run the full dev cycle: format, lint, test, then serve
@@ -51,7 +51,7 @@ docker-build:
 	docker build -t oxide-sloc .
 
 docker-run:
-	docker run --rm -p 3000:3000 oxide-sloc
+	docker run --rm -p 4317:4317 oxide-sloc
 
 clean:
 	cargo clean

@@ -19,7 +19,7 @@ COPY --from=builder /app/target/release/oxidesloc /usr/local/bin/oxidesloc
 # Point oxide-sloc at the system Chromium
 ENV SLOC_BROWSER=/usr/bin/chromium
 
-EXPOSE 3000
+EXPOSE 4317
 
 ENTRYPOINT ["oxidesloc"]
 CMD ["serve"]

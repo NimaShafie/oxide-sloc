@@ -18,22 +18,22 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: oxidesloc-linux-x86_64
+            artifact: oxide-sloc-linux-x86_64
             binary: oxidesloc
 
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: oxidesloc-windows-x86_64.exe
+            artifact: oxide-sloc-windows-x86_64.exe
             binary: oxidesloc.exe
 
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact: oxidesloc-macos-x86_64
+            artifact: oxide-sloc-macos-x86_64
             binary: oxidesloc
 
           - os: macos-14
             target: aarch64-apple-darwin
-            artifact: oxidesloc-macos-arm64
+            artifact: oxide-sloc-macos-arm64
             binary: oxidesloc
 
     steps:
@@ -104,16 +104,16 @@ jobs:
 
             | Platform | File |
             |---|---|
-            | Linux x86-64 | `oxidesloc-linux-x86_64` |
-            | Windows x86-64 | `oxidesloc-windows-x86_64.exe` |
-            | macOS x86-64 | `oxidesloc-macos-x86_64` |
-            | macOS Apple Silicon | `oxidesloc-macos-arm64` |
+            | Linux x86-64 | `oxide-sloc-linux-x86_64` |
+            | Windows x86-64 | `oxide-sloc-windows-x86_64.exe` |
+            | macOS x86-64 | `oxide-sloc-macos-x86_64` |
+            | macOS Apple Silicon | `oxide-sloc-macos-arm64` |
 
             ```bash
             # Linux / macOS — make executable and move to PATH
-            chmod +x oxidesloc-linux-x86_64
-            mv oxidesloc-linux-x86_64 /usr/local/bin/oxidesloc
+            chmod +x oxide-sloc-linux-x86_64
+            mv oxide-sloc-linux-x86_64 /usr/local/bin/oxidesloc
 
             # Windows — rename and add to PATH
-            ren oxidesloc-windows-x86_64.exe oxidesloc.exe
+            ren oxide-sloc-windows-x86_64.exe oxidesloc.exe
             ```

@@ -9,9 +9,14 @@ pub enum Language {
     C,
     Cpp,
     CSharp,
+    Go,
+    Java,
+    JavaScript,
     Python,
+    Rust,
     Shell,
     PowerShell,
+    TypeScript,
 }
 
 impl Language {
@@ -20,9 +25,14 @@ impl Language {
             Language::C => "C",
             Language::Cpp => "C++",
             Language::CSharp => "C#",
+            Language::Go => "Go",
+            Language::Java => "Java",
+            Language::JavaScript => "JavaScript",
             Language::Python => "Python",
+            Language::Rust => "Rust",
             Language::Shell => "Shell",
             Language::PowerShell => "PowerShell",
+            Language::TypeScript => "TypeScript",
         }
     }
 
@@ -31,9 +41,14 @@ impl Language {
             Language::C => "c",
             Language::Cpp => "cpp",
             Language::CSharp => "csharp",
+            Language::Go => "go",
+            Language::Java => "java",
+            Language::JavaScript => "javascript",
             Language::Python => "python",
+            Language::Rust => "rust",
             Language::Shell => "shell",
             Language::PowerShell => "powershell",
+            Language::TypeScript => "typescript",
         }
     }
 
@@ -42,9 +57,14 @@ impl Language {
             "c" => Some(Language::C),
             "cpp" | "c++" | "cplusplus" => Some(Language::Cpp),
             "csharp" | "c#" | "cs" => Some(Language::CSharp),
+            "go" | "golang" => Some(Language::Go),
+            "java" => Some(Language::Java),
+            "javascript" | "js" => Some(Language::JavaScript),
             "python" | "py" => Some(Language::Python),
+            "rust" | "rs" => Some(Language::Rust),
             "shell" | "sh" | "bash" => Some(Language::Shell),
             "powershell" | "pwsh" | "ps" => Some(Language::PowerShell),
+            "typescript" | "ts" => Some(Language::TypeScript),
             _ => None,
         }
     }
@@ -68,6 +88,7 @@ pub struct RawLineCounts {
 pub enum ParseMode {
     Lexical,
     LexicalBestEffort,
+    TreeSitter,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,9 +103,14 @@ pub fn supported_languages() -> BTreeSet<Language> {
         Language::C,
         Language::Cpp,
         Language::CSharp,
+        Language::Go,
+        Language::Java,
+        Language::JavaScript,
         Language::Python,
+        Language::Rust,
         Language::Shell,
         Language::PowerShell,
+        Language::TypeScript,
     ]
     .into_iter()
     .collect()
@@ -114,9 +140,14 @@ pub fn detect_language(
             "c" | "h" => Some(Language::C),
             "cc" | "cp" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => Some(Language::Cpp),
             "cs" => Some(Language::CSharp),
+            "go" => Some(Language::Go),
+            "java" => Some(Language::Java),
+            "js" | "mjs" | "cjs" => Some(Language::JavaScript),
             "py" => Some(Language::Python),
+            "rs" => Some(Language::Rust),
             "sh" | "bash" | "zsh" | "ksh" => Some(Language::Shell),
             "ps1" | "psm1" | "psd1" => Some(Language::PowerShell),
+            "ts" | "mts" | "cts" => Some(Language::TypeScript),
             _ => None,
         };
 
@@ -151,30 +182,43 @@ pub fn detect_language(
 
 pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
     match language {
-        Language::C => analyze_generic(
-            text,
-            ScanConfig {
-                line_comments: &["//"],
-                block_comment: Some(("/*", "*/")),
-                allow_single_quote_strings: true,
-                allow_double_quote_strings: true,
-                allow_triple_quote_strings: false,
-                allow_csharp_verbatim_strings: false,
-                skip_lines: HashSet::new(),
-            },
-        ),
-        Language::Cpp => analyze_generic(
-            text,
-            ScanConfig {
-                line_comments: &["//"],
-                block_comment: Some(("/*", "*/")),
-                allow_single_quote_strings: true,
-                allow_double_quote_strings: true,
-                allow_triple_quote_strings: false,
-                allow_csharp_verbatim_strings: false,
-                skip_lines: HashSet::new(),
-            },
-        ),
+        Language::C => {
+            #[cfg(feature = "tree-sitter")]
+            if let Some(result) = ts::analyze_c(text) {
+                return result;
+            }
+            analyze_generic(
+                text,
+                ScanConfig {
+                    line_comments: &["//"],
+                    block_comment: Some(("/*", "*/")),
+                    allow_single_quote_strings: true,
+                    allow_double_quote_strings: true,
+                    allow_triple_quote_strings: false,
+                    allow_csharp_verbatim_strings: false,
+                    skip_lines: HashSet::new(),
+                },
+            )
+        }
+        Language::Cpp => {
+            // tree-sitter-c also parses C++ with acceptable accuracy for SLOC counting.
+            #[cfg(feature = "tree-sitter")]
+            if let Some(result) = ts::analyze_c(text) {
+                return result;
+            }
+            analyze_generic(
+                text,
+                ScanConfig {
+                    line_comments: &["//"],
+                    block_comment: Some(("/*", "*/")),
+                    allow_single_quote_strings: true,
+                    allow_double_quote_strings: true,
+                    allow_triple_quote_strings: false,
+                    allow_csharp_verbatim_strings: false,
+                    skip_lines: HashSet::new(),
+                },
+            )
+        }
         Language::CSharp => analyze_generic(
             text,
             ScanConfig {
@@ -184,6 +228,55 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_double_quote_strings: true,
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: true,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Go => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["//"],
+                block_comment: Some(("/*", "*/")),
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Java => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["//"],
+                block_comment: Some(("/*", "*/")),
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::JavaScript => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["//"],
+                block_comment: Some(("/*", "*/")),
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Rust => analyze_generic(
+            text,
+            ScanConfig {
+                // Rust also has //! and /// doc comments — they parse the same as //
+                line_comments: &["//"],
+                block_comment: Some(("/*", "*/")),
+                allow_single_quote_strings: false,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
             },
         ),
@@ -211,7 +304,23 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
             },
         ),
+        Language::TypeScript => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["//"],
+                block_comment: Some(("/*", "*/")),
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
         Language::Python => {
+            #[cfg(feature = "tree-sitter")]
+            if let Some(result) = ts::analyze_python(text) {
+                return result;
+            }
             let docstring_lines = detect_python_docstring_lines(text);
             analyze_generic(
                 text,
@@ -590,6 +699,168 @@ fn closes_triple_docstring(trimmed: &str, delim: &str, same_line_as_start: bool)
         occurrences >= 2
     } else {
         occurrences >= 1
+    }
+}
+
+/// Tree-sitter-backed adapters. Compiled only when the `tree-sitter` feature is enabled.
+/// When parsing succeeds the result is used directly; on any failure the caller falls back
+/// to the lexical state machine.
+#[cfg(feature = "tree-sitter")]
+pub mod ts {
+    use tree_sitter::Node;
+
+    use super::{ParseMode, RawFileAnalysis, RawLineCounts};
+
+    /// Classify every line of `text` using a tree-sitter grammar.
+    ///
+    /// `comment_node_kinds` — node type names that represent comments in this grammar
+    /// `docstring_stmt_kind` — optional parent node type whose direct `string` child is a docstring
+    fn analyze_lines(
+        text: &str,
+        ts_language: tree_sitter::Language,
+        comment_node_kinds: &[&str],
+        docstring_stmt_kind: Option<&str>,
+    ) -> Option<RawFileAnalysis> {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_language).ok()?;
+        let tree = parser.parse(text, None)?;
+
+        let lines: Vec<&str> = text.split_terminator('\n').collect();
+        let n = lines.len();
+
+        let mut has_code = vec![false; n];
+        let mut has_comment = vec![false; n];
+        let mut comment_is_block = vec![false; n];
+        let mut has_docstring = vec![false; n];
+
+        // Walk every node in the tree and mark line arrays.
+        let mut ctx = VisitCtx {
+            source: text.as_bytes(),
+            comment_kinds: comment_node_kinds,
+            docstring_stmt_kind,
+            has_code: &mut has_code,
+            has_comment: &mut has_comment,
+            comment_is_block: &mut comment_is_block,
+            has_docstring: &mut has_docstring,
+        };
+        visit(tree.root_node(), &mut ctx);
+
+        let mut raw = RawLineCounts::default();
+
+        for i in 0..n {
+            raw.total_physical_lines += 1;
+            let trimmed = lines[i].trim();
+
+            if trimmed.is_empty() {
+                raw.blank_only_lines += 1;
+            } else if has_docstring[i] && !has_code[i] {
+                raw.docstring_comment_lines += 1;
+            } else if has_code[i] && has_comment[i] {
+                // Classify the mixed line as single or multi based on what kind of comment is on it.
+                if comment_is_block[i] {
+                    raw.mixed_code_multi_comment_lines += 1;
+                } else {
+                    raw.mixed_code_single_comment_lines += 1;
+                }
+            } else if has_comment[i] {
+                if comment_is_block[i] {
+                    raw.multi_comment_only_lines += 1;
+                } else {
+                    raw.single_comment_only_lines += 1;
+                }
+            } else {
+                raw.code_only_lines += 1;
+            }
+        }
+
+        Some(RawFileAnalysis {
+            raw,
+            parse_mode: ParseMode::TreeSitter,
+            warnings: Vec::new(),
+        })
+    }
+
+    struct VisitCtx<'a> {
+        source: &'a [u8],
+        comment_kinds: &'a [&'a str],
+        docstring_stmt_kind: Option<&'a str>,
+        has_code: &'a mut Vec<bool>,
+        has_comment: &'a mut Vec<bool>,
+        comment_is_block: &'a mut Vec<bool>,
+        has_docstring: &'a mut Vec<bool>,
+    }
+
+    fn visit(node: Node, ctx: &mut VisitCtx<'_>) {
+        let kind = node.kind();
+        let start_row = node.start_position().row;
+        let end_row = node.end_position().row;
+
+        if ctx.comment_kinds.contains(&kind) {
+            let first_two = node
+                .utf8_text(ctx.source)
+                .unwrap_or("")
+                .get(..2)
+                .unwrap_or("");
+            let is_block = first_two == "/*" || first_two == "<#";
+            for row in start_row..=end_row {
+                if row < ctx.has_comment.len() {
+                    ctx.has_comment[row] = true;
+                    if is_block {
+                        ctx.comment_is_block[row] = true;
+                    }
+                }
+            }
+            return;
+        }
+
+        // Python docstring: expression_statement whose only named child is a string literal
+        if let Some(stmt_kind) = ctx.docstring_stmt_kind {
+            if kind == stmt_kind && node.named_child_count() == 1 {
+                if let Some(child) = node.named_child(0) {
+                    if child.kind() == "string" {
+                        let child_start = child.start_position().row;
+                        let child_end = child.end_position().row;
+                        for row in child_start..=child_end {
+                            if row < ctx.has_docstring.len() {
+                                ctx.has_docstring[row] = true;
+                            }
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Leaf non-comment node: mark as code.
+        if node.child_count() == 0 && !node.is_extra() {
+            for row in start_row..=end_row {
+                if row < ctx.has_code.len() {
+                    ctx.has_code[row] = true;
+                }
+            }
+            return;
+        }
+
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                visit(child, ctx);
+            }
+        }
+    }
+
+    /// Parse C or C++ source with tree-sitter-c.
+    pub fn analyze_c(text: &str) -> Option<RawFileAnalysis> {
+        analyze_lines(text, tree_sitter_c::language(), &["comment"], None)
+    }
+
+    /// Parse Python source with tree-sitter-python.
+    pub fn analyze_python(text: &str) -> Option<RawFileAnalysis> {
+        analyze_lines(
+            text,
+            tree_sitter_python::language(),
+            &["comment"],
+            Some("expression_statement"),
+        )
     }
 }
 

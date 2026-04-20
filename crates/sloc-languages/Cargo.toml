@@ -9,5 +9,14 @@ homepage.workspace = true
 documentation.workspace = true
 rust-version.workspace = true
 
+[features]
+tree-sitter = ["dep:tree-sitter", "dep:tree-sitter-c", "dep:tree-sitter-python"]
+
 [dependencies]
 serde.workspace = true
+tree-sitter = { version = "0.22", optional = true }
+tree-sitter-c = { version = "0.21", optional = true }
+tree-sitter-python = { version = "0.21", optional = true }
+
+[build-dependencies]
+# tree-sitter grammar crates bring their own cc build scripts; nothing extra needed here.

@@ -455,6 +455,7 @@ fn analyze_candidate_file(
         status: match analysis.parse_mode {
             ParseMode::Lexical => FileStatus::AnalyzedExact,
             ParseMode::LexicalBestEffort => FileStatus::AnalyzedBestEffort,
+            ParseMode::TreeSitter => FileStatus::AnalyzedExact,
         },
         warnings,
         generated,

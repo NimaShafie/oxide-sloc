@@ -2,11 +2,16 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
+use lettre::{
+    message::{header::ContentType, MultiPart, SinglePart},
+    transport::smtp::authentication::Credentials,
+    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
+};
 use tracing_subscriber::EnvFilter;
 
 use sloc_config::{AppConfig, MixedLinePolicy};
 use sloc_core::{analyze, read_json, write_json, AnalysisRun};
-use sloc_report::{write_html, write_pdf_from_html};
+use sloc_report::{render_html, write_html, write_pdf_from_html};
 
 #[derive(Debug, Parser)]
 #[command(name = "sloc")]
@@ -85,8 +90,37 @@ struct ValidateArgs {
 
 #[derive(Debug, Args)]
 struct SendArgs {
+    /// Path to the JSON analysis result produced by `analyze --json-out`
     #[arg(value_name = "RESULT_JSON")]
-    input: Option<PathBuf>,
+    input: PathBuf,
+
+    // --- SMTP delivery ---
+    /// Send report via email (SMTP). Provide a comma-separated list of recipient addresses.
+    #[arg(long, value_name = "EMAIL,...")]
+    smtp_to: Vec<String>,
+    /// Sender address (From:). Required when --smtp-to is set.
+    #[arg(long, value_name = "EMAIL")]
+    smtp_from: Option<String>,
+    /// SMTP host (e.g. smtp.example.com). Defaults to SLOC_SMTP_HOST env var.
+    #[arg(long, value_name = "HOST", env = "SLOC_SMTP_HOST")]
+    smtp_host: Option<String>,
+    /// SMTP port. Defaults to 587.
+    #[arg(long, value_name = "PORT", default_value = "587")]
+    smtp_port: u16,
+    /// SMTP username. Defaults to SLOC_SMTP_USER env var.
+    #[arg(long, value_name = "USER", env = "SLOC_SMTP_USER")]
+    smtp_user: Option<String>,
+    /// SMTP password. Defaults to SLOC_SMTP_PASS env var.
+    #[arg(long, value_name = "PASS", env = "SLOC_SMTP_PASS")]
+    smtp_pass: Option<String>,
+
+    // --- Webhook delivery ---
+    /// POST the JSON result to this URL (repeatable).
+    #[arg(long, value_name = "URL")]
+    webhook_url: Vec<String>,
+    /// Optional Bearer token for webhook authentication. Defaults to SLOC_WEBHOOK_TOKEN env var.
+    #[arg(long, value_name = "TOKEN", env = "SLOC_WEBHOOK_TOKEN")]
+    webhook_token: Option<String>,
 }
 
 #[tokio::main]
@@ -104,7 +138,7 @@ async fn main() -> Result<()> {
         Commands::Report(args) => run_report(args),
         Commands::Serve(args) => run_serve(args).await,
         Commands::Validate(args) => run_validate(args),
-        Commands::Send(args) => run_send(args),
+        Commands::Send(args) => run_send(args).await,
     }
 }
 
@@ -171,16 +205,108 @@ fn run_validate(args: ValidateArgs) -> Result<()> {
     )
 }
 
-fn run_send(args: SendArgs) -> Result<()> {
-    let input = args
-        .input
-        .as_ref()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "<not provided>".into());
-    anyhow::bail!(
-        "send mode is scaffolded but not implemented yet; result input was {}",
-        input
-    )
+async fn run_send(args: SendArgs) -> Result<()> {
+    if args.smtp_to.is_empty() && args.webhook_url.is_empty() {
+        anyhow::bail!("provide at least one of --smtp-to or --webhook-url");
+    }
+
+    let run = read_json(&args.input)?;
+
+    if !args.smtp_to.is_empty() {
+        send_smtp(&args, &run).await?;
+    }
+
+    for url in &args.webhook_url {
+        send_webhook(url, args.webhook_token.as_deref(), &run).await?;
+    }
+
+    println!("send: all deliveries completed");
+    Ok(())
+}
+
+async fn send_smtp(args: &SendArgs, run: &AnalysisRun) -> Result<()> {
+    let host = args.smtp_host.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("--smtp-host (or SLOC_SMTP_HOST) is required for SMTP delivery")
+    })?;
+    let from = args
+        .smtp_from
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("--smtp-from is required for SMTP delivery"))?;
+
+    let html_body = render_html(run)?;
+    let plain_body = format!(
+        "oxide-sloc report: {} files analyzed, {} code lines\n\nSee attached HTML for the full report.",
+        run.summary_totals.files_analyzed,
+        run.summary_totals.code_lines,
+    );
+
+    for recipient in &args.smtp_to {
+        let msg = Message::builder()
+            .from(
+                from.parse()
+                    .with_context(|| format!("invalid from address: {from}"))?,
+            )
+            .to(recipient
+                .parse()
+                .with_context(|| format!("invalid recipient address: {recipient}"))?)
+            .subject(format!(
+                "oxide-sloc report — {}",
+                run.effective_configuration.reporting.report_title
+            ))
+            .multipart(
+                MultiPart::alternative()
+                    .singlepart(
+                        SinglePart::builder()
+                            .header(ContentType::TEXT_PLAIN)
+                            .body(plain_body.clone()),
+                    )
+                    .singlepart(
+                        SinglePart::builder()
+                            .header(ContentType::TEXT_HTML)
+                            .body(html_body.clone()),
+                    ),
+            )
+            .context("failed to build email message")?;
+
+        let mut builder = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
+            .with_context(|| format!("failed to build SMTP transport for {host}"))?
+            .port(args.smtp_port);
+
+        if let (Some(user), Some(pass)) = (args.smtp_user.as_deref(), args.smtp_pass.as_deref()) {
+            builder = builder.credentials(Credentials::new(user.to_owned(), pass.to_owned()));
+        }
+
+        let transport = builder.build();
+        transport
+            .send(msg)
+            .await
+            .with_context(|| format!("SMTP delivery to {recipient} failed"))?;
+
+        println!("send: emailed {recipient}");
+    }
+
+    Ok(())
+}
+
+async fn send_webhook(url: &str, token: Option<&str>, run: &AnalysisRun) -> Result<()> {
+    let client = reqwest::Client::new();
+    let mut req = client.post(url).json(run);
+
+    if let Some(t) = token {
+        req = req.header("Authorization", format!("Bearer {t}"));
+    }
+
+    let resp = req
+        .send()
+        .await
+        .with_context(|| format!("webhook POST to {url} failed"))?;
+
+    if !resp.status().is_success() {
+        anyhow::bail!("webhook {url} returned HTTP {}", resp.status());
+    }
+
+    println!("send: posted to {url}");
+    Ok(())
 }
 
 fn load_base_config(config_path: Option<&Path>) -> Result<AppConfig> {

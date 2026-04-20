@@ -25,37 +25,44 @@ Download the latest binary for your platform from the [Releases page](https://gi
 
 | Platform | File |
 |---|---|
-| Linux x86-64 | `oxidesloc-linux-x86_64` |
-| Windows x86-64 | `oxidesloc-windows-x86_64.exe` |
-| macOS x86-64 | `oxidesloc-macos-x86_64` |
-| macOS Apple Silicon | `oxidesloc-macos-arm64` |
+| Linux x86-64 | `oxide-sloc-linux-x86_64` |
+| Windows x86-64 | `oxide-sloc-windows-x86_64.exe` |
+| macOS x86-64 | `oxide-sloc-macos-x86_64` |
+| macOS Apple Silicon | `oxide-sloc-macos-arm64` |
 
 ```bash
 # Linux / macOS — make executable and move to PATH
-chmod +x oxidesloc-linux-x86_64
-mv oxidesloc-linux-x86_64 /usr/local/bin/oxidesloc
+chmod +x oxide-sloc-linux-x86_64
+mv oxide-sloc-linux-x86_64 /usr/local/bin/oxidesloc
 
 # Windows — rename and add to PATH
-ren oxidesloc-windows-x86_64.exe oxidesloc.exe
+ren oxide-sloc-windows-x86_64.exe oxidesloc.exe
 ```
 
 ### Option 2 — Docker (no Rust required)
 
+Pull the pre-built image from GitHub Container Registry:
+
 ```bash
-# Build locally and run the web UI
+docker pull ghcr.io/nimashafie/oxide-sloc:latest
+```
+
+Or build locally:
+
+```bash
 docker compose up
 ```
 
 Open [http://localhost:4317](http://localhost:4317) in your browser.
 
-> **Note:** The first `docker compose up` will build the image, which takes a few minutes. Subsequent runs start instantly.
+> **Note:** The first local build takes a few minutes. The GHCR image starts instantly.
 
 To analyze a directory from the CLI via Docker:
 
 ```bash
 docker run --rm \
   -v /path/to/your/repo:/repo:ro \
-  oxide-sloc \
+  ghcr.io/nimashafie/oxide-sloc:latest \
   analyze /repo --plain
 ```
 
@@ -164,13 +171,25 @@ CLI flags always override config file values. Run `oxidesloc --help` for the ful
 | Language | Extensions |
 |---|---|
 | C | `.c`, `.h` |
-| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp` |
+| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx` |
 | C# | `.cs` |
+| Go | `.go` |
+| Java | `.java` |
+| JavaScript | `.js`, `.mjs`, `.cjs` |
 | Python | `.py` |
+| Rust | `.rs` |
 | Shell | `.sh`, `.bash`, `.zsh`, `.ksh` |
 | PowerShell | `.ps1`, `.psm1`, `.psd1` |
+| TypeScript | `.ts`, `.mts`, `.cts` |
 
-> **Note:** Rust, TOML, Markdown, and YAML are not yet supported. Running oxide-sloc against its own repository will skip most files.
+> **Note:** TOML, Markdown, and YAML are not analyzed (no meaningful SLOC metric applies). All languages above use a fast lexical state-machine parser. Python, C, and C++ will additionally gain tree-sitter-backed adapters for higher-accuracy parsing.
+
+### Adding a new language
+
+Adding language support requires changes in two crates:
+
+1. **`crates/sloc-languages/src/lib.rs`** — add a variant to `Language`, implement `display_name`/`as_slug`/`from_name`, register file extensions in `detect_language`, and add a `ScanConfig` entry in `analyze_text`.
+2. **`crates/sloc-config/src/lib.rs`** — add the language name to any allowlists used by `AnalysisConfig` if you want it on by default.
 
 ---
 
@@ -375,24 +394,59 @@ Configured in `rustfmt.toml`: `edition = "2021"`, `max_width = 100`.
 
 ## Security
 
-oxide-sloc is designed as a **localhost-only tool** — the web UI binds to `127.0.0.1:4317` and is not intended to be exposed to a network.
+By default oxide-sloc binds to `127.0.0.1:4317` (localhost only). It can be deployed on a LAN or WLAN for personal or team use with the following measures.
+
+### Hardened defaults
 
 - HTTP request bodies are capped at 10 MB
 - Error details are logged server-side only; generic messages are shown in the browser
 - PDF generation uses Rust's `Command::args([...])` (no shell interpolation)
 - Dependency CVEs are checked on every CI run via `cargo audit`
 
+### LAN / team deployment
+
+**Step 1 — bind to a network interface**
+
+```bash
+# Bind to all interfaces (or use a specific LAN IP)
+oxidesloc serve --bind 0.0.0.0:4317
+```
+
+Or set it in `sloc.toml`:
+
+```toml
+[web]
+bind_address = "0.0.0.0:4317"
+```
+
+**Step 2 — enable API key authentication**
+
+Set `SLOC_API_KEY` in the server environment. When set, every request must carry a matching `X-API-Key` header. Requests without the correct key receive HTTP 401. The health check endpoint (`/healthz`) is exempt so load-balancer probes continue to work.
+
+```bash
+export SLOC_API_KEY="$(openssl rand -hex 32)"
+oxidesloc serve --bind 0.0.0.0:4317
+```
+
+**Step 3 — terminate TLS at a reverse proxy**
+
+oxide-sloc speaks plain HTTP. Put it behind nginx, Caddy, or Traefik for HTTPS termination:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name sloc.internal;
+    ssl_certificate     /etc/ssl/certs/sloc.crt;
+    ssl_certificate_key /etc/ssl/private/sloc.key;
+
+    location / {
+        proxy_pass http://127.0.0.1:4317;
+        proxy_set_header X-API-Key $http_x_api_key;
+    }
+}
+```
+
 To report a vulnerability privately, see [`SECURITY.md`](./SECURITY.md).
-
----
-
-## Roadmap
-
-1. Add tree-sitter-backed adapters (Python and C/C++ first)
-2. Add validation corpus and golden tests
-3. Add SMTP and webhook delivery (`send` command)
-4. Publish Docker image to GitHub Container Registry
-5. Expand supported languages (Rust, Go, Java, TypeScript)
 
 ---
 

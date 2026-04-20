@@ -9,8 +9,9 @@ use std::{
 use anyhow::{Context, Result};
 use askama::Template;
 use axum::{
-    extract::{DefaultBodyLimit, Form, Path as AxumPath, Query, State},
+    extract::{DefaultBodyLimit, Form, Path as AxumPath, Query, Request, State},
     http::{header, StatusCode},
+    middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -39,22 +40,47 @@ struct RunArtifacts {
     report_title: String,
 }
 
+/// Rejects requests when `SLOC_API_KEY` is set and the `X-API-Key` header does not match.
+/// When the env var is absent the middleware is a no-op (localhost default mode).
+async fn api_key_middleware(request: Request, next: Next) -> Response {
+    if let Ok(expected) = std::env::var("SLOC_API_KEY") {
+        let provided = request
+            .headers()
+            .get("X-API-Key")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if provided != expected {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    }
+    next.run(request).await
+}
+
 pub async fn serve(config: AppConfig) -> Result<()> {
     let bind_address = config.web.bind_address.clone();
-    let app = Router::new()
+
+    let state = AppState {
+        base_config: config,
+        artifacts: Arc::new(Mutex::new(HashMap::new())),
+    };
+
+    // Protected routes require API key when SLOC_API_KEY is set.
+    let protected = Router::new()
         .route("/", get(index))
-        .route("/healthz", get(healthz))
         .route("/analyze", post(analyze_handler))
         .route("/preview", get(preview_handler))
         .route("/pick-directory", get(pick_directory_handler))
+        .route("/open-path", get(open_path_handler))
         .route("/images/:folder/:file", get(image_handler))
         .route("/runs/:run_id/:artifact", get(artifact_handler))
+        .layer(middleware::from_fn(api_key_middleware));
+
+    // /healthz is always accessible (load-balancer probes, Docker health checks).
+    let app = protected
+        .route("/healthz", get(healthz))
         // Limit form/body size to 10 MB — analysis paths are short strings, no uploads expected
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
-        .with_state(AppState {
-            base_config: config,
-            artifacts: Arc::new(Mutex::new(HashMap::new())),
-        });
+        .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind_address)
         .await
@@ -172,6 +198,34 @@ async fn pick_directory_handler(Query(query): Query<PickDirectoryQuery>) -> impl
         selected_path: picked.as_ref().map(|p| display_path(p)),
         cancelled: picked.is_none(),
     })
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenPathQuery {
+    path: Option<String>,
+}
+
+async fn open_path_handler(Query(query): Query<OpenPathQuery>) -> impl IntoResponse {
+    let raw = match query.path.as_deref() {
+        Some(p) if !p.is_empty() => p,
+        _ => return (StatusCode::BAD_REQUEST, "missing path").into_response(),
+    };
+
+    let path = std::path::PathBuf::from(raw);
+    let target = if path.is_file() {
+        path.parent().map(std::path::PathBuf::from).unwrap_or(path)
+    } else {
+        path
+    };
+
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("explorer.exe").arg(&target).spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(&target).spawn();
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("xdg-open").arg(&target).spawn();
+
+    (StatusCode::OK, "ok").into_response()
 }
 
 async fn image_handler(AxumPath((folder, file)): AxumPath<(String, String)>) -> impl IntoResponse {
@@ -419,7 +473,6 @@ async fn analyze_handler(
         html_path: artifacts.html_path.as_ref().map(|path| display_path(path)),
         pdf_path: artifacts.pdf_path.as_ref().map(|path| display_path(path)),
         json_path: artifacts.json_path.as_ref().map(|path| display_path(path)),
-        has_preview: artifacts.html_path.is_some(),
         language_rows,
     };
 
@@ -1262,6 +1315,7 @@ struct LanguageSummaryRow {
 <head>
   <meta charset="utf-8">
   <title>Oxide-SLOC | samples/basic</title>
+  <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
   <style>
     :root {
       --bg: #efe9e2;
@@ -1348,6 +1402,11 @@ struct LanguageSummaryRow {
     .subnav { display:flex; align-items:center; gap:8px; margin-bottom: 14px; color: var(--muted-2); font-size: 13px; }
     .subnav strong { color: var(--text); }
     .summary-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }
+    .workbench-strip { display:flex; align-items:center; gap: 20px; padding: 12px 18px; margin-bottom: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); flex-wrap: wrap; }
+    .ws-stat { display:flex; flex-direction:column; gap: 2px; }
+    .ws-label { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-2); }
+    .ws-value { font-size: 14px; font-weight: 700; color: var(--text); }
+    .ws-divider { width: 1px; height: 30px; background: var(--line); flex: 0 0 auto; }
     .summary-card, .card, .step-nav, .explainer-card, .review-card, .workspace-card, .artifact-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, transform 0.18s ease; }
     .summary-card:hover, .workspace-card:hover, .explainer-card:hover, .artifact-card:hover, .review-card:hover { box-shadow: var(--shadow-strong); border-color: var(--line-strong); transform: translateY(-2px); }
     .card:hover, .step-nav:hover { box-shadow: var(--shadow-strong); border-color: var(--line-strong); }
@@ -1412,7 +1471,7 @@ struct LanguageSummaryRow {
     .field-help-grid { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
     .field-help-grid.coupled-help { margin-top: 12px; }
     .field-help-grid.preset-grid { align-items: start; }
-    .preset-inline-row { display:grid; grid-template-columns: minmax(220px, 360px) 1fr; gap: 20px; align-items:start; margin-bottom: 16px; }
+    .preset-inline-row { display:grid; grid-template-columns: minmax(280px, 460px) 0.75fr; gap: 20px; align-items:start; margin-bottom: 16px; }
     .preset-inline-row .field { margin: 0; }
     .preset-inline-row .explainer-card { margin: 0; }
     .output-field-row { display:grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items:start; }
@@ -1441,7 +1500,7 @@ struct LanguageSummaryRow {
     .checkbox { display:flex; align-items:flex-start; gap: 10px; font-size: 15px; font-weight:700; }
     .checkbox input { width: 16px; height: 16px; margin-top: 3px; accent-color: var(--accent); }
     .advanced-rule-table { display:grid; gap: 12px; margin-top: 18px; }
-    .advanced-rule-row { display:grid; grid-template-columns: 220px 220px minmax(0, 1fr); gap: 14px; align-items:start; padding: 16px; border:1px solid var(--line); border-radius: 14px; background: var(--surface-2); }
+    .advanced-rule-row { display:grid; grid-template-columns: 220px 220px minmax(0, 1fr); gap: 14px; align-items:center; padding: 16px; border:1px solid var(--line); border-radius: 14px; background: var(--surface-2); }
     .advanced-rule-row.static-note { grid-template-columns: 220px minmax(0, 1fr); }
     .toggle-card.compact { padding: 0; background: none; border: none; box-shadow: none; }
     .docstring-example-inset { padding: 14px 16px 14px 32px; background: var(--surface-2); border-left: 3px solid var(--line-strong); border-radius: 0 0 10px 10px; margin-top: -1px; }
@@ -1553,11 +1612,11 @@ struct LanguageSummaryRow {
     .progress-bar span { display:block; width:42%; height:100%; background: linear-gradient(90deg, var(--accent), #6b8cff); animation: pulseBar 1.4s ease-in-out infinite; }
     @keyframes pulseBar { 0% { transform: translateX(-35%); width:25%; } 50% { transform: translateX(130%); width:44%; } 100% { transform: translateX(250%); width:25%; } }
     .hidden { display:none !important; }
-    .site-footer { position: relative; z-index: 2; margin-top: 48px; padding: 20px 24px; border-top: 1px solid var(--line); background: rgba(0,0,0,0.04); text-align: center; color: var(--muted); font-size: 13px; line-height: 1.7; }
+    .site-footer { position: relative; z-index: 2; margin-top: 24px; padding: 20px 24px; border-top: 1px solid var(--line); background: rgba(0,0,0,0.04); text-align: center; color: var(--muted); font-size: 13px; line-height: 1.7; }
     .site-footer a { color: var(--muted-2); font-weight: 700; text-decoration: none; }
     .site-footer a:hover { color: var(--text); text-decoration: underline; }
     @media (max-width: 1280px) { .layout { grid-template-columns: 230px 1fr; } .scope-stats, .explorer-meta-grid, .explorer-meta-grid.split { grid-template-columns: 1fr 1fr; } }
-    @media (max-width: 980px) { .summary-grid, .field-grid, .artifact-grid, .review-grid, .scope-stats, .explorer-meta-grid, .explorer-meta-grid.split, .glob-guidance-grid { grid-template-columns: 1fr; } .layout { grid-template-columns: 1fr; } .step-nav { position:static; } .top-nav-inner { grid-template-columns: 1fr; justify-items: stretch; } .nav-project-slot, .nav-status { justify-content:flex-start; } .input-group { grid-template-columns: 1fr 1fr; } .input-group.compact { grid-template-columns: 1fr 1fr; } .better-spacing { justify-content:flex-start; } .file-explorer-controls { flex-direction: column; align-items:flex-start; flex-wrap: wrap; } .file-explorer-search-row { margin-left: 0; flex-wrap: wrap; width: 100%; } .explorer-search { min-width: 0; width: 100%; } .file-explorer-header, .tree-row { grid-template-columns: minmax(0, 1fr) 110px 110px 140px; } .advanced-rule-row, .advanced-rule-row.static-note, .output-identity-grid, .counting-top-grid, .preset-inline-row { grid-template-columns: 1fr; } .wizard-progress { max-width: none; } }
+    @media (max-width: 980px) { .field-grid, .artifact-grid, .review-grid, .scope-stats, .explorer-meta-grid, .explorer-meta-grid.split, .glob-guidance-grid { grid-template-columns: 1fr; } .layout { grid-template-columns: 1fr; } .step-nav { position:static; } .top-nav-inner { grid-template-columns: 1fr; justify-items: stretch; } .nav-project-slot, .nav-status { justify-content:flex-start; } .input-group { grid-template-columns: 1fr 1fr; } .input-group.compact { grid-template-columns: 1fr 1fr; } .better-spacing { justify-content:flex-start; } .file-explorer-controls { flex-direction: column; align-items:flex-start; flex-wrap: wrap; } .file-explorer-search-row { margin-left: 0; flex-wrap: wrap; width: 100%; } .explorer-search { min-width: 0; width: 100%; } .file-explorer-header, .tree-row { grid-template-columns: minmax(0, 1fr) 110px 110px 140px; } .advanced-rule-row, .advanced-rule-row.static-note, .output-identity-grid, .counting-top-grid, .preset-inline-row { grid-template-columns: 1fr; } .wizard-progress { max-width: none; } }
   </style>
 </head>
 <body>
@@ -1618,26 +1677,14 @@ struct LanguageSummaryRow {
       <strong id="breadcrumb-title">Guided scan setup</strong>
     </div>
 
-    <div class="summary-grid">
-      <section class="summary-card">
-        <div class="summary-label">Analyzer coverage</div>
-        <div class="summary-body">Grouped coverage for this build instead of a raw language list.</div>
-        <div class="coverage-pills">
-          <span class="coverage-pill">Systems: C, C++</span>
-          <span class="coverage-pill">Managed: C#</span>
-          <span class="coverage-pill">Scripting: Python, Shell, PowerShell</span>
-        </div>
-      </section>
-      <section class="summary-card">
-        <div class="summary-label">Default sample target</div>
-        <div class="summary-value"><code>samples/basic</code></div>
-        <div class="summary-body">Quick path for testing the full flow before scanning a larger project.</div>
-      </section>
-      <section class="summary-card">
-        <div class="summary-label">Current report title</div>
-        <div class="summary-value" id="live-report-title">samples/basic</div>
-        <div class="summary-body">This title follows the selected folder by default and updates exported artifacts.</div>
-      </section>
+    <div class="workbench-strip">
+      <div class="ws-stat"><span class="ws-label">Analyzers</span><span class="ws-value">11 languages</span></div>
+      <div class="ws-divider"></div>
+      <div class="ws-stat"><span class="ws-label">Mode</span><span class="ws-value">Localhost workbench</span></div>
+      <div class="ws-divider"></div>
+      <div class="ws-stat"><span class="ws-label">Active project</span><span class="ws-value" id="live-report-title">samples/basic</span></div>
+      <div class="ws-divider"></div>
+      <div class="ws-stat"><span class="ws-label">Output</span><span class="ws-value" id="ws-output-root">out/web</span></div>
     </div>
 
     <div class="layout">
@@ -2167,11 +2214,20 @@ struct LanguageSummaryRow {
         applyTheme(saved === "dark" ? "dark" : "light");
       }
 
-      function updateWizardProgress(step) {
-        var percent = Math.max(25, Math.min(100, step * 25));
-        if (wizardProgressFill) wizardProgressFill.style.width = String(percent) + "%";
-        if (wizardProgressValue) wizardProgressValue.textContent = String(percent) + "%";
+      function updateScrollProgress() {
+        var base = (currentStep - 1) * 25;
+        var scrollable = document.documentElement.scrollHeight - window.innerHeight;
+        var frac = scrollable > 0 ? Math.min(1, window.scrollY / scrollable) : 0;
+        var percent = Math.round(base + frac * 25);
+        if (wizardProgressFill) wizardProgressFill.style.width = percent + "%";
+        if (wizardProgressValue) wizardProgressValue.textContent = percent + "%";
       }
+
+      function updateWizardProgress() {
+        updateScrollProgress();
+      }
+
+      window.addEventListener("scroll", updateScrollProgress, { passive: true });
 
       function setStep(step) {
         currentStep = step;
@@ -2181,7 +2237,7 @@ struct LanguageSummaryRow {
         stepButtons.forEach(function (button) {
           button.classList.toggle("active", Number(button.getAttribute("data-step-target")) === step);
         });
-        updateWizardProgress(step);
+        updateWizardProgress();
 
         var wizardTop =
           document.querySelector(".page-shell") ||
@@ -2212,7 +2268,7 @@ struct LanguageSummaryRow {
           reportTitleInput.value = inferred;
         }
         var title = reportTitleInput.value || inferred;
-        liveReportTitle.textContent = title;
+        if (liveReportTitle) liveReportTitle.textContent = title;
         if (reportTitlePreview) reportTitlePreview.textContent = title;
         breadcrumbTitle.textContent = "Guided scan setup - " + title;
         document.title = "Oxide-SLOC | " + title;
@@ -2771,8 +2827,14 @@ struct LanguageSummaryRow {
         });
       });
 
+      var wsOutputRoot = document.getElementById("ws-output-root");
+      function syncStripOutputRoot() {
+        if (wsOutputRoot) wsOutputRoot.textContent = outputDirInput.value || "out/web";
+      }
+
       if (outputDirInput) {
         outputDirInput.addEventListener("input", function () {
+          syncStripOutputRoot();
           updateReview();
         });
       }
@@ -2875,7 +2937,8 @@ struct IndexTemplate {}
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ report_title }}</title>
+  <title>Oxide-SLOC | {{ report_title }} | Report</title>
+  <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
   <style>
     :root {
       --radius: 18px;
@@ -2990,9 +3053,12 @@ struct IndexTemplate {}
     .soft-chip.success { background: var(--success-bg); color: var(--success-text); }
     .toolbar-row { display:flex; justify-content:space-between; align-items:flex-start; gap: 12px; margin-bottom: 12px; }
     .muted { color: var(--muted); }
-    .site-footer { position: relative; z-index: 2; margin-top: 48px; padding: 20px 24px; border-top: 1px solid var(--line); background: rgba(0,0,0,0.04); text-align: center; color: var(--muted); font-size: 13px; line-height: 1.7; }
+    .site-footer { position: relative; z-index: 2; margin-top: 24px; padding: 20px 24px; border-top: 1px solid var(--line); background: rgba(0,0,0,0.04); text-align: center; color: var(--muted); font-size: 13px; line-height: 1.7; }
     .site-footer a { color: var(--muted-2); font-weight: 700; text-decoration: none; }
     .site-footer a:hover { color: var(--text); text-decoration: underline; }
+    .open-path-btn { display:inline-flex; align-items:center; justify-content:center; border-radius: 14px; border: 1px solid var(--line-strong); padding: 11px 14px; color: var(--text); background: var(--surface-3); font-weight: 800; font-size: 14px; cursor: pointer; text-decoration: none; }
+    .open-path-btn:hover { border-color: var(--accent); color: var(--accent-2); }
+    .empty-card-note { padding: 18px; color: var(--muted); font-size: 14px; line-height: 1.65; border-radius: 12px; border: 1px dashed var(--line-strong); background: var(--surface-2); margin-top: 8px; }
     @media (max-width: 1180px) {
       .top-nav-inner, .two-col, .action-grid { grid-template-columns: 1fr; }
       .nav-project-slot, .nav-status { justify-content:flex-start; }
@@ -3002,18 +3068,18 @@ struct IndexTemplate {}
 </head>
 <body>
   <div class="background-watermarks" aria-hidden="true">
-    <img src="/images/logo/logo-text.png" alt="" />
-    <img src="/images/logo/logo-text.png" alt="" />
-    <img src="/images/logo/logo-text.png" alt="" />
-    <img src="/images/logo/logo-text.png" alt="" />
-    <img src="/images/logo/logo-text.png" alt="" />
-    <img src="/images/logo/logo-text.png" alt="" />
-    <img src="/images/logo/logo-text.png" alt="" />
-    <img src="/images/logo/logo-text.png" alt="" />
-    <img src="/images/logo/logo-text.png" alt="" />
-    <img src="/images/logo/logo-text.png" alt="" />
-    <img src="/images/logo/logo-text.png" alt="" />
-    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/small-logo.png" alt="" />
+    <img src="/images/logo/small-logo.png" alt="" />
+    <img src="/images/logo/small-logo.png" alt="" />
+    <img src="/images/logo/small-logo.png" alt="" />
+    <img src="/images/logo/small-logo.png" alt="" />
+    <img src="/images/logo/small-logo.png" alt="" />
+    <img src="/images/logo/small-logo.png" alt="" />
+    <img src="/images/logo/small-logo.png" alt="" />
+    <img src="/images/logo/small-logo.png" alt="" />
+    <img src="/images/logo/small-logo.png" alt="" />
+    <img src="/images/logo/small-logo.png" alt="" />
+    <img src="/images/logo/small-logo.png" alt="" />
   </div>
   <div class="top-nav">
     <div class="top-nav-inner">
@@ -3066,8 +3132,8 @@ struct IndexTemplate {}
                 <a class="button secondary" href="{{ url }}">Download HTML</a>
               {% when None %}{% endmatch %}
             {% match html_path %}
-              {% when Some with (path) %}
-                <button type="button" class="copy-button secondary" data-copy-value="{{ path }}">Copy HTML path</button>
+              {% when Some with (_path) %}
+                <button type="button" class="open-path-btn open-folder-button" data-folder="{{ output_dir }}">Open HTML folder</button>
               {% when None %}{% endmatch %}
           </div>
         </div>
@@ -3083,13 +3149,13 @@ struct IndexTemplate {}
                 <a class="button secondary" href="{{ url }}">Download PDF</a>
               {% when None %}{% endmatch %}
             {% match pdf_path %}
-              {% when Some with (path) %}
-                <button type="button" class="copy-button secondary" data-copy-value="{{ path }}">Copy PDF path</button>
+              {% when Some with (_path) %}
+                <button type="button" class="open-path-btn open-folder-button" data-folder="{{ output_dir }}">Open PDF folder</button>
               {% when None %}{% endmatch %}
           </div>
         </div>
         <div class="action-card">
-          <h3>JSON report</h3>
+          <h3>JSON result</h3>
           <div class="action-buttons">
             {% match json_url %}
               {% when Some with (url) %}
@@ -3100,9 +3166,11 @@ struct IndexTemplate {}
                 <a class="button secondary" href="{{ url }}">Download JSON</a>
               {% when None %}{% endmatch %}
             {% match json_path %}
-              {% when Some with (path) %}
-                <button type="button" class="copy-button secondary" data-copy-value="{{ path }}">Copy JSON path</button>
-              {% when None %}{% endmatch %}
+              {% when Some with (_path) %}
+                <button type="button" class="open-path-btn open-folder-button" data-folder="{{ output_dir }}">Open JSON folder</button>
+              {% when None %}
+                <div class="empty-card-note">JSON was not generated for this run. Re-run with the JSON artifact enabled to get a machine-readable result file.</div>
+              {% endmatch %}
           </div>
         </div>
       </div>
@@ -3119,7 +3187,14 @@ struct IndexTemplate {}
 
       <div class="path-list">
         <div class="path-item"><strong>Project path</strong><code>{{ project_path }}</code></div>
-        <div class="path-item"><strong>Output folder</strong><code>{{ output_dir }}</code></div>
+        <div class="path-item" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+          <div><strong>Output folder</strong><code>{{ output_dir }}</code></div>
+          <button type="button" class="open-path-btn open-folder-button" data-folder="{{ output_dir }}" style="min-height:36px;font-size:13px;">Open in explorer</button>
+        </div>
+        <div class="path-item" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+          <div><strong>Run ID</strong><code>{{ run_id }}</code></div>
+          <button type="button" class="open-path-btn open-folder-button" data-folder="{{ output_dir }}" style="min-height:36px;font-size:13px;">Open run folder</button>
+        </div>
       </div>
     </section>
 
@@ -3159,29 +3234,6 @@ struct IndexTemplate {}
         </table>
     </section>
 
-    <section class="panel">
-        <div class="toolbar-row">
-          <div>
-            <h2>Report preview</h2>
-            <p class="muted">Embedded view of the saved HTML artifact. Opens full-screen using the Open HTML button above.</p>
-          </div>
-        </div>
-
-        <div class="preview-shell">
-          {% if has_preview %}
-            {% match html_url %}
-              {% when Some with (url) %}
-                <iframe src="{{ url }}" title="HTML report preview"></iframe>
-              {% when None %}
-                <div class="empty-preview">HTML preview is not available for this run.</div>
-              {% endmatch %}
-          {% else %}
-            <div class="empty-preview">
-              HTML output was not selected for this run, so there is no saved preview artifact to embed here.
-            </div>
-          {% endif %}
-        </div>
-    </section>
   </div>
 
   <script>
@@ -3218,6 +3270,14 @@ struct IndexTemplate {}
           if (navigator.clipboard && navigator.clipboard.writeText) {
             navigator.clipboard.writeText(value).catch(function () {});
           }
+        });
+      });
+
+      Array.prototype.slice.call(document.querySelectorAll('.open-folder-button')).forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var folder = btn.getAttribute('data-folder') || '';
+          if (!folder) return;
+          fetch('/open-path?path=' + encodeURIComponent(folder)).catch(function () {});
         });
       });
 
@@ -3289,7 +3349,6 @@ struct ResultTemplate {
     html_path: Option<String>,
     pdf_path: Option<String>,
     json_path: Option<String>,
-    has_preview: bool,
     language_rows: Vec<LanguageSummaryRow>,
 }
 

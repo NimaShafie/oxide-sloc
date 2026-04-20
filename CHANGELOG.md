@@ -6,7 +6,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
-## [Unreleased]
+## [0.1.0-alpha.1] — 2026-04-19
+
+> Alpha build — not production-ready. Intended for early testing and feedback.
 
 ### Added
 - Guided 4-step web UI wizard (select project → counting rules → outputs → review & run)

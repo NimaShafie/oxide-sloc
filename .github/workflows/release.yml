@@ -70,6 +70,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Detect pre-release
+        id: pre
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [[ "$TAG" =~ -(alpha|beta|rc)\. ]] || [[ "$TAG" =~ -(alpha|beta|rc)$ ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+            # Extract the label (alpha / beta / rc) for the notice
+            LABEL=$(echo "$TAG" | grep -oP '(?<=-)(alpha|beta|rc)')
+            echo "label=$LABEL" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "label=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -80,4 +95,25 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
+          prerelease: ${{ steps.pre.outputs.is_prerelease }}
           generate_release_notes: true
+          body: |
+            ${{ steps.pre.outputs.is_prerelease == 'true' && format('> **{0} build** — not production-ready. Intended for testing and feedback only. Breaking changes may occur before a stable release.', steps.pre.outputs.label) || '' }}
+
+            ## Binaries
+
+            | Platform | File |
+            |---|---|
+            | Linux x86-64 | `oxidesloc-linux-x86_64` |
+            | Windows x86-64 | `oxidesloc-windows-x86_64.exe` |
+            | macOS x86-64 | `oxidesloc-macos-x86_64` |
+            | macOS Apple Silicon | `oxidesloc-macos-arm64` |
+
+            ```bash
+            # Linux / macOS — make executable and move to PATH
+            chmod +x oxidesloc-linux-x86_64
+            mv oxidesloc-linux-x86_64 /usr/local/bin/oxidesloc
+
+            # Windows — rename and add to PATH
+            ren oxidesloc-windows-x86_64.exe oxidesloc.exe
+            ```

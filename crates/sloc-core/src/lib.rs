@@ -1,3 +1,8 @@
+pub mod delta;
+pub mod history;
+pub use delta::{compute_delta, FileChangeStatus, FileDelta, ScanComparison, SummaryDelta};
+pub use history::{RegistryEntry, ScanRegistry, ScanSummarySnapshot};
+
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::Path;

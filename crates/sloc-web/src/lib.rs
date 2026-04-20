@@ -20,13 +20,18 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use sloc_config::{AppConfig, BinaryFileBehavior, MixedLinePolicy};
-use sloc_core::analyze;
+use sloc_core::{
+    analyze, compute_delta, read_json, FileChangeStatus, RegistryEntry, ScanRegistry,
+    ScanSummarySnapshot,
+};
 use sloc_report::{render_html, write_pdf_from_html};
 
 #[derive(Clone)]
 struct AppState {
     base_config: AppConfig,
     artifacts: Arc<Mutex<HashMap<String, RunArtifacts>>>,
+    registry: Arc<Mutex<ScanRegistry>>,
+    registry_path: PathBuf,
 }
 
 type PendingPdf = Option<(PathBuf, PathBuf, bool)>;
@@ -58,10 +63,15 @@ async fn api_key_middleware(request: Request, next: Next) -> Response {
 
 pub async fn serve(config: AppConfig) -> Result<()> {
     let bind_address = config.web.bind_address.clone();
+    let output_root = resolve_output_root(None).unwrap_or_else(|_| PathBuf::from("out/web"));
+    let registry_path = output_root.join("registry.json");
+    let registry = ScanRegistry::load(&registry_path);
 
     let state = AppState {
         base_config: config,
         artifacts: Arc::new(Mutex::new(HashMap::new())),
+        registry: Arc::new(Mutex::new(registry)),
+        registry_path,
     };
 
     // Protected routes require API key when SLOC_API_KEY is set.
@@ -71,6 +81,8 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         .route("/preview", get(preview_handler))
         .route("/pick-directory", get(pick_directory_handler))
         .route("/open-path", get(open_path_handler))
+        .route("/history", get(history_handler))
+        .route("/compare", get(compare_handler))
         .route("/images/:folder/:file", get(image_handler))
         .route("/runs/:run_id/:artifact", get(artifact_handler))
         .layer(middleware::from_fn(api_key_middleware));
@@ -345,6 +357,16 @@ async fn analyze_handler(
     };
 
     let run_id = format!("{}", run.tool.run_id);
+
+    // Capture the most-recent previous scan for this project before registering the current one.
+    let prev_entry: Option<RegistryEntry> = {
+        let reg = state.registry.lock().await;
+        reg.entries_for_roots(&run.input_roots)
+            .into_iter()
+            .next()
+            .cloned()
+    };
+
     let output_root = match resolve_output_root(form.output_dir.as_deref()) {
         Ok(path) => path,
         Err(err) => {
@@ -392,8 +414,31 @@ async fn analyze_handler(
     };
 
     {
-        let mut registry = state.artifacts.lock().await;
-        registry.insert(run_id.clone(), artifacts.clone());
+        let mut map = state.artifacts.lock().await;
+        map.insert(run_id.clone(), artifacts.clone());
+    }
+
+    // Persist entry to the on-disk registry.
+    {
+        let entry = RegistryEntry {
+            run_id: run_id.clone(),
+            timestamp_utc: run.tool.timestamp_utc,
+            project_label: project_label.clone(),
+            input_roots: run.input_roots.clone(),
+            json_path: artifacts.json_path.clone(),
+            html_path: artifacts.html_path.clone(),
+            summary: ScanSummarySnapshot {
+                files_analyzed: run.summary_totals.files_analyzed,
+                files_skipped: run.summary_totals.files_skipped,
+                total_physical_lines: run.summary_totals.total_physical_lines,
+                code_lines: run.summary_totals.code_lines,
+                comment_lines: run.summary_totals.comment_lines,
+                blank_lines: run.summary_totals.blank_lines,
+            },
+        };
+        let mut reg = state.registry.lock().await;
+        reg.add_entry(entry);
+        let _ = reg.save(&state.registry_path);
     }
 
     if let Some((pdf_src, pdf_dst, cleanup_src)) = pending_pdf {
@@ -476,6 +521,11 @@ async fn analyze_handler(
         pdf_path: artifacts.pdf_path.as_ref().map(|path| display_path(path)),
         json_path: artifacts.json_path.as_ref().map(|path| display_path(path)),
         language_rows,
+        prev_run_id: prev_entry.as_ref().map(|e| e.run_id.clone()),
+        prev_run_timestamp: prev_entry
+            .as_ref()
+            .map(|e| e.timestamp_utc.format("%Y-%m-%d %H:%M UTC").to_string()),
+        prev_run_code_lines: prev_entry.as_ref().map(|e| e.summary.code_lines),
     };
 
     Html(
@@ -607,6 +657,217 @@ async fn artifact_handler(
         }
         _ => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+// ── History ───────────────────────────────────────────────────────────────────
+
+struct HistoryEntryRow {
+    run_id: String,
+    run_id_short: String,
+    timestamp: String,
+    project_label: String,
+    project_path: String,
+    files_analyzed: u64,
+    code_lines: u64,
+    has_html: bool,
+}
+
+async fn history_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let entries: Vec<HistoryEntryRow> = {
+        let reg = state.registry.lock().await;
+        reg.entries
+            .iter()
+            .map(|e| HistoryEntryRow {
+                run_id: e.run_id.clone(),
+                run_id_short: e.run_id.chars().take(8).collect(),
+                timestamp: e.timestamp_utc.format("%Y-%m-%d %H:%M UTC").to_string(),
+                project_label: e.project_label.clone(),
+                project_path: e.input_roots.first().cloned().unwrap_or_default(),
+                files_analyzed: e.summary.files_analyzed,
+                code_lines: e.summary.code_lines,
+                has_html: e.html_path.as_ref().map(|p| p.exists()).unwrap_or(false),
+            })
+            .collect()
+    };
+
+    let total_scans = entries.len();
+    let template = HistoryTemplate {
+        entries,
+        total_scans,
+    };
+    Html(
+        template
+            .render()
+            .unwrap_or_else(|e| format!("<pre>{e}</pre>")),
+    )
+    .into_response()
+}
+
+// ── Compare ───────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct CompareQuery {
+    a: String,
+    b: String,
+}
+
+struct CompareFileDeltaRow {
+    relative_path: String,
+    language: String,
+    status: String,
+    baseline_code: i64,
+    current_code: i64,
+    code_delta_str: String,
+    code_delta_class: String,
+    comment_delta_str: String,
+    comment_delta_class: String,
+    total_delta_str: String,
+    total_delta_class: String,
+}
+
+fn fmt_delta(n: i64) -> String {
+    if n > 0 {
+        format!("+{n}")
+    } else {
+        format!("{n}")
+    }
+}
+
+fn delta_class(n: i64) -> &'static str {
+    if n > 0 {
+        "pos"
+    } else if n < 0 {
+        "neg"
+    } else {
+        "zero"
+    }
+}
+
+async fn compare_handler(
+    State(state): State<AppState>,
+    Query(query): Query<CompareQuery>,
+) -> impl IntoResponse {
+    let (maybe_a, maybe_b) = {
+        let reg = state.registry.lock().await;
+        (
+            reg.find_by_run_id(&query.a).cloned(),
+            reg.find_by_run_id(&query.b).cloned(),
+        )
+    };
+
+    let (Some(entry_a), Some(entry_b)) = (maybe_a, maybe_b) else {
+        return (
+            StatusCode::NOT_FOUND,
+            "One or both run IDs not found in history.",
+        )
+            .into_response();
+    };
+
+    // Ensure older scan is always the baseline.
+    let (baseline_entry, current_entry) = if entry_a.timestamp_utc <= entry_b.timestamp_utc {
+        (entry_a, entry_b)
+    } else {
+        (entry_b, entry_a)
+    };
+
+    let (Some(base_json), Some(curr_json)) = (
+        baseline_entry.json_path.as_ref(),
+        current_entry.json_path.as_ref(),
+    ) else {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "JSON artifact missing for one or both runs. Re-scan with JSON output enabled.",
+        )
+            .into_response();
+    };
+
+    let baseline_run = match read_json(base_json) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Baseline load failed: {e}"),
+            )
+                .into_response()
+        }
+    };
+    let current_run = match read_json(curr_json) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Current load failed: {e}"),
+            )
+                .into_response()
+        }
+    };
+
+    let comparison = compute_delta(&baseline_run, &current_run);
+
+    let file_rows: Vec<CompareFileDeltaRow> = comparison
+        .file_deltas
+        .iter()
+        .map(|d| CompareFileDeltaRow {
+            relative_path: d.relative_path.clone(),
+            language: d.language.clone().unwrap_or_else(|| "—".into()),
+            status: match d.status {
+                FileChangeStatus::Added => "added".into(),
+                FileChangeStatus::Removed => "removed".into(),
+                FileChangeStatus::Modified => "modified".into(),
+                FileChangeStatus::Unchanged => "unchanged".into(),
+            },
+            baseline_code: d.baseline_code,
+            current_code: d.current_code,
+            code_delta_str: fmt_delta(d.code_delta),
+            code_delta_class: delta_class(d.code_delta).into(),
+            comment_delta_str: fmt_delta(d.comment_delta),
+            comment_delta_class: delta_class(d.comment_delta).into(),
+            total_delta_str: fmt_delta(d.total_delta),
+            total_delta_class: delta_class(d.total_delta).into(),
+        })
+        .collect();
+
+    let project_path = baseline_entry
+        .input_roots
+        .first()
+        .cloned()
+        .unwrap_or_default();
+    let s = &comparison.summary;
+    let template = CompareTemplate {
+        baseline_run_id_short: baseline_entry.run_id.chars().take(8).collect(),
+        current_run_id_short: current_entry.run_id.chars().take(8).collect(),
+        baseline_timestamp: baseline_entry
+            .timestamp_utc
+            .format("%Y-%m-%d %H:%M UTC")
+            .to_string(),
+        current_timestamp: current_entry
+            .timestamp_utc
+            .format("%Y-%m-%d %H:%M UTC")
+            .to_string(),
+        project_path,
+        baseline_code: s.baseline_code,
+        current_code: s.current_code,
+        code_lines_delta_str: fmt_delta(s.code_lines_delta),
+        code_lines_delta_class: delta_class(s.code_lines_delta).into(),
+        baseline_files: s.baseline_files,
+        current_files: s.current_files,
+        files_analyzed_delta_str: fmt_delta(s.files_analyzed_delta),
+        files_analyzed_delta_class: delta_class(s.files_analyzed_delta).into(),
+        comment_lines_delta_str: fmt_delta(s.comment_lines_delta),
+        comment_lines_delta_class: delta_class(s.comment_lines_delta).into(),
+        files_added: comparison.files_added,
+        files_removed: comparison.files_removed,
+        files_modified: comparison.files_modified,
+        files_unchanged: comparison.files_unchanged,
+        file_rows,
+    };
+
+    Html(
+        template
+            .render()
+            .unwrap_or_else(|e| format!("<pre>{e}</pre>")),
+    )
+    .into_response()
 }
 
 fn persist_run_artifacts(
@@ -3026,6 +3287,13 @@ struct IndexTemplate {}
     .hero-title { margin:0; font-size: 26px; font-weight: 850; letter-spacing: -0.03em; }
     .hero-subtitle { margin: 10px 0 0; color: var(--muted); font-size: 16px; line-height: 1.65; max-width: 920px; }
     .hero-note { margin-top: 14px; color: var(--muted); font-size: 14px; line-height: 1.6; }
+    .compare-banner { margin-top: 18px; background: var(--info-bg, #eef3ff); border: 1px solid rgba(100,130,220,0.25); border-radius: 14px; padding: 14px 18px; }
+    .compare-banner-body { display:flex; align-items:center; gap: 18px; flex-wrap:wrap; }
+    .compare-banner-meta { display:flex; flex-direction:column; gap:2px; min-width:0; }
+    .compare-label { font-size:11px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:var(--info-text, #4467d8); }
+    .compare-ts { font-size:13px; color:var(--muted); }
+    .compare-banner-stats { display:flex; align-items:center; gap:10px; font-size:14px; flex:1 1 auto; flex-wrap:wrap; }
+    .compare-arrow { color: var(--muted); }
     .action-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 18px; }
     .action-card { padding: 16px; border-radius: 16px; border: 1px solid var(--line); background: var(--surface-2); }
     .action-card h3 { margin:0 0 10px; font-size: 16px; }
@@ -3096,6 +3364,7 @@ struct IndexTemplate {}
         <div class="nav-project-pill"><span class="nav-project-label">Project</span><span class="nav-project-value">{{ report_title }}</span></div>
       </div>
       <div class="nav-status">
+        <a class="nav-pill" href="/history" style="text-decoration:none;">History</a>
         <span class="nav-pill"><span class="status-dot"></span>Analysis saved</span>
         <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme" title="Toggle theme">
           <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 15.5A8.5 8.5 0 1 1 12.5 4 6.7 6.7 0 0 0 20 15.5Z"></path></svg>
@@ -3120,6 +3389,25 @@ struct IndexTemplate {}
           <button type="button" class="copy-button secondary" data-copy-value="{{ run_id }}">Copy run ID</button>
         </div>
       </div>
+
+      {% if let Some(prev_id) = prev_run_id %}{% if let Some(prev_ts) = prev_run_timestamp %}
+      <div class="compare-banner">
+        <div class="compare-banner-body">
+          <div class="compare-banner-meta">
+            <span class="compare-label">Previous scan</span>
+            <span class="compare-ts">{{ prev_ts }}</span>
+          </div>
+          <div class="compare-banner-stats">
+            {% if let Some(prev_code) = prev_run_code_lines %}
+              <span>Code before: <strong>{{ prev_code }}</strong></span>
+              <span class="compare-arrow">→</span>
+              <span>Code now: <strong>{{ code_lines }}</strong></span>
+            {% endif %}
+          </div>
+          <a class="button" href="/compare?a={{ prev_id }}&b={{ run_id }}" style="white-space:nowrap;">View delta →</a>
+        </div>
+      </div>
+      {% endif %}{% endif %}
 
       <div class="action-grid">
         <div class="action-card">
@@ -3352,6 +3640,9 @@ struct ResultTemplate {
     pdf_path: Option<String>,
     json_path: Option<String>,
     language_rows: Vec<LanguageSummaryRow>,
+    prev_run_id: Option<String>,
+    prev_run_timestamp: Option<String>,
+    prev_run_code_lines: Option<u64>,
 }
 
 #[derive(Template)]
@@ -3518,4 +3809,444 @@ struct ResultTemplate {
 )]
 struct ErrorTemplate {
     message: String,
+}
+
+// ── HistoryTemplate ────────────────────────────────────────────────────────────
+
+#[derive(Template)]
+#[template(
+    source = r##"
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Oxide-SLOC | Scan History</title>
+  <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <style>
+    :root {
+      --radius: 18px; --bg: #f5efe8; --surface: rgba(255,255,255,0.82); --surface-2: #fbf7f2;
+      --line: #e6d0bf; --text: #43342d; --muted: #7b675b; --nav: #b85d33; --nav-2: #7a371b;
+      --accent: #6f9bff; --oxide: #d37a4c; --shadow: 0 18px 42px rgba(77,44,20,0.12);
+    }
+    body.dark-theme { --bg:#1b1511; --surface:#261c17; --surface-2:#2d221d; --line:#524238; --text:#f5ece6; --muted:#c7b7aa; }
+    *{box-sizing:border-box;} html,body{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);}
+    .top-nav{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,var(--nav),var(--nav-2));border-bottom:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 14px rgba(0,0,0,0.18);}
+    .top-nav-inner{max-width:1720px;margin:0 auto;padding:4px 24px;min-height:56px;display:flex;align-items:center;gap:14px;}
+    .brand{display:flex;align-items:center;gap:14px;} .brand-logo{width:42px;height:46px;object-fit:contain;flex:0 0 auto;filter:drop-shadow(0 4px 10px rgba(0,0,0,0.22));}
+    .brand-title{margin:0;color:#fff;font-size:17px;font-weight:800;} .brand-subtitle{color:rgba(255,255,255,0.85);font-size:12px;margin-top:2px;}
+    .nav-right{margin-left:auto;display:flex;align-items:center;gap:10px;}
+    .nav-pill,.theme-toggle{display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:0 14px;border-radius:999px;border:1px solid rgba(255,255,255,0.18);color:#fff;background:rgba(255,255,255,0.08);font-size:12px;font-weight:700;text-decoration:none;}
+    .theme-toggle{width:38px;justify-content:center;padding:0;cursor:pointer;transition:transform 0.15s ease;}
+    .theme-toggle:hover{transform:translateY(-1px);background:rgba(255,255,255,0.16);}
+    .theme-toggle svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8;}
+    .theme-toggle .icon-sun{display:none;} body.dark-theme .theme-toggle .icon-sun{display:block;} body.dark-theme .theme-toggle .icon-moon{display:none;}
+    .page{max-width:1720px;margin:0 auto;padding:18px 24px 40px;}
+    .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:22px;margin-bottom:18px;}
+    h1{margin:0 0 6px;font-size:26px;font-weight:850;letter-spacing:-0.03em;}
+    h2{margin:0 0 14px;font-size:18px;font-weight:750;}
+    .muted{color:var(--muted);font-size:14px;margin:0 0 18px;}
+    .compare-controls{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;}
+    .compare-hint{font-size:13px;color:var(--muted);}
+    table{width:100%;border-collapse:collapse;font-size:14px;}
+    th{text-align:left;font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);padding:8px 12px;border-bottom:2px solid var(--line);}
+    td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle;}
+    tr:last-child td{border-bottom:none;}
+    tr:hover td{background:var(--surface-2);}
+    .run-id-chip{font-family:ui-monospace,monospace;font-size:12px;background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:2px 7px;color:var(--muted);}
+    .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;border:1px solid var(--line);background:var(--surface-2);color:var(--text);text-decoration:none;transition:background .12s ease;}
+    .btn:hover{background:var(--line);}
+    .btn.primary{background:var(--accent,#6f9bff);border-color:var(--accent,#6f9bff);color:#fff;}
+    .btn.primary:hover{opacity:.9;}
+    .btn:disabled{opacity:.4;cursor:default;pointer-events:none;}
+    .empty-state{text-align:center;padding:48px 24px;color:var(--muted);}
+    .empty-state strong{display:block;font-size:18px;margin-bottom:8px;color:var(--text);}
+    .site-footer{text-align:center;padding:18px 24px;font-size:13px;color:var(--muted);}
+    .site-footer a{color:var(--muted);}
+    @media(max-width:700px){td,th{padding:7px 8px;} .run-id-chip{display:none;}}
+  </style>
+</head>
+<body>
+  <div class="top-nav">
+    <div class="top-nav-inner">
+      <div class="brand">
+        <img class="brand-logo" src="/images/logo/small-logo.png" alt="OxideSLOC logo">
+        <div><p class="brand-title">OxideSLOC</p><p class="brand-subtitle">Scan history</p></div>
+      </div>
+      <div class="nav-right">
+        <a class="nav-pill" href="/">New scan</a>
+        <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+          <svg class="icon-moon" viewBox="0 0 24 24"><path d="M20 15.5A8.5 8.5 0 1 1 12.5 4 6.7 6.7 0 0 0 20 15.5Z"></path></svg>
+          <svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"></circle><path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.9 5.1l-1.6 1.6M6.7 17.3l-1.6 1.6M18.9 18.9l-1.6-1.6M6.7 6.7 5.1 5.1"></path></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="page">
+    <section class="panel">
+      <h1>Scan History</h1>
+      <p class="muted">{{ total_scans }} scan(s) recorded in this workspace. Select any two runs to compare them.</p>
+
+      {% if entries.is_empty() %}
+      <div class="empty-state">
+        <strong>No scans yet</strong>
+        Run your first analysis from the <a href="/">main dashboard</a>.
+      </div>
+      {% else %}
+      <div class="compare-controls">
+        <button class="btn primary" id="compare-btn" onclick="doCompare()" disabled>Compare selected (0/2)</button>
+        <span class="compare-hint">Check two rows then click compare.</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:36px"></th>
+            <th>Timestamp</th>
+            <th>Project</th>
+            <th>Run ID</th>
+            <th>Files</th>
+            <th>Code lines</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for entry in entries %}
+          <tr>
+            <td><input type="checkbox" class="row-select" value="{{ entry.run_id }}" aria-label="Select run {{ entry.run_id_short }}"></td>
+            <td>{{ entry.timestamp }}</td>
+            <td title="{{ entry.project_path }}" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ entry.project_label }}</td>
+            <td><span class="run-id-chip">{{ entry.run_id_short }}</span></td>
+            <td>{{ entry.files_analyzed }}</td>
+            <td>{{ entry.code_lines }}</td>
+            <td style="display:flex;gap:8px;flex-wrap:wrap;">
+              {% if entry.has_html %}
+              <a class="btn" href="/runs/{{ entry.run_id }}/html" target="_blank" rel="noopener">View report</a>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </section>
+  </div>
+
+  <footer class="site-footer">
+    oxide-sloc — local source line analysis workbench &nbsp;·&nbsp;
+    Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
+    &nbsp;·&nbsp; <a href="https://github.com/NimaShafie/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
+  </footer>
+
+  <script>
+    (function () {
+      var storageKey = 'oxidesloc-theme';
+      var body = document.body;
+      try { var s = localStorage.getItem(storageKey); if (s === 'dark' || s === 'light') body.classList.toggle('dark-theme', s === 'dark'); } catch(e) {}
+      var toggle = document.getElementById('theme-toggle');
+      if (toggle) toggle.addEventListener('click', function () {
+        var next = body.classList.contains('dark-theme') ? 'light' : 'dark';
+        body.classList.toggle('dark-theme', next === 'dark');
+        try { localStorage.setItem(storageKey, next); } catch(e) {}
+      });
+
+      var selected = [];
+      var btn = document.getElementById('compare-btn');
+
+      function updateBtn() {
+        if (!btn) return;
+        btn.disabled = selected.length !== 2;
+        btn.textContent = 'Compare selected (' + selected.length + '/2)';
+      }
+
+      Array.prototype.slice.call(document.querySelectorAll('.row-select')).forEach(function (cb) {
+        cb.addEventListener('change', function () {
+          if (this.checked) {
+            if (selected.length >= 2) { this.checked = false; return; }
+            selected.push(this.value);
+          } else {
+            var v = this.value;
+            selected = selected.filter(function (id) { return id !== v; });
+          }
+          updateBtn();
+        });
+      });
+    })();
+
+    function doCompare() {
+      var checks = Array.prototype.slice.call(document.querySelectorAll('.row-select:checked'));
+      if (checks.length !== 2) return;
+      var a = checks[0].value, b = checks[1].value;
+      window.location.href = '/compare?a=' + encodeURIComponent(a) + '&b=' + encodeURIComponent(b);
+    }
+  </script>
+</body>
+</html>
+"##,
+    ext = "html"
+)]
+struct HistoryTemplate {
+    entries: Vec<HistoryEntryRow>,
+    total_scans: usize,
+}
+
+// ── CompareTemplate ────────────────────────────────────────────────────────────
+
+#[derive(Template)]
+#[template(
+    source = r##"
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Oxide-SLOC | Scan Delta</title>
+  <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <style>
+    :root {
+      --radius:18px; --bg:#f5efe8; --surface:rgba(255,255,255,0.82); --surface-2:#fbf7f2;
+      --line:#e6d0bf; --text:#43342d; --muted:#7b675b; --nav:#b85d33; --nav-2:#7a371b;
+      --accent:#6f9bff; --oxide:#d37a4c; --shadow:0 18px 42px rgba(77,44,20,0.12);
+      --pos:#1a8f47; --pos-bg:#e8f5ed; --neg:#b33b3b; --neg-bg:#fdeaea; --zero-bg:transparent;
+      --added:#1a8f47; --removed:#b33b3b; --modified:#926000; --unchanged:#7b675b;
+    }
+    body.dark-theme {
+      --bg:#1b1511; --surface:#261c17; --surface-2:#2d221d; --line:#524238; --text:#f5ece6;
+      --muted:#c7b7aa; --pos:#8fe2a8; --pos-bg:#163927; --neg:#f5a3a3; --neg-bg:#3d1c1c;
+    }
+    *{box-sizing:border-box;} html,body{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);}
+    .top-nav{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,var(--nav),var(--nav-2));border-bottom:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 14px rgba(0,0,0,0.18);}
+    .top-nav-inner{max-width:1720px;margin:0 auto;padding:4px 24px;min-height:56px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
+    .brand{display:flex;align-items:center;gap:14px;} .brand-logo{width:42px;height:46px;object-fit:contain;flex:0 0 auto;filter:drop-shadow(0 4px 10px rgba(0,0,0,0.22));}
+    .brand-title{margin:0;color:#fff;font-size:17px;font-weight:800;} .brand-subtitle{color:rgba(255,255,255,0.85);font-size:12px;margin-top:2px;}
+    .nav-right{margin-left:auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+    .nav-pill,.theme-toggle{display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:0 14px;border-radius:999px;border:1px solid rgba(255,255,255,0.18);color:#fff;background:rgba(255,255,255,0.08);font-size:12px;font-weight:700;text-decoration:none;}
+    .theme-toggle{width:38px;justify-content:center;padding:0;cursor:pointer;transition:transform 0.15s ease;}
+    .theme-toggle:hover{transform:translateY(-1px);background:rgba(255,255,255,0.16);}
+    .theme-toggle svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8;}
+    .theme-toggle .icon-sun{display:none;} body.dark-theme .theme-toggle .icon-sun{display:block;} body.dark-theme .theme-toggle .icon-moon{display:none;}
+    .page{max-width:1720px;margin:0 auto;padding:18px 24px 40px;}
+    .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:22px;margin-bottom:18px;}
+    .hero{background:linear-gradient(180deg,rgba(255,255,255,0.30),transparent),var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:22px;margin-bottom:18px;}
+    h1{margin:0 0 6px;font-size:26px;font-weight:850;letter-spacing:-0.03em;}
+    h2{margin:0 0 14px;font-size:18px;font-weight:750;}
+    .muted{color:var(--muted);font-size:14px;}
+    .version-pills{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px;}
+    .vpill{display:inline-flex;flex-direction:column;gap:2px;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:8px 14px;font-size:13px;}
+    .vpill-label{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);}
+    .vpill-id{font-family:ui-monospace,monospace;font-size:12px;color:var(--muted);}
+    .vpill-arrow{font-size:20px;color:var(--muted);}
+    .delta-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:18px;}
+    .delta-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:18px 20px;}
+    .delta-card-label{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;}
+    .delta-card-from{font-size:13px;color:var(--muted);}
+    .delta-card-to{font-size:22px;font-weight:800;margin:4px 0;}
+    .delta-card-change{font-size:14px;font-weight:700;border-radius:6px;padding:2px 8px;display:inline-block;}
+    .delta-card-change.pos{color:var(--pos);background:var(--pos-bg);}
+    .delta-card-change.neg{color:var(--neg);background:var(--neg-bg);}
+    .delta-card-change.zero{color:var(--muted);}
+    .change-summary{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;}
+    .chip{padding:4px 12px;border-radius:999px;font-size:13px;font-weight:700;}
+    .chip.modified{background:#fff2d8;color:#926000;}
+    .chip.added{background:#e8f5ed;color:#1a8f47;}
+    .chip.removed{background:#fdeaea;color:#b33b3b;}
+    .chip.unchanged{background:var(--surface-2);color:var(--muted);}
+    body.dark-theme .chip.modified{background:#3d2f0a;color:#f0c060;}
+    body.dark-theme .chip.added{background:#163927;color:#8fe2a8;}
+    body.dark-theme .chip.removed{background:#3d1c1c;color:#f5a3a3;}
+    .filter-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
+    .tab-btn{padding:6px 16px;border-radius:8px;border:1px solid var(--line);background:var(--surface-2);color:var(--text);font-size:13px;font-weight:600;cursor:pointer;transition:background .12s ease;}
+    .tab-btn.active{background:var(--accent,#6f9bff);border-color:var(--accent,#6f9bff);color:#fff;}
+    .tab-btn:hover:not(.active){background:var(--line);}
+    table{width:100%;border-collapse:collapse;font-size:13px;}
+    th{text-align:left;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);padding:8px 10px;border-bottom:2px solid var(--line);white-space:nowrap;}
+    td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:middle;}
+    tr:last-child td{border-bottom:none;}
+    tr.row-added td{background:rgba(26,143,71,0.06);}
+    tr.row-removed td{background:rgba(179,59,59,0.06);opacity:.85;}
+    tr.row-modified td{background:rgba(146,96,0,0.05);}
+    tr.row-unchanged td{opacity:.6;}
+    .file-path{font-family:ui-monospace,monospace;font-size:12px;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .status-badge{padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;text-transform:uppercase;}
+    .status-badge.added{background:#e8f5ed;color:#1a8f47;}
+    .status-badge.removed{background:#fdeaea;color:#b33b3b;}
+    .status-badge.modified{background:#fff2d8;color:#926000;}
+    .status-badge.unchanged{background:var(--surface-2);color:var(--muted);}
+    body.dark-theme .status-badge.added{background:#163927;color:#8fe2a8;}
+    body.dark-theme .status-badge.removed{background:#3d1c1c;color:#f5a3a3;}
+    body.dark-theme .status-badge.modified{background:#3d2f0a;color:#f0c060;}
+    .delta-val{font-weight:700;}
+    .delta-val.pos{color:var(--pos);}
+    .delta-val.neg{color:var(--neg);}
+    .delta-val.zero{color:var(--muted);}
+    .from-to{display:flex;align-items:center;gap:4px;white-space:nowrap;color:var(--muted);font-size:12px;}
+    .from-to strong{color:var(--text);}
+    .site-footer{text-align:center;padding:18px 24px;font-size:13px;color:var(--muted);}
+    .site-footer a{color:var(--muted);}
+    @media(max-width:900px){.delta-strip{grid-template-columns:repeat(2,1fr);} th.hide-sm,td.hide-sm{display:none;}}
+    @media(max-width:600px){.delta-strip{grid-template-columns:1fr;}}
+  </style>
+</head>
+<body>
+  <div class="top-nav">
+    <div class="top-nav-inner">
+      <div class="brand">
+        <img class="brand-logo" src="/images/logo/small-logo.png" alt="OxideSLOC logo">
+        <div><p class="brand-title">OxideSLOC</p><p class="brand-subtitle">Scan delta</p></div>
+      </div>
+      <div class="nav-right">
+        <a class="nav-pill" href="/history">History</a>
+        <a class="nav-pill" href="/">New scan</a>
+        <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+          <svg class="icon-moon" viewBox="0 0 24 24"><path d="M20 15.5A8.5 8.5 0 1 1 12.5 4 6.7 6.7 0 0 0 20 15.5Z"></path></svg>
+          <svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"></circle><path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.9 5.1l-1.6 1.6M6.7 17.3l-1.6 1.6M18.9 18.9l-1.6-1.6M6.7 6.7 5.1 5.1"></path></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="page">
+    <section class="hero">
+      <h1>Scan Delta</h1>
+      <p class="muted" style="margin-bottom:10px;">Comparing two scans of <strong>{{ project_path }}</strong></p>
+      <div class="version-pills">
+        <div class="vpill">
+          <span class="vpill-label">Baseline</span>
+          <strong>{{ baseline_timestamp }}</strong>
+          <span class="vpill-id">{{ baseline_run_id_short }}</span>
+        </div>
+        <span class="vpill-arrow">→</span>
+        <div class="vpill">
+          <span class="vpill-label">Current</span>
+          <strong>{{ current_timestamp }}</strong>
+          <span class="vpill-id">{{ current_run_id_short }}</span>
+        </div>
+      </div>
+    </section>
+
+    <div class="delta-strip">
+      <div class="delta-card">
+        <div class="delta-card-label">Code lines</div>
+        <div class="delta-card-from">Before: {{ baseline_code }}</div>
+        <div class="delta-card-to">{{ current_code }}</div>
+        <span class="delta-card-change {{ code_lines_delta_class }}">{{ code_lines_delta_str }}</span>
+      </div>
+      <div class="delta-card">
+        <div class="delta-card-label">Files analyzed</div>
+        <div class="delta-card-from">Before: {{ baseline_files }}</div>
+        <div class="delta-card-to">{{ current_files }}</div>
+        <span class="delta-card-change {{ files_analyzed_delta_class }}">{{ files_analyzed_delta_str }}</span>
+      </div>
+      <div class="delta-card">
+        <div class="delta-card-label">Comment lines Δ</div>
+        <div class="delta-card-to" style="font-size:18px;">{{ comment_lines_delta_str }}</div>
+        <span class="delta-card-change {{ comment_lines_delta_class }}">{{ comment_lines_delta_str }}</span>
+      </div>
+      <div class="delta-card">
+        <div class="delta-card-label">File changes</div>
+        <div class="delta-card-to" style="font-size:16px;">{{ files_modified }}M · {{ files_added }}A · {{ files_removed }}R</div>
+        <span class="delta-card-change zero">{{ files_unchanged }} unchanged</span>
+      </div>
+    </div>
+
+    <section class="panel">
+      <h2>File-level delta</h2>
+      <div class="change-summary">
+        <span class="chip modified">{{ files_modified }} modified</span>
+        <span class="chip added">{{ files_added }} added</span>
+        <span class="chip removed">{{ files_removed }} removed</span>
+        <span class="chip unchanged">{{ files_unchanged }} unchanged</span>
+      </div>
+      <div class="filter-tabs">
+        <button class="tab-btn active" onclick="filterRows('all', this)">All</button>
+        <button class="tab-btn" onclick="filterRows('modified', this)">Modified ({{ files_modified }})</button>
+        <button class="tab-btn" onclick="filterRows('added', this)">Added ({{ files_added }})</button>
+        <button class="tab-btn" onclick="filterRows('removed', this)">Removed ({{ files_removed }})</button>
+        <button class="tab-btn" onclick="filterRows('unchanged', this)">Unchanged ({{ files_unchanged }})</button>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>File</th>
+            <th class="hide-sm">Language</th>
+            <th>Status</th>
+            <th>Code before → after</th>
+            <th>Code Δ</th>
+            <th class="hide-sm">Comment Δ</th>
+            <th>Total Δ</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in file_rows %}
+          <tr class="row-{{ row.status }}" data-status="{{ row.status }}">
+            <td class="file-path" title="{{ row.relative_path }}">{{ row.relative_path }}</td>
+            <td class="hide-sm">{{ row.language }}</td>
+            <td><span class="status-badge {{ row.status }}">{{ row.status }}</span></td>
+            <td><span class="from-to"><strong>{{ row.baseline_code }}</strong><span>→</span><strong>{{ row.current_code }}</strong></span></td>
+            <td><span class="delta-val {{ row.code_delta_class }}">{{ row.code_delta_str }}</span></td>
+            <td class="hide-sm"><span class="delta-val {{ row.comment_delta_class }}">{{ row.comment_delta_str }}</span></td>
+            <td><span class="delta-val {{ row.total_delta_class }}">{{ row.total_delta_str }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </div>
+
+  <footer class="site-footer">
+    oxide-sloc — local source line analysis workbench &nbsp;·&nbsp;
+    Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
+    &nbsp;·&nbsp; <a href="https://github.com/NimaShafie/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
+  </footer>
+
+  <script>
+    (function () {
+      var storageKey = 'oxidesloc-theme';
+      var body = document.body;
+      try { var s = localStorage.getItem(storageKey); if (s === 'dark' || s === 'light') body.classList.toggle('dark-theme', s === 'dark'); } catch(e) {}
+      var toggle = document.getElementById('theme-toggle');
+      if (toggle) toggle.addEventListener('click', function () {
+        var next = body.classList.contains('dark-theme') ? 'light' : 'dark';
+        body.classList.toggle('dark-theme', next === 'dark');
+        try { localStorage.setItem(storageKey, next); } catch(e) {}
+      });
+    })();
+
+    function filterRows(status, btn) {
+      Array.prototype.slice.call(document.querySelectorAll('tbody tr')).forEach(function (row) {
+        row.style.display = (status === 'all' || row.getAttribute('data-status') === status) ? '' : 'none';
+      });
+      Array.prototype.slice.call(document.querySelectorAll('.tab-btn')).forEach(function (b) {
+        b.classList.remove('active');
+      });
+      if (btn) btn.classList.add('active');
+    }
+  </script>
+</body>
+</html>
+"##,
+    ext = "html"
+)]
+struct CompareTemplate {
+    baseline_run_id_short: String,
+    current_run_id_short: String,
+    baseline_timestamp: String,
+    current_timestamp: String,
+    project_path: String,
+    baseline_code: u64,
+    current_code: u64,
+    code_lines_delta_str: String,
+    code_lines_delta_class: String,
+    baseline_files: u64,
+    current_files: u64,
+    files_analyzed_delta_str: String,
+    files_analyzed_delta_class: String,
+    comment_lines_delta_str: String,
+    comment_lines_delta_class: String,
+    files_added: usize,
+    files_removed: usize,
+    files_modified: usize,
+    files_unchanged: usize,
+    file_rows: Vec<CompareFileDeltaRow>,
 }

@@ -1,0 +1,164 @@
+# oxide-sloc Bitbucket Pipelines integration
+#
+# What this does:
+#   1. Installs oxidesloc from source (or a pre-built artifact).
+#   2. Runs analysis and produces JSON + HTML reports.
+#   3. Posts results to Bitbucket Code Insights (native quality gate UI).
+#   4. Uploads the HTML report as a downloadable artifact.
+#   5. Optionally posts a PR comment with a SLOC summary table and delta.
+#
+# Bitbucket Code Insights docs:
+#   https://developer.atlassian.com/cloud/bitbucket/rest/api-group-reports/
+#
+# Required Repository Variables (Settings > Repository variables):
+#   BB_USER        Bitbucket username (for API auth)
+#   BB_APP_PASSWORD  App password with Reports:Write scope
+#                  https://bitbucket.org/account/settings/app-passwords/
+#
+# Optional:
+#   SLOC_URL       URL of your oxide-sloc server (for embed widget links)
+#   SLOC_API_KEY   API key for the server
+
+image: rust:latest
+
+definitions:
+  caches:
+    cargo-registry: ~/.cargo/registry
+    cargo-git:      ~/.cargo/git
+
+pipelines:
+  default:
+    - step:
+        name: Build oxidesloc
+        caches:
+          - cargo-registry
+          - cargo-git
+        artifacts:
+          - target/release/oxidesloc
+        script:
+          - cargo build --release --bin oxidesloc
+
+    - step:
+        name: Analyze & report
+        artifacts:
+          - .sloc-out/**
+        script:
+          - mkdir -p .sloc-out
+          - ./target/release/oxidesloc analyze . \
+              --json-out .sloc-out/result.json \
+              --html-out .sloc-out/report.html
+
+    - step:
+        name: Bitbucket Code Insights
+        script:
+          - |
+            # ── Parse metrics from JSON ──────────────────────────────────────
+            CODE=$(python3 -c "import json,sys; d=json.load(open('.sloc-out/result.json')); print(d['summary_totals']['code_lines'])")
+            COMMENT=$(python3 -c "import json; d=json.load(open('.sloc-out/result.json')); print(d['summary_totals']['comment_lines'])")
+            FILES=$(python3 -c "import json; d=json.load(open('.sloc-out/result.json')); print(d['summary_totals']['files_analyzed'])")
+            TOTAL=$(python3 -c "import json; d=json.load(open('.sloc-out/result.json')); print(d['summary_totals']['total_physical_lines'])")
+            RATIO=$(python3 -c "t=${TOTAL}; c=${CODE}; print(f'{c*100//t}' if t else '0')")
+
+            WORKSPACE_SLUG="${BITBUCKET_REPO_FULL_NAME%/*}"
+            REPO_SLUG="${BITBUCKET_REPO_FULL_NAME#*/}"
+            COMMIT="${BITBUCKET_COMMIT}"
+            API="https://api.bitbucket.org/2.0/repositories/${BITBUCKET_REPO_FULL_NAME}/commit/${COMMIT}/reports"
+            AUTH="${BB_USER}:${BB_APP_PASSWORD}"
+
+            # ── Create / update the Code Insights report ─────────────────────
+            # A report holds top-level summary + individual annotation rows.
+            curl -sf -u "${AUTH}" \
+              -X PUT \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"title\": \"OxideSLOC\",
+                \"report_type\": \"COVERAGE\",
+                \"reporter\": \"oxide-sloc\",
+                \"result\": \"PASSED\",
+                \"data\": [
+                  {\"title\": \"Code lines\",    \"type\": \"NUMBER\", \"value\": ${CODE}},
+                  {\"title\": \"Comment lines\",  \"type\": \"NUMBER\", \"value\": ${COMMENT}},
+                  {\"title\": \"Files analyzed\", \"type\": \"NUMBER\", \"value\": ${FILES}},
+                  {\"title\": \"Code ratio\",     \"type\": \"PERCENTAGE\", \"value\": ${RATIO}}
+                ]
+              }" \
+              "${API}/oxidesloc-sloc"
+
+            echo "Code Insights report posted for commit ${COMMIT}."
+
+    - step:
+        name: PR comment (delta summary)
+        condition:
+          changesets:
+            includePaths:
+              - "**/*.rs"
+              - "**/*.py"
+              - "**/*.ts"
+              - "**/*.go"
+              - "**/*.java"
+              - "**/*.cs"
+              - "**/*.cpp"
+              - "**/*.c"
+        script:
+          - |
+            # Only post a PR comment when this pipeline runs on a pull-request branch.
+            if [ -z "${BITBUCKET_PR_ID:-}" ]; then
+              echo "Not a PR build — skipping PR comment."
+              exit 0
+            fi
+
+            CODE=$(python3 -c "import json; d=json.load(open('.sloc-out/result.json')); print(d['summary_totals']['code_lines'])")
+            COMMENT=$(python3 -c "import json; d=json.load(open('.sloc-out/result.json')); print(d['summary_totals']['comment_lines'])")
+            FILES=$(python3 -c "import json; d=json.load(open('.sloc-out/result.json')); print(d['summary_totals']['files_analyzed'])")
+            TOTAL=$(python3 -c "import json; d=json.load(open('.sloc-out/result.json')); print(d['summary_totals']['total_physical_lines'])")
+
+            # Build a per-language table
+            LANG_TABLE=$(python3 << 'PYEOF'
+import json
+data = json.load(open('.sloc-out/result.json'))
+rows = []
+for lang in data.get('totals_by_language', []):
+    name = lang.get('language', '?')
+    rows.append(f"| {name} | {lang['files']} | {lang['code_lines']:,} |")
+print("\\n".join(rows))
+PYEOF
+            )
+
+            BODY="## OxideSLOC Analysis\\n\\n\
+| Metric | Value |\\n\
+|--------|-------|\\n\
+| Code lines | ${CODE} |\\n\
+| Comment lines | ${COMMENT} |\\n\
+| Files analyzed | ${FILES} |\\n\
+| Total physical lines | ${TOTAL} |\\n\\n\
+### By language\\n\\n\
+| Language | Files | Code lines |\\n\
+|----------|-------|------------|\\n\
+${LANG_TABLE}\\n\\n\
+*Posted by [oxide-sloc](https://github.com/NimaShafie/oxide-sloc)*"
+
+            curl -sf -u "${BB_USER}:${BB_APP_PASSWORD}" \
+              -X POST \
+              -H "Content-Type: application/json" \
+              -d "{\"content\": {\"raw\": \"${BODY}\"}}" \
+              "https://api.bitbucket.org/2.0/repositories/${BITBUCKET_REPO_FULL_NAME}/pullrequests/${BITBUCKET_PR_ID}/comments"
+
+            echo "PR comment posted."
+
+  # Run a full analysis on every merge to main and tag the result.
+  branches:
+    main:
+      - step:
+          name: Full analysis on main
+          caches:
+            - cargo-registry
+            - cargo-git
+          artifacts:
+            - .sloc-out/**
+          script:
+            - cargo build --release --bin oxidesloc
+            - mkdir -p .sloc-out
+            - ./target/release/oxidesloc analyze . \
+                --json-out .sloc-out/result.json \
+                --html-out .sloc-out/report.html
+            - echo "Artifact URLs available at the pipeline build page."

@@ -1,0 +1,165 @@
+// oxide-sloc Jenkins Declarative Pipeline
+//
+// Prerequisites (Jenkins plugins):
+//   - Plot Plugin          — renders code-lines/files trend graphs per build
+//   - HTML Publisher Plugin — serves the clickable HTML report
+//
+// Configure once in Jenkins > Manage Jenkins > Global Tool Configuration:
+//   OXIDESLOC_BIN  path to the oxidesloc binary (or install via cargo in the
+//                  "Install oxidesloc" stage and set it to "target/release/oxidesloc")
+//
+// Required credentials (Jenkins credentials store):
+//   SLOC_API_KEY   (Secret Text) — the X-API-Key value set on the oxide-sloc server
+//                  Only needed when OXIDE_SLOC_URL is configured.
+
+pipeline {
+    agent any
+
+    environment {
+        // Path to analyze. Override per-job with a parameter if needed.
+        SLOC_TARGET = "${WORKSPACE}"
+
+        // Output directory for artifacts produced by this run.
+        SLOC_OUT = "${WORKSPACE}/.sloc-out"
+
+        // Optional: URL of a running oxide-sloc web server.
+        // When set, the pipeline fetches the /embed/summary widget for the build page.
+        // Leave empty to skip the web-server integration steps.
+        OXIDE_SLOC_URL = ""
+    }
+
+    stages {
+
+        stage('Install oxidesloc') {
+            // Only needed when oxidesloc is not already on PATH.
+            // Remove this stage and set OXIDESLOC_BIN to a pre-installed path.
+            when { expression { sh(script: 'command -v oxidesloc', returnStatus: true) != 0 } }
+            steps {
+                sh 'cargo install --path . --bin oxidesloc --root "${WORKSPACE}/.cargo-install"'
+                script {
+                    env.OXIDESLOC_BIN = "${WORKSPACE}/.cargo-install/bin/oxidesloc"
+                }
+            }
+        }
+
+        stage('Analyze') {
+            steps {
+                sh '''
+                    mkdir -p "${SLOC_OUT}"
+                    ${OXIDESLOC_BIN:-oxidesloc} analyze "${SLOC_TARGET}" \
+                        --json-out "${SLOC_OUT}/result.json" \
+                        --html-out "${SLOC_OUT}/report.html"
+                '''
+            }
+        }
+
+        stage('Extract plot data') {
+            // Writes CSV files consumed by the Jenkins Plot Plugin.
+            // Each build appends one row; the plugin draws the trend over time.
+            steps {
+                sh '''
+                    python3 - <<'PYEOF'
+import json, csv, os, pathlib
+
+data = json.load(open(os.environ["SLOC_OUT"] + "/result.json"))
+totals = data["summary_totals"]
+out = os.environ["SLOC_OUT"]
+
+# summary.csv — one aggregate row for the Plot plugin
+with open(out + "/summary.csv", "w", newline="") as f:
+    w = csv.writer(f)
+    w.writerow(["code_lines", "comment_lines", "blank_lines", "files_analyzed"])
+    w.writerow([
+        totals["code_lines"],
+        totals["comment_lines"],
+        totals["blank_lines"],
+        totals["files_analyzed"],
+    ])
+
+# per_language.csv — one row per language, for a stacked bar chart
+langs = data.get("totals_by_language", [])
+with open(out + "/per_language.csv", "w", newline="") as f:
+    w = csv.writer(f)
+    w.writerow(["language", "code_lines"])
+    for lang in langs:
+        display = lang.get("language", {})
+        name = display if isinstance(display, str) else str(display)
+        w.writerow([name, lang["code_lines"]])
+
+print("Plot CSVs written to", out)
+PYEOF
+                '''
+            }
+        }
+
+        stage('Publish') {
+            steps {
+                // Archive the raw JSON so it can be downloaded from the build page.
+                archiveArtifacts artifacts: '.sloc-out/result.json', fingerprint: true
+
+                // Publish the HTML report via the HTML Publisher plugin.
+                // Users click "SLOC Report" in the left-hand build menu to open it.
+                publishHTML(target: [
+                    allowMissing         : false,
+                    alwaysLinkToLastBuild: true,
+                    keepAll              : true,
+                    reportDir            : '.sloc-out',
+                    reportFiles          : 'report.html',
+                    reportName           : 'SLOC Report',
+                ])
+            }
+        }
+    }
+
+    post {
+        always {
+            // Plot Plugin configuration — add these plots in the job's config UI
+            // (Post-build Actions > Plot Build Data), pointing at the CSV files below.
+            //
+            // Plot 1 — "Code lines over time"
+            //   File: .sloc-out/summary.csv  |  Series: code_lines
+            //
+            // Plot 2 — "Line composition over time" (stacked)
+            //   File: .sloc-out/summary.csv  |  Series: code_lines, comment_lines, blank_lines
+            //
+            // Plot 3 — "Per-language code lines" (bar)
+            //   File: .sloc-out/per_language.csv  |  Series: code_lines, grouped by language
+            //
+            // Alternatively, use the declarative plot() step if you have Plot Plugin ≥ 2.1.12:
+            plot csvFileName   : 'summary.csv',
+                 csvSeries      : [[
+                     file          : '.sloc-out/summary.csv',
+                     inclusionFlag : 'INCLUDE_BY_STRING',
+                     url           : '',
+                     displayTableFlag: false,
+                 ]],
+                 group          : 'SLOC',
+                 title          : 'Code lines',
+                 style          : 'line',
+                 yaxis          : 'Lines',
+                 numBuilds      : '50'
+
+            // Fetch and display the embeddable widget from the running web server.
+            // This adds a live "current metrics" panel to the Jenkins build summary page
+            // via the Description Setter Plugin or a Groovy post-build step.
+            script {
+                if (env.OXIDE_SLOC_URL?.trim()) {
+                    def apiKey = credentials('SLOC_API_KEY')
+                    def metrics = sh(
+                        script: """curl -sf -H "X-API-Key: ${apiKey}" \
+                                   "${env.OXIDE_SLOC_URL}/api/metrics/latest" """,
+                        returnStdout: true
+                    ).trim()
+                    def m = readJSON text: metrics
+                    def summary = m.summary
+                    currentBuild.description = """\
+Code: ${summary.code_lines}  |  \
+Files: ${summary.files_analyzed}  |  \
+Comments: ${summary.comment_lines}  |  \
+Project: ${m.project}  |  \
+Run: ${m.run_id.take(8)}"""
+                }
+            }
+        }
+    }
+}

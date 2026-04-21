@@ -85,11 +85,16 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         .route("/compare", get(compare_handler))
         .route("/images/:folder/:file", get(image_handler))
         .route("/runs/:run_id/:artifact", get(artifact_handler))
+        .route("/api/metrics/latest", get(api_metrics_latest_handler))
+        .route("/api/metrics/:run_id", get(api_metrics_run_handler))
+        .route("/embed/summary", get(embed_handler))
         .layer(middleware::from_fn(api_key_middleware));
 
-    // /healthz is always accessible (load-balancer probes, Docker health checks).
+    // /healthz and /badge are always accessible (no auth) so badges can be embedded
+    // in external tools without requiring the API key in image URLs.
     let app = protected
         .route("/healthz", get(healthz))
+        .route("/badge/:metric", get(badge_handler))
         // Limit form/body size to 10 MB — analysis paths are short strings, no uploads expected
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state);
@@ -868,6 +873,387 @@ async fn compare_handler(
             .unwrap_or_else(|e| format!("<pre>{e}</pre>")),
     )
     .into_response()
+}
+
+// ── Badge endpoint ────────────────────────────────────────────────────────────
+// Public (no auth). Returns a shields.io-style SVG badge for embedding in
+// READMEs, Confluence pages, Jira descriptions, etc.
+//
+// GET /badge/<metric>?label=<override>&color=<hex>
+// Metrics: code-lines  files  comment-lines  blank-lines
+
+fn format_number(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    let len = s.len();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (len - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn badge_char_width(c: char) -> f64 {
+    match c {
+        'f' | 'i' | 'j' | 'l' | 'r' | 't' => 5.0,
+        'm' | 'w' => 9.0,
+        ' ' => 4.0,
+        _ => 6.5,
+    }
+}
+
+fn badge_text_px(text: &str) -> u32 {
+    text.chars().map(badge_char_width).sum::<f64>().ceil() as u32
+}
+
+fn render_badge_svg(label: &str, value: &str, color: &str) -> String {
+    let lw = badge_text_px(label) + 20;
+    let rw = badge_text_px(value) + 20;
+    let total = lw + rw;
+    let lx = lw / 2;
+    let rx = lw + rw / 2;
+    let le = escape_html(label);
+    let ve = escape_html(value);
+    let ce = escape_html(color);
+    format!(
+        r###"<svg xmlns="http://www.w3.org/2000/svg" width="{total}" height="20">
+  <rect width="{total}" height="20" fill="#555"/>
+  <rect x="{lw}" width="{rw}" height="20" fill="{ce}"/>
+  <g fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11">
+    <text x="{lx}" y="14" fill="#010101" fill-opacity=".3">{le}</text>
+    <text x="{lx}" y="13">{le}</text>
+    <text x="{rx}" y="14" fill="#010101" fill-opacity=".3">{ve}</text>
+    <text x="{rx}" y="13">{ve}</text>
+  </g>
+</svg>"###
+    )
+}
+
+#[derive(Deserialize)]
+struct BadgeQuery {
+    label: Option<String>,
+    color: Option<String>,
+}
+
+async fn badge_handler(
+    State(state): State<AppState>,
+    AxumPath(metric): AxumPath<String>,
+    Query(query): Query<BadgeQuery>,
+) -> Response {
+    let entry = {
+        let reg = state.registry.lock().await;
+        reg.entries.first().cloned()
+    };
+
+    let Some(entry) = entry else {
+        let svg = render_badge_svg("oxide-sloc", "no data", "#999");
+        return (
+            [
+                (header::CONTENT_TYPE, "image/svg+xml"),
+                (header::CACHE_CONTROL, "no-cache, max-age=0"),
+            ],
+            svg,
+        )
+            .into_response();
+    };
+
+    let (default_label, value, default_color) = match metric.as_str() {
+        "code-lines" => (
+            "code lines",
+            format_number(entry.summary.code_lines),
+            "#4a78ee",
+        ),
+        "files" => (
+            "files analyzed",
+            format_number(entry.summary.files_analyzed),
+            "#4a9862",
+        ),
+        "comment-lines" => (
+            "comment lines",
+            format_number(entry.summary.comment_lines),
+            "#b35428",
+        ),
+        "blank-lines" => (
+            "blank lines",
+            format_number(entry.summary.blank_lines),
+            "#7a5db0",
+        ),
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+
+    let label = query.label.as_deref().unwrap_or(default_label);
+    let color = query.color.as_deref().unwrap_or(default_color);
+    let svg = render_badge_svg(label, &value, color);
+
+    (
+        [
+            (header::CONTENT_TYPE, "image/svg+xml"),
+            (header::CACHE_CONTROL, "no-cache, max-age=0"),
+        ],
+        svg,
+    )
+        .into_response()
+}
+
+// ── Metrics API ───────────────────────────────────────────────────────────────
+// Protected. Returns a slim JSON payload consumed by Jenkins post-build steps,
+// Confluence automation, Jira webhooks, etc.
+//
+// GET /api/metrics/latest
+// GET /api/metrics/<run_id>
+
+#[derive(Serialize)]
+struct ApiMetricsResponse {
+    run_id: String,
+    timestamp: String,
+    project: String,
+    summary: ApiSummaryPayload,
+    languages: Vec<ApiLanguageRow>,
+}
+
+#[derive(Serialize)]
+struct ApiSummaryPayload {
+    files_analyzed: u64,
+    files_skipped: u64,
+    code_lines: u64,
+    comment_lines: u64,
+    blank_lines: u64,
+    total_physical_lines: u64,
+}
+
+#[derive(Serialize)]
+struct ApiLanguageRow {
+    name: String,
+    files: u64,
+    code_lines: u64,
+    comment_lines: u64,
+    blank_lines: u64,
+}
+
+async fn api_metrics_latest_handler(State(state): State<AppState>) -> Response {
+    let entry = {
+        let reg = state.registry.lock().await;
+        reg.entries.first().cloned()
+    };
+    match entry {
+        Some(e) => build_metrics_response(&e),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "no scans recorded yet"})),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_metrics_run_handler(
+    State(state): State<AppState>,
+    AxumPath(run_id): AxumPath<String>,
+) -> Response {
+    let entry = {
+        let reg = state.registry.lock().await;
+        reg.find_by_run_id(&run_id).cloned()
+    };
+    match entry {
+        Some(e) => build_metrics_response(&e),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "run not found"})),
+        )
+            .into_response(),
+    }
+}
+
+fn build_metrics_response(entry: &RegistryEntry) -> Response {
+    let languages: Vec<ApiLanguageRow> = entry
+        .json_path
+        .as_ref()
+        .and_then(|p| read_json(p).ok())
+        .map(|run| {
+            run.totals_by_language
+                .iter()
+                .map(|l| ApiLanguageRow {
+                    name: l.language.display_name().to_string(),
+                    files: l.files,
+                    code_lines: l.code_lines,
+                    comment_lines: l.comment_lines,
+                    blank_lines: l.blank_lines,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let s = &entry.summary;
+    Json(ApiMetricsResponse {
+        run_id: entry.run_id.clone(),
+        timestamp: entry.timestamp_utc.to_rfc3339(),
+        project: entry.project_label.clone(),
+        summary: ApiSummaryPayload {
+            files_analyzed: s.files_analyzed,
+            files_skipped: s.files_skipped,
+            code_lines: s.code_lines,
+            comment_lines: s.comment_lines,
+            blank_lines: s.blank_lines,
+            total_physical_lines: s.total_physical_lines,
+        },
+        languages,
+    })
+    .into_response()
+}
+
+// ── Embeddable widget ─────────────────────────────────────────────────────────
+// Protected. Returns a self-contained HTML page suitable for iframing inside
+// Jenkins build summaries, Confluence iframe macros, or Jira panels.
+//
+// GET /embed/summary?run_id=<uuid>&theme=dark
+
+#[derive(Deserialize)]
+struct EmbedQuery {
+    run_id: Option<String>,
+    theme: Option<String>,
+}
+
+async fn embed_handler(State(state): State<AppState>, Query(query): Query<EmbedQuery>) -> Response {
+    let entry = {
+        let reg = state.registry.lock().await;
+        if let Some(id) = &query.run_id {
+            reg.find_by_run_id(id).cloned()
+        } else {
+            reg.entries.first().cloned()
+        }
+    };
+
+    let Some(entry) = entry else {
+        return Html(
+            "<p style='font-family:sans-serif;padding:12px'>No scan data available.</p>"
+                .to_string(),
+        )
+        .into_response();
+    };
+
+    let dark = query.theme.as_deref() == Some("dark");
+    let languages: Vec<(String, u64, u64)> = entry
+        .json_path
+        .as_ref()
+        .and_then(|p| read_json(p).ok())
+        .map(|run| {
+            run.totals_by_language
+                .iter()
+                .map(|l| (l.language.display_name().to_string(), l.files, l.code_lines))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Html(render_embed_widget(&entry, &languages, dark)).into_response()
+}
+
+fn render_embed_widget(
+    entry: &RegistryEntry,
+    languages: &[(String, u64, u64)],
+    dark: bool,
+) -> String {
+    let s = &entry.summary;
+    let total = s.code_lines + s.comment_lines + s.blank_lines;
+    let code_pct = s
+        .code_lines
+        .checked_mul(100)
+        .and_then(|n| n.checked_div(total))
+        .unwrap_or(0);
+
+    let (bg, fg, surface, muted, border) = if dark {
+        ("#1b1511", "#f5ece6", "#2d221d", "#c7b7aa", "#524238")
+    } else {
+        ("#f8f5f2", "#43342d", "#ffffff", "#7b675b", "#e6d0bf")
+    };
+
+    let lang_rows: String = languages
+        .iter()
+        .map(|(name, files, code)| {
+            format!(
+                "<tr><td>{}</td><td class='n'>{}</td><td class='n'>{}</td></tr>",
+                escape_html(name),
+                format_number(*files),
+                format_number(*code),
+            )
+        })
+        .collect();
+
+    let lang_table = if lang_rows.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<table class='lt'><thead><tr><th>Language</th><th>Files</th><th>Code</th></tr></thead><tbody>{lang_rows}</tbody></table>"
+        )
+    };
+
+    let run_short = &entry.run_id[..entry.run_id.len().min(8)];
+    let timestamp = entry.timestamp_utc.format("%Y-%m-%d %H:%M UTC");
+    let project_esc = escape_html(&entry.project_label);
+    let code_lines = format_number(s.code_lines);
+    let comment_lines = format_number(s.comment_lines);
+    let files = format_number(s.files_analyzed);
+    let code_raw = s.code_lines;
+    let comment_raw = s.comment_lines;
+    let blank_raw = s.blank_lines;
+
+    format!(
+        r##"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>OxideSLOC &mdash; {project_esc}</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    *{{box-sizing:border-box;margin:0;padding:0}}
+    body{{background:{bg};color:{fg};font-family:system-ui,sans-serif;font-size:13px;padding:12px}}
+    h2{{font-size:15px;font-weight:700;margin-bottom:2px}}
+    .sub{{color:{muted};font-size:11px;margin-bottom:10px}}
+    .cards{{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}}
+    .card{{background:{surface};border:1px solid {border};border-radius:6px;padding:8px 12px;min-width:90px}}
+    .card .v{{font-size:18px;font-weight:700}}
+    .card .l{{color:{muted};font-size:10px;margin-top:2px}}
+    .row{{display:flex;gap:12px;align-items:flex-start}}
+    .pie{{width:120px;height:120px;flex-shrink:0}}
+    .lt{{border-collapse:collapse;width:100%;flex:1}}
+    .lt th,.lt td{{padding:3px 6px;border-bottom:1px solid {border}}}
+    .lt th{{color:{muted};font-weight:600;text-align:left;font-size:11px}}
+    .n{{text-align:right}}
+    .footer{{margin-top:10px;color:{muted};font-size:10px}}
+  </style>
+</head>
+<body>
+  <h2>{project_esc}</h2>
+  <div class="sub">{timestamp} &middot; run {run_short}</div>
+  <div class="cards">
+    <div class="card"><div class="v">{code_lines}</div><div class="l">code lines</div></div>
+    <div class="card"><div class="v">{files}</div><div class="l">files</div></div>
+    <div class="card"><div class="v">{comment_lines}</div><div class="l">comments</div></div>
+    <div class="card"><div class="v">{code_pct}%</div><div class="l">code ratio</div></div>
+  </div>
+  <div class="row">
+    <canvas class="pie" id="c"></canvas>
+    {lang_table}
+  </div>
+  <div class="footer">oxide-sloc</div>
+  <script>
+    new Chart(document.getElementById('c'),{{
+      type:'doughnut',
+      data:{{
+        labels:['Code','Comments','Blank'],
+        datasets:[{{
+          data:[{code_raw},{comment_raw},{blank_raw}],
+          backgroundColor:['#4a78ee','#b35428','#aaa'],
+          borderWidth:0
+        }}]
+      }},
+      options:{{plugins:{{legend:{{display:false}}}},cutout:'60%',animation:false}}
+    }});
+  </script>
+</body>
+</html>"##
+    )
 }
 
 fn persist_run_artifacts(

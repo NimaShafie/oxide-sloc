@@ -1,5 +1,5 @@
 # Stage 1: build the release binary
-FROM rust:1.87-slim AS builder
+FROM rust:slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \

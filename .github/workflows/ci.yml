@@ -23,6 +23,8 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v2-vendor"
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -45,11 +47,11 @@ jobs:
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
+      # Install cargo-audit from a temp dir so the project's vendor source
+      # redirect (.cargo/config.toml) does not prevent fetching from crates.io.
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
+        working-directory: /tmp
 
       - name: Audit dependencies
         run: cargo audit
@@ -66,6 +68,8 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v2-vendor"
 
       - name: Build release binary
         run: cargo build --release -p oxidesloc

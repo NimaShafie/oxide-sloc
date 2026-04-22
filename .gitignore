@@ -26,6 +26,9 @@ result.json
 result.html
 result.pdf
 
+# Pre-built binary archives (released via GitHub Releases, not tracked in git)
+/dist/
+
 # Claude Code (project-local AI context — not for commit)
 CLAUDE.md
 .claude

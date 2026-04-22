@@ -12,12 +12,18 @@
 *.gz binary
 *.tar binary
 *.wasm binary
+*.o binary
+*.a binary
+*.fst binary
+*.dfa binary
+*.der binary
 
-# Never touch vendor sources — cargo checksums are computed on LF bytes
-vendor/**  text eol=lf
-vendor/**/*.rs  text eol=lf
-vendor/**/*.toml  text eol=lf
-vendor/**/*.json  text eol=lf
+# Vendor text sources — cargo checksums are computed on LF bytes.
+# Do NOT add a catch-all vendor/** text rule — it overrides the binary
+# declarations above and corrupts object/archive/FST files during checkout.
+vendor/**/*.rs   text eol=lf
+vendor/**/*.toml text eol=lf
+vendor/**/*.json text eol=lf
 
 # Static assets bundled into the binary
 crates/sloc-web/static/*.js  text eol=lf

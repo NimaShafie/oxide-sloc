@@ -1,0 +1,23 @@
+# Normalize all text files to LF on commit (no CRLF in the repo)
+* text=auto eol=lf
+
+# Explicitly mark binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.wasm binary
+
+# Never touch vendor sources — cargo checksums are computed on LF bytes
+vendor/**  text eol=lf
+vendor/**/*.rs  text eol=lf
+vendor/**/*.toml  text eol=lf
+vendor/**/*.json  text eol=lf
+
+# Static assets bundled into the binary
+crates/sloc-web/static/*.js  text eol=lf

@@ -62,6 +62,9 @@ struct AnalyzeArgs {
     per_file: bool,
     #[arg(long)]
     plain: bool,
+    /// Detect git submodules (.gitmodules) and emit a per-submodule breakdown in output.
+    #[arg(long)]
+    submodule_breakdown: bool,
 }
 
 #[derive(Debug, Args)]
@@ -346,6 +349,9 @@ fn resolve_analyze_config(args: &AnalyzeArgs) -> Result<AppConfig> {
     if let Some(title) = &args.report_title {
         config.reporting.report_title = title.clone();
     }
+    if args.submodule_breakdown {
+        config.discovery.submodule_breakdown = true;
+    }
 
     config.validate()?;
     if config.discovery.root_paths.is_empty() {
@@ -414,9 +420,14 @@ fn print_summary(run: &AnalysisRun, per_file: bool, plain: bool) {
         println!();
         println!("Per-file detail");
         for file in &run.per_file_records {
+            let sub_tag = file
+                .submodule
+                .as_deref()
+                .map(|s| format!("[{s}] "))
+                .unwrap_or_default();
             println!(
                 "  {:<48} {:<12} code={:<5} comment={:<5} blank={:<5} total={:<5}",
-                truncate(&file.relative_path, 48),
+                truncate(&format!("{sub_tag}{}", file.relative_path), 48),
                 file.language
                     .map(|language| language.display_name().to_string())
                     .unwrap_or_else(|| "-".into()),
@@ -424,6 +435,22 @@ fn print_summary(run: &AnalysisRun, per_file: bool, plain: bool) {
                 file.effective_counts.comment_lines,
                 file.effective_counts.blank_lines,
                 file.raw_line_categories.total_physical_lines,
+            );
+        }
+    }
+
+    if !run.submodule_summaries.is_empty() {
+        println!();
+        println!("By submodule");
+        for sub in &run.submodule_summaries {
+            println!(
+                "  {:<30} path={:<28} files={:<4} code={:<6} comment={:<6} blank={:<6}",
+                truncate(&sub.name, 30),
+                truncate(&sub.relative_path, 28),
+                sub.files_analyzed,
+                sub.code_lines,
+                sub.comment_lines,
+                sub.blank_lines,
             );
         }
     }

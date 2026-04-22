@@ -1,0 +1,2658 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Oxide-SLOC | airgap-devkit</title>
+  <style>
+    :root {
+      --radius: 18px;
+      --bg: #f5efe8;
+      --surface: rgba(255,255,255,0.82);
+      --surface-2: #fbf7f2;
+      --surface-3: #efe6dc;
+      --line: #e6d0bf;
+      --line-strong: #dcb89f;
+      --text: #43342d;
+      --muted: #7b675b;
+      --muted-2: #a08777;
+      --nav: #b85d33;
+      --nav-2: #7a371b;
+      --accent: #6f9bff;
+      --accent-2: #4a78ee;
+      --oxide: #d37a4c;
+      --oxide-2: #b35428;
+      --shadow: 0 18px 42px rgba(77, 44, 20, 0.12);
+      --shadow-strong: 0 22px 48px rgba(77, 44, 20, 0.16);
+      --good-bg: #e8f5ed;
+      --good-text: #1a8f47;
+      --warn-bg: #fff4dc;
+      --warn-text: #9a6d00;
+      --danger-bg: #fdebec;
+      --danger-text: #cc4b4b;
+      --info-bg: #eef3ff;
+      --info-text: #4467d8;
+    }
+    body.dark-theme {
+      --bg: #1b1511;
+      --surface: #261c17;
+      --surface-2: #2d221d;
+      --surface-3: #372922;
+      --line: #524238;
+      --line-strong: #6c5649;
+      --text: #f5ece6;
+      --muted: #c7b7aa;
+      --muted-2: #aa9485;
+      --nav: #b85d33;
+      --nav-2: #7a371b;
+      --accent: #6f9bff;
+      --accent-2: #4a78ee;
+      --oxide: #d37a4c;
+      --oxide-2: #b35428;
+      --shadow: 0 18px 42px rgba(0,0,0,0.28);
+      --shadow-strong: 0 22px 48px rgba(0,0,0,0.34);
+      --good-bg: #163927;
+      --good-text: #8fe2a8;
+      --warn-bg: #3c2d11;
+      --warn-text: #f3cb75;
+      --danger-bg: #3d1f1f;
+      --danger-text: #ff9f9f;
+      --info-bg: #1c2847;
+      --info-text: #a9c1ff;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); }
+    body { overflow-x: hidden; transition: background 0.18s ease, color 0.18s ease; }
+    .top-nav { position: sticky; top: 0; z-index: 30; background: linear-gradient(180deg, var(--nav), var(--nav-2)); border-bottom: 1px solid rgba(255,255,255,0.12); box-shadow: 0 4px 14px rgba(0,0,0,0.18); }
+    .top-nav-inner { max-width: 1720px; margin: 0 auto; padding: 10px 24px; min-height: 64px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 420px) auto; align-items: center; gap: 18px; }
+    .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
+    .brand-mark { width: 42px; height: 42px; border-radius: 14px; background: radial-gradient(circle at 35% 35%, #f2a578, var(--oxide) 58%, var(--oxide-2)); background-image: url("data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20viewBox%3D%270%200%20240%20240%27%3E%0A%3Cdefs%3E%0A%20%20%3ClinearGradient%20id%3D%27g%27%20x1%3D%270%27%20y1%3D%270%27%20x2%3D%271%27%20y2%3D%271%27%3E%0A%20%20%20%20%3Cstop%20offset%3D%270%27%20stop-color%3D%27%23f2a578%27/%3E%0A%20%20%20%20%3Cstop%20offset%3D%270.55%27%20stop-color%3D%27%23d37a4c%27/%3E%0A%20%20%20%20%3Cstop%20offset%3D%271%27%20stop-color%3D%27%23b35428%27/%3E%0A%20%20%3C/linearGradient%3E%0A%3C/defs%3E%0A%3Crect%20x%3D%2724%27%20y%3D%2724%27%20width%3D%27192%27%20height%3D%27192%27%20rx%3D%2754%27%20fill%3D%27url%28%23g%29%27/%3E%0A%3Cpath%20d%3D%27M74%20150l30-42%2024%2031%2018-24%2024%2035%27%20fill%3D%27none%27%20stroke%3D%27white%27%20stroke-width%3D%2710%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%20opacity%3D%270.94%27/%3E%0A%3Ccircle%20cx%3D%27164%27%20cy%3D%2782%27%20r%3D%2712%27%20fill%3D%27white%27%20opacity%3D%270.94%27/%3E%0A%3C/svg%3E"); background-size: cover; background-repeat: no-repeat; background-position: center; box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), 0 8px 18px rgba(0,0,0,0.22); flex: 0 0 auto; }
+    .brand-copy { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
+    .brand-title { margin: 0; color: #fff; font-size: 17px; font-weight: 800; line-height: 1.1; }
+    .brand-subtitle { color: rgba(255,255,255,0.85); font-size: 12px; line-height: 1.2; margin-top: 2px; }
+    .nav-project-slot { display:flex; justify-content:center; min-width:0; }
+    .nav-project-pill, .nav-pill, .theme-toggle, .header-button {
+      display: inline-flex; align-items: center; gap: 8px; min-height: 38px; padding: 0 14px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.18); color: #fff; background: rgba(255,255,255,0.10); font-size: 12px; font-weight: 700; box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+    }
+    .nav-project-pill { width: 100%; max-width: 260px; justify-content: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .nav-project-label { color: rgba(255,255,255,0.78); text-transform: uppercase; letter-spacing: 0.08em; font-size: 11px; font-weight: 800; }
+    .nav-project-value { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+    .nav-status { display:flex; align-items:center; justify-content:flex-end; gap:10px; flex-wrap:wrap; }
+    .theme-toggle, .header-button { cursor:pointer; background: rgba(255,255,255,0.08); }
+    .theme-toggle { width: 38px; justify-content:center; padding:0; }
+    .theme-toggle svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; }
+    .theme-toggle .icon-sun { display:none; }
+    body.dark-theme .theme-toggle .icon-sun { display:block; }
+    body.dark-theme .theme-toggle .icon-moon { display:none; }
+    .page { max-width: 1720px; margin: 0 auto; padding: 18px 24px 40px; }
+    .summary-grid { display:grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap:14px; }
+    .panel, .metric, .warning-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+    .panel { padding: 20px; }
+    .metric { padding: 18px; }
+    .metric-label, .section-kicker { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-2); }
+    .metric-value { margin-top: 10px; font-size: 17px; font-weight: 700; color: var(--text); }
+    .hero { padding: 22px; margin-bottom: 18px; background: linear-gradient(180deg, rgba(255,255,255,0.34), transparent), var(--surface); }
+    .hero-top { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; }
+    .hero h1 { margin:0; font-size: 28px; letter-spacing: -0.04em; }
+    .subtitle { margin: 10px 0 0; color: var(--muted); font-size: 16px; line-height: 1.65; }
+    .meta { display:flex; flex-wrap:wrap; gap:10px; margin: 16px 0 18px; }
+    .meta-chip, .soft-chip { display:inline-flex; align-items:center; min-height: 32px; padding: 0 12px; border-radius: 999px; border:1px solid var(--line); background: var(--surface-2); color: var(--text); font-size: 13px; font-weight: 700; }
+    .toolbar { display:flex; flex-wrap:wrap; justify-content:space-between; gap: 12px; align-items: center; margin-bottom: 16px; }
+    .toolbar-left { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .search { min-width: 280px; padding: 10px 12px; border-radius: 10px; border:1px solid var(--line-strong); background: var(--surface-2); color:var(--text); }
+    .pill-row { display:flex; gap:8px; flex-wrap:wrap; }
+    .pill { padding: 6px 10px; border-radius: 999px; border:1px solid var(--line); background: var(--surface-2); font-size: 12px; font-weight: 700; }
+    .pill.good { background: var(--good-bg); color: var(--good-text); }
+    .pill.info { background: var(--info-bg); color: var(--info-text); }
+    .table-shell { border: 1px solid var(--line); border-radius: 16px; overflow: auto; background: var(--surface-2); max-height: 900px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 11px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 800; background: var(--surface-2); cursor: pointer; position: sticky; top: 0; z-index: 1; }
+    tbody tr:hover { background: rgba(255, 247, 238, 0.6); }
+    body.dark-theme tbody tr:hover { background: rgba(255,255,255,0.03); }
+    tr:last-child td { border-bottom: none; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .small { color: var(--muted); font-size: 13px; }
+    .status-tag { display:inline-flex; align-items:center; padding: 4px 8px; border-radius: 999px; border:1px solid var(--line); background: var(--surface-2); font-size: 12px; font-weight: 700; }
+    .status-analyzedexact { background: var(--good-bg); color: var(--good-text); border-color: rgba(28,135,70,0.18); }
+    .status-analyzedbesteffort, .status-skippedbypolicy { background: var(--warn-bg); color: var(--warn-text); border-color: rgba(146,96,0,0.18); }
+    .status-skippedunsupported, .status-skippedbinary { background: var(--danger-bg); color: var(--danger-text); border-color: rgba(179,59,59,0.18); }
+    .stack { display:grid; gap:22px; }
+    .report-stack { display:grid; gap: 18px; align-items:start; }
+    pre { background: var(--surface-2); border: 1px solid var(--line); border-radius: 16px; padding: 16px; overflow: auto; font-size: 12px; color: var(--text); }
+    .warn-list { margin: 0; padding-left: 18px; line-height: 1.6; }
+    .sort-indicator { color: var(--muted-2); font-size: 11px; margin-left: 6px; }
+    .warning-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .warning-card { padding: 18px; }
+    .warning-card h3 { margin: 0 0 10px; font-size: 16px; }
+    .warning-card .count { font-size: 30px; font-weight: 800; margin-bottom: 8px; }
+    .tone-neutral .count { color: var(--text); }
+    .tone-warn .count { color: var(--warn-text); }
+    .tone-danger .count { color: var(--danger-text); }
+    .support-note { color: var(--muted); font-size: 14px; line-height: 1.6; }
+    details { border: 1px solid var(--line); border-radius: 14px; background: var(--surface-2); }
+    summary { cursor: pointer; padding: 14px 16px; font-weight: 700; }
+    details > div { padding: 0 16px 16px; }
+    .warning-console { margin: 0; padding: 14px 16px; border-radius: 12px; border:1px solid var(--line); background: #16120f; color: #d4f0d0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; line-height: 1.55; max-height: 260px; overflow: auto; }
+    .warning-console-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top: 12px; }
+    .warning-console.hidden { display:none; }
+    @media (max-width: 1200px) {
+      .summary-grid, .warning-grid { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 960px) {
+      .top-nav-inner { grid-template-columns: 1fr; }
+      .nav-project-slot, .nav-status { justify-content:flex-start; }
+      .summary-grid, .warning-grid, .report-stack { grid-template-columns: 1fr; }
+      .hero-top { flex-direction: column; }
+      .search { min-width: 100%; width: 100%; }
+    }
+    @media print {
+      body { background: white; }
+      .top-nav, .toolbar, .hero-actions { display:none !important; }
+      .hero, .panel, .metric, .table-shell, pre, .warning-card { box-shadow:none; break-inside: avoid; }
+      .table-shell { max-height: none !important; overflow: visible !important; }
+      th { position: static; }
+    }
+  
+    @page {
+      size: Letter landscape;
+      margin: 0.38in;
+    }
+
+    @media print {
+      html, body {
+        background: #ffffff !important;
+      }
+
+      .page,
+      .panel,
+      .hero,
+      .section,
+      .saved-report-shell,
+      .saved-panel,
+      .report-shell {
+        max-width: none !important;
+        width: auto !important;
+        box-shadow: none !important;
+      }
+
+      table {
+        width: 100% !important;
+        table-layout: fixed !important;
+        font-size: 11px !important;
+      }
+
+      th, td {
+        white-space: normal !important;
+        overflow-wrap: anywhere !important;
+        word-break: break-word !important;
+        padding: 7px 8px !important;
+      }
+
+      pre, code {
+        white-space: pre-wrap !important;
+        overflow-wrap: anywhere !important;
+        word-break: break-word !important;
+      }
+    }
+
+
+    .warnings-show-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(111, 144, 255, 0.35);
+      background: #eef3ff;
+      color: #2f5fe3 !important;
+      font-weight: 800;
+      text-decoration: none;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.45);
+    }
+
+    body.dark-theme .warnings-show-link {
+      background: #1c2847;
+      color: #a9c1ff !important;
+      border-color: rgba(169, 193, 255, 0.32);
+    }
+
+    .effective-config-note {
+      margin: 8px 0 14px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+
+    .top-nav,
+    .page {
+      position: relative;
+      z-index: 1;
+    }
+
+    .brand {
+      position: relative;
+    }
+
+    .brand img,
+    img[alt="OxideSLOC logo"],
+    img[alt="oxide-sloc logo"] {
+      opacity: 0 !important;
+    }
+
+    .brand::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 42px;
+      height: 42px;
+      border-radius: 14px;
+      background-image: url("data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20viewBox%3D%270%200%20240%20240%27%3E%0A%3Cdefs%3E%0A%20%20%3ClinearGradient%20id%3D%27g%27%20x1%3D%270%27%20y1%3D%270%27%20x2%3D%271%27%20y2%3D%271%27%3E%0A%20%20%20%20%3Cstop%20offset%3D%270%27%20stop-color%3D%27%23f2a578%27/%3E%0A%20%20%20%20%3Cstop%20offset%3D%270.55%27%20stop-color%3D%27%23d37a4c%27/%3E%0A%20%20%20%20%3Cstop%20offset%3D%271%27%20stop-color%3D%27%23b35428%27/%3E%0A%20%20%3C/linearGradient%3E%0A%3C/defs%3E%0A%3Crect%20x%3D%2724%27%20y%3D%2724%27%20width%3D%27192%27%20height%3D%27192%27%20rx%3D%2754%27%20fill%3D%27url%28%23g%29%27/%3E%0A%3Cpath%20d%3D%27M74%20150l30-42%2024%2031%2018-24%2024%2035%27%20fill%3D%27none%27%20stroke%3D%27white%27%20stroke-width%3D%2710%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%20opacity%3D%270.94%27/%3E%0A%3Ccircle%20cx%3D%27164%27%20cy%3D%2782%27%20r%3D%2712%27%20fill%3D%27white%27%20opacity%3D%270.94%27/%3E%0A%3C/svg%3E");
+      background-size: cover;
+      background-repeat: no-repeat;
+      background-position: center;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), 0 8px 18px rgba(0,0,0,0.22);
+      pointer-events: none;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      right: 26px;
+      bottom: 26px;
+      width: 220px;
+      height: 220px;
+      background-image: url("data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20viewBox%3D%270%200%20240%20240%27%3E%0A%3Cdefs%3E%0A%20%20%3ClinearGradient%20id%3D%27g%27%20x1%3D%270%27%20y1%3D%270%27%20x2%3D%271%27%20y2%3D%271%27%3E%0A%20%20%20%20%3Cstop%20offset%3D%270%27%20stop-color%3D%27%23f2a578%27/%3E%0A%20%20%20%20%3Cstop%20offset%3D%270.55%27%20stop-color%3D%27%23d37a4c%27/%3E%0A%20%20%20%20%3Cstop%20offset%3D%271%27%20stop-color%3D%27%23b35428%27/%3E%0A%20%20%3C/linearGradient%3E%0A%3C/defs%3E%0A%3Crect%20x%3D%2724%27%20y%3D%2724%27%20width%3D%27192%27%20height%3D%27192%27%20rx%3D%2754%27%20fill%3D%27url%28%23g%29%27/%3E%0A%3Cpath%20d%3D%27M74%20150l30-42%2024%2031%2018-24%2024%2035%27%20fill%3D%27none%27%20stroke%3D%27white%27%20stroke-width%3D%2710%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%20opacity%3D%270.94%27/%3E%0A%3Ccircle%20cx%3D%27164%27%20cy%3D%2782%27%20r%3D%2712%27%20fill%3D%27white%27%20opacity%3D%270.94%27/%3E%0A%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: center;
+      background-size: contain;
+      opacity: 0.07;
+      pointer-events: none;
+      z-index: 0;
+      filter: saturate(0.9);
+    }
+
+    body.dark-theme::before {
+      opacity: 0.11;
+    }
+
+    body::after {
+      content: "";
+      position: fixed;
+      left: 22px;
+      top: 22px;
+      width: 160px;
+      height: 160px;
+      background-image: url("data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20viewBox%3D%270%200%20240%20240%27%3E%3Cdefs%3E%3ClinearGradient%20id%3D%27g2%27%20x1%3D%270%27%20y1%3D%270%27%20x2%3D%271%27%20y2%3D%271%27%3E%3Cstop%20offset%3D%270%27%20stop-color%3D%27%23f2a578%27/%3E%3Cstop%20offset%3D%270.55%27%20stop-color%3D%27%23d37a4c%27/%3E%3Cstop%20offset%3D%271%27%20stop-color%3D%27%23b35428%27/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20x%3D%2724%27%20y%3D%2724%27%20width%3D%27192%27%20height%3D%27192%27%20rx%3D%2754%27%20fill%3D%27url%28%23g2%29%27/%3E%3Cpath%20d%3D%27M74%20150l30-42%2024%2031%2018-24%2024%2035%27%20fill%3D%27none%27%20stroke%3D%27white%27%20stroke-width%3D%2710%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%20opacity%3D%270.94%27/%3E%3Ccircle%20cx%3D%27164%27%20cy%3D%2782%27%20r%3D%2712%27%20fill%3D%27white%27%20opacity%3D%270.94%27/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: center;
+      background-size: contain;
+      opacity: 0.06;
+      pointer-events: none;
+      z-index: 0;
+      filter: saturate(0.9);
+    }
+
+    @media print {
+      body::before {
+        opacity: 0.07;
+        right: 18px;
+        bottom: 18px;
+        width: 200px;
+        height: 200px;
+        position: fixed;
+      }
+      body::after {
+        opacity: 0.07;
+        left: 18px;
+        top: 50%;
+        transform: translateY(-50%) rotate(-12deg);
+        width: 160px;
+        height: 160px;
+        position: fixed;
+      }
+    }
+
+</style>
+</head>
+<body>
+  <div class="top-nav">
+    <div class="top-nav-inner">
+      <div class="brand">
+        <div class="brand-mark"></div>
+        <div class="brand-copy">
+          <div class="brand-title">OxideSLOC Local analysis workbench</div>
+          <div class="brand-subtitle">Saved HTML report</div>
+        </div>
+      </div>
+      <div class="nav-project-slot">
+        <div class="nav-project-pill"><span class="nav-project-label">Report</span><span class="nav-project-value">airgap-devkit</span></div>
+      </div>
+      <div class="nav-status">
+        <span class="nav-pill">Saved artifact</span>
+        <button type="button" class="header-button" data-copy-link>Copy link</button>
+        <button type="button" class="header-button" data-share-report>Share</button>
+        <button type="button" class="header-button" data-print-report>Save / Print</button>
+        <button type="button" class="theme-toggle" data-theme-toggle aria-label="Toggle theme" title="Toggle theme">
+          <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 15.5A8.5 8.5 0 1 1 12.5 4 6.7 6.7 0 0 0 20 15.5Z"></path></svg>
+          <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"></circle><path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.9 5.1l-1.6 1.6M6.7 17.3l-1.6 1.6M18.9 18.9l-1.6-1.6M6.7 6.7 5.1 5.1"></path></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="page">
+    <section class="hero panel">
+      <div class="hero-top">
+        <div>
+          <div class="section-kicker">Saved report artifact</div>
+          <h1>airgap-devkit</h1>
+          <p class="subtitle">This self-contained report uses the current OxideSLOC workbench theme and keeps the saved HTML shareable without relying on external image routes.</p>
+        </div>
+        <div class="hero-actions pill-row">
+          <span class="pill info">Standalone HTML</span>
+          <span class="pill good">Sortable tables</span>
+        </div>
+      </div>
+
+      <div class="meta">
+        <span class="meta-chip">Generated 2026-04-22 04:09:56</span>
+        <span class="meta-chip">OS windows / x86_64</span>
+        <span class="meta-chip">Files analyzed 56</span>
+        <span class="meta-chip">Files skipped 173</span>
+        <span class="meta-chip">Run ID 31d79c60-b1f9-4612-b00e-a3f1ed893da4</span>
+      </div>
+
+      <div class="summary-grid">
+        <div class="metric"><div class="metric-label">Physical lines</div><div class="metric-value">10026</div></div>
+        <div class="metric"><div class="metric-label">Code</div><div class="metric-value">7903</div></div>
+        <div class="metric"><div class="metric-label">Comments</div><div class="metric-value">996</div></div>
+        <div class="metric"><div class="metric-label">Blank</div><div class="metric-value">1127</div></div>
+        <div class="metric"><div class="metric-label">Mixed separate</div><div class="metric-value">0</div></div>
+      </div>
+    </section>
+
+    <div class="report-stack">
+      <section class="panel stack">
+        <div>
+          <div class="toolbar"><div class="toolbar-left"><h2>Warnings and next improvements</h2></div><div class="pill-row"><span class="pill info">175 total warnings</span></div></div>
+          
+            <div class="warning-grid">
+              
+              <div class="warning-card tone-danger">
+                <h3>Best-effort parse results</h3>
+                <div class="count">2</div>
+                <div class="support-note">These files were analyzed, but the parser hit malformed or ambiguous content and fell back to a best-effort count.</div>
+              </div>
+              
+              <div class="warning-card tone-neutral">
+                <h3>Binary assets skipped</h3>
+                <div class="count">8</div>
+                <div class="support-note">Binary bundles are excluded from source counting unless you explicitly opt into them.</div>
+              </div>
+              
+              <div class="warning-card tone-warn">
+                <h3>Large files skipped by size limit</h3>
+                <div class="count">96</div>
+                <div class="support-note">Artifacts and archives larger than the configured cap were skipped intentionally to keep runs fast and predictable.</div>
+              </div>
+              
+              <div class="warning-card tone-warn">
+                <h3>Minified files skipped by policy</h3>
+                <div class="count">4</div>
+                <div class="support-note">Generated and minified assets are being filtered out to avoid inflating code totals.</div>
+              </div>
+              
+              <div class="warning-card tone-neutral">
+                <h3>Unsupported or undetected text formats</h3>
+                <div class="count">64</div>
+                <div class="support-note">These are usually docs, manifests, templates, or formats that have not been promoted into first-class analyzers yet.</div>
+              </div>
+              
+              <div class="warning-card tone-neutral">
+                <h3>Vendor files skipped by policy</h3>
+                <div class="count">1</div>
+                <div class="support-note">Vendored third-party code is being excluded so the report stays focused on repository-owned source.</div>
+              </div>
+              
+            </div>
+          
+        </div>
+
+        <div>
+          <h2>High-value support opportunities</h2>
+          <p class="support-note">This groups the noisy unsupported warnings into the next format buckets most worth classifying or supporting in the analysis core.</p>
+          
+          <div class="table-shell">
+            <table>
+              <thead>
+                <tr><th>Opportunity</th><th>Count</th><th>Recommended next move</th></tr>
+              </thead>
+              <tbody>
+                
+                <tr>
+                  <td>JSON manifests and config</td>
+                  <td>42</td>
+                  <td class="small">Promote JSON manifests into a metadata bucket or add a light-weight JSON analyzer if you want them counted separately.</td>
+                </tr>
+                
+                <tr>
+                  <td>Documentation / text</td>
+                  <td>10</td>
+                  <td class="small">Add a docs/text classification path so README, LICENSE, and markdown stop appearing as source-language misses.</td>
+                </tr>
+                
+                <tr>
+                  <td>HTML templates</td>
+                  <td>4</td>
+                  <td class="small">Add HTML/template detection for web views and server-rendered pages to reduce unsupported-template noise.</td>
+                </tr>
+                
+                <tr>
+                  <td>Other unsupported text formats</td>
+                  <td>4</td>
+                  <td class="small">Review this bucket and either map it to an existing metadata class or create a dedicated analyzer when it truly represents source.</td>
+                </tr>
+                
+                <tr>
+                  <td>Project metadata and packaging</td>
+                  <td>3</td>
+                  <td class="small">Treat TOML, MANIFEST.in, and requirements files as metadata so they become intentional non-source records instead of generic warnings.</td>
+                </tr>
+                
+                <tr>
+                  <td>Plain text assets</td>
+                  <td>1</td>
+                  <td class="small">Classify text asset placeholders as plain text or ignore them by policy.</td>
+                </tr>
+                
+              </tbody>
+            </table>
+          </div>
+          
+        </div>
+      </section>
+
+      <section class="panel stack">
+        <div>
+          <div class="toolbar"><div class="toolbar-left"><h2>Language breakdown</h2></div><div class="pill-row"><span class="pill good">Click any column header to sort</span></div></div>
+          <div class="table-shell">
+            <table data-sort-table>
+              <thead>
+                <tr>
+                  <th data-sort-type="text">Language</th>
+                  <th data-sort-type="number">Files</th>
+                  <th data-sort-type="number">Physical</th>
+                  <th data-sort-type="number">Code</th>
+                  <th data-sort-type="number">Comments</th>
+                  <th data-sort-type="number">Blank</th>
+                  <th data-sort-type="number">Mixed separate</th>
+                </tr>
+              </thead>
+              <tbody>
+                
+                <tr>
+                  <td>Go</td>
+                  <td>11</td>
+                  <td>2548</td>
+                  <td>2219</td>
+                  <td>81</td>
+                  <td>248</td>
+                  <td>0</td>
+                </tr>
+                
+                <tr>
+                  <td>Python</td>
+                  <td>7</td>
+                  <td>2844</td>
+                  <td>2163</td>
+                  <td>306</td>
+                  <td>375</td>
+                  <td>0</td>
+                </tr>
+                
+                <tr>
+                  <td>Shell</td>
+                  <td>38</td>
+                  <td>4634</td>
+                  <td>3521</td>
+                  <td>609</td>
+                  <td>504</td>
+                  <td>0</td>
+                </tr>
+                
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel stack">
+        <div class="toolbar"><div class="toolbar-left"><h2>Per-file detail</h2><input class="search" type="search" placeholder="Filter files, languages, status, warnings..." data-table-filter="per-file-table" /></div><div class="pill-row"><span class="pill good">Counts shown as analyzed by the selected policy</span></div></div>
+        <div class="table-shell">
+          <table id="per-file-table" data-sort-table>
+            <thead>
+              <tr>
+                <th data-sort-type="text">File</th>
+                <th data-sort-type="text">Language</th>
+                <th data-sort-type="number">Physical</th>
+                <th data-sort-type="number">Code</th>
+                <th data-sort-type="number">Comments</th>
+                <th data-sort-type="number">Blank</th>
+                <th data-sort-type="number">Mixed separate</th>
+                <th data-sort-type="text">Status</th>
+                <th data-sort-type="text">Warnings</th>
+              </tr>
+            </thead>
+            <tbody>
+              
+              <tr>
+                <td class="mono">install-cli.sh</td>
+                <td>Shell</td>
+                <td>697</td>
+                <td>511</td>
+                <td>132</td>
+                <td>54</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">launch.sh</td>
+                <td>Shell</td>
+                <td>164</td>
+                <td>113</td>
+                <td>37</td>
+                <td>14</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">manager/devkit.py</td>
+                <td>Python</td>
+                <td>31</td>
+                <td>12</td>
+                <td>16</td>
+                <td>3</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">manager/src/airgap_devkit/__init__.py</td>
+                <td>Python</td>
+                <td>1</td>
+                <td>1</td>
+                <td>0</td>
+                <td>0</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">manager/src/airgap_devkit/config.py</td>
+                <td>Python</td>
+                <td>35</td>
+                <td>26</td>
+                <td>5</td>
+                <td>4</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">manager/src/airgap_devkit/connectivity.py</td>
+                <td>Python</td>
+                <td>22</td>
+                <td>14</td>
+                <td>4</td>
+                <td>4</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">manager/src/airgap_devkit/launcher.py</td>
+                <td>Python</td>
+                <td>82</td>
+                <td>57</td>
+                <td>9</td>
+                <td>16</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">manager/src/airgap_devkit/main.py</td>
+                <td>Python</td>
+                <td>2277</td>
+                <td>1774</td>
+                <td>209</td>
+                <td>294</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">scripts/build-server.sh</td>
+                <td>Shell</td>
+                <td>46</td>
+                <td>32</td>
+                <td>5</td>
+                <td>9</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">scripts/fetch-vscode-extensions.py</td>
+                <td>Python</td>
+                <td>396</td>
+                <td>279</td>
+                <td>63</td>
+                <td>54</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">scripts/generate-sbom.sh</td>
+                <td>Shell</td>
+                <td>124</td>
+                <td>89</td>
+                <td>21</td>
+                <td>14</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">scripts/install-mode.sh</td>
+                <td>Shell</td>
+                <td>455</td>
+                <td>337</td>
+                <td>78</td>
+                <td>40</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedbesteffort">AnalyzedBestEffort</span></td>
+                <td class="small">unclosed string literal detected; result is best effort</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">scripts/setup-prebuilt-submodule.sh</td>
+                <td>Shell</td>
+                <td>127</td>
+                <td>75</td>
+                <td>41</td>
+                <td>11</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">scripts/status.sh</td>
+                <td>Shell</td>
+                <td>281</td>
+                <td>256</td>
+                <td>25</td>
+                <td>0</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">server/internal/api/bundle.go</td>
+                <td>Go</td>
+                <td>344</td>
+                <td>294</td>
+                <td>16</td>
+                <td>34</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">server/internal/api/handlers.go</td>
+                <td>Go</td>
+                <td>933</td>
+                <td>820</td>
+                <td>23</td>
+                <td>90</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">server/internal/api/network.go</td>
+                <td>Go</td>
+                <td>538</td>
+                <td>469</td>
+                <td>15</td>
+                <td>54</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">server/internal/api/sse.go</td>
+                <td>Go</td>
+                <td>68</td>
+                <td>58</td>
+                <td>2</td>
+                <td>8</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">server/internal/api/templates.go</td>
+                <td>Go</td>
+                <td>33</td>
+                <td>30</td>
+                <td>0</td>
+                <td>3</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">server/internal/config/config.go</td>
+                <td>Go</td>
+                <td>47</td>
+                <td>43</td>
+                <td>0</td>
+                <td>4</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">server/internal/export/team.go</td>
+                <td>Go</td>
+                <td>49</td>
+                <td>42</td>
+                <td>1</td>
+                <td>6</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">server/internal/tools/discovery.go</td>
+                <td>Go</td>
+                <td>129</td>
+                <td>119</td>
+                <td>2</td>
+                <td>8</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">server/internal/tools/installer.go</td>
+                <td>Go</td>
+                <td>87</td>
+                <td>78</td>
+                <td>3</td>
+                <td>6</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">server/internal/tools/status.go</td>
+                <td>Go</td>
+                <td>189</td>
+                <td>165</td>
+                <td>9</td>
+                <td>15</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">server/main.go</td>
+                <td>Go</td>
+                <td>131</td>
+                <td>101</td>
+                <td>10</td>
+                <td>20</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tests/run-tests.sh</td>
+                <td>Shell</td>
+                <td>328</td>
+                <td>243</td>
+                <td>58</td>
+                <td>27</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/build-tools/cmake/setup.sh</td>
+                <td>Shell</td>
+                <td>53</td>
+                <td>44</td>
+                <td>1</td>
+                <td>8</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/build-tools/lcov/setup.sh</td>
+                <td>Shell</td>
+                <td>56</td>
+                <td>45</td>
+                <td>3</td>
+                <td>8</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/7zip/setup.sh</td>
+                <td>Shell</td>
+                <td>35</td>
+                <td>25</td>
+                <td>2</td>
+                <td>8</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/conan/setup.sh</td>
+                <td>Shell</td>
+                <td>68</td>
+                <td>58</td>
+                <td>3</td>
+                <td>7</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/filezilla/setup.sh</td>
+                <td>Shell</td>
+                <td>35</td>
+                <td>26</td>
+                <td>1</td>
+                <td>8</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/gdb/setup.sh</td>
+                <td>Shell</td>
+                <td>92</td>
+                <td>75</td>
+                <td>3</td>
+                <td>14</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/git-bundle/setup.sh</td>
+                <td>Shell</td>
+                <td>58</td>
+                <td>49</td>
+                <td>1</td>
+                <td>8</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/git/setup.sh</td>
+                <td>Shell</td>
+                <td>31</td>
+                <td>22</td>
+                <td>1</td>
+                <td>8</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/matlab/setup.sh</td>
+                <td>Shell</td>
+                <td>80</td>
+                <td>67</td>
+                <td>2</td>
+                <td>11</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/notepadpp/setup.sh</td>
+                <td>Shell</td>
+                <td>32</td>
+                <td>22</td>
+                <td>2</td>
+                <td>8</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/putty/setup.sh</td>
+                <td>Shell</td>
+                <td>68</td>
+                <td>53</td>
+                <td>2</td>
+                <td>13</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/servy/setup.sh</td>
+                <td>Shell</td>
+                <td>32</td>
+                <td>22</td>
+                <td>2</td>
+                <td>8</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/sourcetree/setup.sh</td>
+                <td>Shell</td>
+                <td>34</td>
+                <td>23</td>
+                <td>2</td>
+                <td>9</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/sqlite/setup.sh</td>
+                <td>Shell</td>
+                <td>68</td>
+                <td>58</td>
+                <td>2</td>
+                <td>8</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/vscode-extensions/setup.sh</td>
+                <td>Shell</td>
+                <td>79</td>
+                <td>67</td>
+                <td>1</td>
+                <td>11</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/frameworks/grpc/setup.sh</td>
+                <td>Shell</td>
+                <td>109</td>
+                <td>78</td>
+                <td>16</td>
+                <td>15</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedbesteffort">AnalyzedBestEffort</span></td>
+                <td class="small">unclosed string literal detected; result is best effort</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/languages/dotnet/setup.sh</td>
+                <td>Shell</td>
+                <td>61</td>
+                <td>49</td>
+                <td>2</td>
+                <td>10</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/languages/python/build.sh</td>
+                <td>Shell</td>
+                <td>66</td>
+                <td>50</td>
+                <td>5</td>
+                <td>11</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/languages/python/setup.sh</td>
+                <td>Shell</td>
+                <td>63</td>
+                <td>53</td>
+                <td>2</td>
+                <td>8</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/lib/devkit-install.sh</td>
+                <td>Shell</td>
+                <td>279</td>
+                <td>208</td>
+                <td>47</td>
+                <td>24</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/toolchains/gcc/build.sh</td>
+                <td>Shell</td>
+                <td>87</td>
+                <td>67</td>
+                <td>7</td>
+                <td>13</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/toolchains/gcc/setup.sh</td>
+                <td>Shell</td>
+                <td>75</td>
+                <td>63</td>
+                <td>2</td>
+                <td>10</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/toolchains/lcov/build.sh</td>
+                <td>Shell</td>
+                <td>50</td>
+                <td>37</td>
+                <td>3</td>
+                <td>10</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/toolchains/lcov/setup.sh</td>
+                <td>Shell</td>
+                <td>55</td>
+                <td>44</td>
+                <td>3</td>
+                <td>8</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/toolchains/llvm/build.sh</td>
+                <td>Shell</td>
+                <td>93</td>
+                <td>73</td>
+                <td>8</td>
+                <td>12</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/toolchains/llvm/setup.sh</td>
+                <td>Shell</td>
+                <td>67</td>
+                <td>53</td>
+                <td>4</td>
+                <td>10</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/toolchains/llvm/style-formatter/bootstrap.sh</td>
+                <td>Shell</td>
+                <td>92</td>
+                <td>66</td>
+                <td>10</td>
+                <td>16</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/toolchains/ninja/build.sh</td>
+                <td>Shell</td>
+                <td>64</td>
+                <td>51</td>
+                <td>4</td>
+                <td>9</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/toolchains/ninja/setup.sh</td>
+                <td>Shell</td>
+                <td>56</td>
+                <td>47</td>
+                <td>1</td>
+                <td>8</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+              <tr>
+                <td class="mono">uninstall.sh</td>
+                <td>Shell</td>
+                <td>374</td>
+                <td>270</td>
+                <td>70</td>
+                <td>34</td>
+                <td>0</td>
+                <td><span class="status-tag status-analyzedexact">AnalyzedExact</span></td>
+                <td class="small"></td>
+              </tr>
+              
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel stack">
+        <div class="toolbar"><div class="toolbar-left"><h2>Skipped files</h2><input class="search" type="search" placeholder="Filter skipped files, reasons, warnings..." data-table-filter="skipped-table" /></div></div>
+        <div class="table-shell">
+          <table id="skipped-table" data-sort-table>
+            <thead>
+              <tr>
+                <th data-sort-type="text">File</th>
+                <th data-sort-type="text">Status</th>
+                <th data-sort-type="text">Warnings</th>
+              </tr>
+            </thead>
+            <tbody>
+              
+              <tr>
+                <td class="mono">LICENSE</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">README.md</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">TOOLS.md</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">manager/LICENSE</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">manager/MANIFEST.in</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">manager/README.md</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">manager/devkit.config.json.example</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">manager/pyproject.toml</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">manager/requirements.txt</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">manager/src/airgap_devkit/static/DOWNLOAD_HTMX.txt</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">manager/src/airgap_devkit/static/htmx.min.js</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">minified file skipped by policy</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">manager/src/airgap_devkit/templates/dashboard.html</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">manager/src/airgap_devkit/templates/logs.html</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">packages/pip-packages/devkit.json</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">vendor file skipped by policy</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/README.md</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/bin/devkit-server-linux-amd64</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/build-tools/cmake/4.3.1/cmake-4.3.1-linux-x86_64.tar.xz</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/build-tools/cmake/4.3.1/cmake-4.3.1-windows-x86_64.tar.xz</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/build-tools/cmake/4.3.1/manifest.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/dev-tools/7zip/26.00/7z2600-linux-x64.tar.xz</td>
+                <td><span class="status-tag status-skippedbinary">SkippedBinary</span></td>
+                <td class="small">binary file skipped by default</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/dev-tools/7zip/26.00/manifest.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/dev-tools/conan/2.27.1/conan-2.27.1-amd64.deb</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/dev-tools/conan/2.27.1/conan-2.27.1-windows-x86_64.tar.xz</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/dev-tools/conan/2.27.1/manifest.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/dev-tools/filezilla/3.70.4/FileZilla_3.70.4_x86_64-linux-gnu.tar.xz</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/dev-tools/filezilla/3.70.4/manifest.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/dev-tools/notepadpp/8.9.3/manifest.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/dev-tools/notepadpp/8.9.3/npp.8.9.3.portable.x64.zip</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/dev-tools/putty/0.83/manifest.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/dev-tools/putty/0.83/putty-64bit-0.83-installer.msi</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/dev-tools/servy/7.9/manifest.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/dev-tools/servy/7.9/servy-7.9-windows-x64.tar.xz</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/dev-tools/servy/7.9/servy-7.9-windows-x64.tar.xz.part-aa</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/dev-tools/servy/7.9/servy-7.9-windows-x64.tar.xz.part-ab</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/dev-tools/sourcetree/3.4.30/manifest.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/dev-tools/sqlite/3.53.0/manifest.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/dev-tools/sqlite/3.53.0/sqlite-3.26.0-20.el8_10.x86_64.rpm</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">minified file skipped by policy</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/dev-tools/sqlite/3.53.0/sqlite-tools-3.53.0-linux-x64.tar.xz</td>
+                <td><span class="status-tag status-skippedbinary">SkippedBinary</span></td>
+                <td class="small">binary file skipped by default</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/dev-tools/sqlite/3.53.0/sqlite-tools-3.53.0-windows-x64.tar.xz</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/frameworks/grpc/windows/1.80.0/grpc-1.80.0-windows-x64.tar.xz</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/frameworks/grpc/windows/1.80.0/manifest.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/frameworks/grpc/windows/README.md</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/languages/dotnet/10.0.202/dotnet-sdk-10.0.202-linux-x64.tar.xz.part-aa</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/languages/dotnet/10.0.202/dotnet-sdk-10.0.202-linux-x64.tar.xz.part-ab</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/languages/dotnet/10.0.202/dotnet-sdk-10.0.202-linux-x64.tar.xz.part-ac</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/languages/dotnet/10.0.202/dotnet-sdk-10.0.202-win-x64.tar.xz.part-aa</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/languages/dotnet/10.0.202/dotnet-sdk-10.0.202-win-x64.tar.xz.part-ab</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/languages/dotnet/10.0.202/dotnet-sdk-10.0.202-win-x64.tar.xz.part-ac</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/languages/dotnet/10.0.202/dotnet-sdk-10.0.202-win-x64.tar.xz.part-ad</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/languages/dotnet/10.0.202/manifest.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/languages/python/cpython-3.14.4-linux-x64.tar.xz.part-aa</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/languages/python/cpython-3.14.4-linux-x64.tar.xz.part-ab</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/languages/python/manifest.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/languages/python/python-3.14.4-amd64.zip</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/languages/python/python-3.14.4-embed-amd64.zip</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/gcc/linux/gcc-toolset-15-rhel8-rpms.tar.xz.part-aa</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/gcc/linux/gcc-toolset-15-rhel8-rpms.tar.xz.part-ab</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/gcc/linux/manifest.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/gcc/windows/manifest.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/gcc/windows/winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.tar.xz.part-aa</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/gcc/windows/winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.tar.xz.part-ab</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/gcc/windows/winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.tar.xz.part-ac</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/gcc/windows/winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.tar.xz.part-ad</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/lcov/2.4/lcov-2.4-0.noarch.rpm</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">minified file skipped by policy</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/lcov/2.4/lcov-2.4.tar.xz</td>
+                <td><span class="status-tag status-skippedbinary">SkippedBinary</span></td>
+                <td class="small">binary file skipped by default</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/lcov/2.4/manifest.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm-mingw/20260407/llvm-mingw-20260407-ucrt-ubuntu-22.04-x86_64.tar.xz.part-aa</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm-mingw/20260407/llvm-mingw-20260407-ucrt-ubuntu-22.04-x86_64.tar.xz.part-ab</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm-mingw/20260407/llvm-mingw-20260407-ucrt-x86_64.tar.xz.part-aa</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm-mingw/20260407/llvm-mingw-20260407-ucrt-x86_64.tar.xz.part-ab</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm-mingw/20260407/manifest.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-aa</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ab</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ac</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ad</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ae</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-af</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ag</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ah</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ai</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-aj</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ak</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-al</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-am</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-an</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ao</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ap</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-aq</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ar</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-as</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-at</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-au</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-av</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-aw</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ax</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ay</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-az</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ba</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-bb</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-bc</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-bd</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-be</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-bf</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-bg</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-bh</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-bi</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-bj</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-bk</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-bl</td>
+                <td><span class="status-tag status-skippedbinary">SkippedBinary</span></td>
+                <td class="small">binary file skipped by default</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-aa</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-ab</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-ac</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-ad</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-ae</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-af</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-ag</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-ah</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-ai</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-aj</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-ak</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-al</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-am</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-an</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-ao</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-ap</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-aq</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/llvm/22.1.3/manifest.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/ninja/1.13.2/manifest.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/ninja/1.13.2/ninja-1.13.2-linux.tar.xz</td>
+                <td><span class="status-tag status-skippedbinary">SkippedBinary</span></td>
+                <td class="small">binary file skipped by default</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">prebuilt/toolchains/ninja/1.13.2/ninja-1.13.2-windows.tar.xz</td>
+                <td><span class="status-tag status-skippedbinary">SkippedBinary</span></td>
+                <td class="small">binary file skipped by default</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">sbom.spdx.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">server/go.mod</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">server/go.sum</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">server/web/static/app.css</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">server/web/static/htmx.min.js</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">minified file skipped by policy</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">server/web/templates/dashboard.html</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">server/web/templates/logs.html</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/LICENSE</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/README.md</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/TOOLS.md</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/build-tools/cmake/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/build-tools/lcov/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/7zip/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/conan/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/filezilla/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/gdb/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/gdb/sources/gdb-17.1.tar.gz</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/git-bundle/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/git/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/matlab/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/notepadpp/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/putty/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/putty/sources/putty-0.83.tar.gz</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/servy/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/sourcetree/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/sqlite/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/dev-tools/vscode-extensions/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/frameworks/grpc/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/languages/dotnet/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/languages/python/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/languages/python/sources/Python-3.14.4.tar.xz</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/toolchains/gcc/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/toolchains/gcc/sources/gcc-15.2.0.tar.xz</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/toolchains/lcov/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/toolchains/lcov/sources/lcov-2.4.tar.xz</td>
+                <td><span class="status-tag status-skippedbinary">SkippedBinary</span></td>
+                <td class="small">binary file skipped by default</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/toolchains/llvm/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/toolchains/llvm/sources/llvm-project-22.1.3.src.tar.xz.part-aa</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/toolchains/llvm/sources/llvm-project-22.1.3.src.tar.xz.part-ab</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/toolchains/llvm/sources/llvm-project-22.1.3.src.tar.xz.part-ac</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/toolchains/llvm/sources/llvm-project-22.1.3.src.tar.xz.part-ad</td>
+                <td><span class="status-tag status-skippedbypolicy">SkippedByPolicy</span></td>
+                <td class="small">file exceeded max_file_size_bytes (2097152)</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/toolchains/llvm/style-formatter/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/toolchains/ninja/devkit.json</td>
+                <td><span class="status-tag status-skippedunsupported">SkippedUnsupported</span></td>
+                <td class="small">unsupported or undetected language</td>
+              </tr>
+              
+              <tr>
+                <td class="mono">tools/toolchains/ninja/sources/ninja-1.13.2-src.tar.xz</td>
+                <td><span class="status-tag status-skippedbinary">SkippedBinary</span></td>
+                <td class="small">binary file skipped by default</td>
+              </tr>
+              
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel stack">
+        <div>
+          <details>
+            <summary>Detailed run warnings (175)</summary>
+            <div>
+              
+                <pre class="warning-console" id="warning-console-preview">[001] LICENSE: unsupported or undetected language
+[002] manager/devkit.config.json.example: unsupported or undetected language
+[003] manager/LICENSE: unsupported or undetected language
+[004] manager/MANIFEST.in: unsupported or undetected language
+[005] manager/pyproject.toml: unsupported or undetected language
+[006] manager/README.md: unsupported or undetected language
+[007] manager/requirements.txt: unsupported or undetected language
+[008] manager/src/airgap_devkit/static/DOWNLOAD_HTMX.txt: unsupported or undetected language
+[009] manager/src/airgap_devkit/static/htmx.min.js: minified file skipped by policy
+[010] manager/src/airgap_devkit/templates/dashboard.html: unsupported or undetected language
+[011] manager/src/airgap_devkit/templates/logs.html: unsupported or undetected language
+[012] packages/pip-packages/devkit.json: vendor file skipped by policy</pre>
+                
+                <div class="warning-console-actions">
+                  <button type="button" class="header-button" data-expand-warnings class="warnings-show-link">Show all warnings</button>
+                </div>
+                <pre class="warning-console hidden" id="warning-console-full">[001] LICENSE: unsupported or undetected language
+[002] manager/devkit.config.json.example: unsupported or undetected language
+[003] manager/LICENSE: unsupported or undetected language
+[004] manager/MANIFEST.in: unsupported or undetected language
+[005] manager/pyproject.toml: unsupported or undetected language
+[006] manager/README.md: unsupported or undetected language
+[007] manager/requirements.txt: unsupported or undetected language
+[008] manager/src/airgap_devkit/static/DOWNLOAD_HTMX.txt: unsupported or undetected language
+[009] manager/src/airgap_devkit/static/htmx.min.js: minified file skipped by policy
+[010] manager/src/airgap_devkit/templates/dashboard.html: unsupported or undetected language
+[011] manager/src/airgap_devkit/templates/logs.html: unsupported or undetected language
+[012] packages/pip-packages/devkit.json: vendor file skipped by policy
+[013] prebuilt/bin/devkit-server-linux-amd64: file exceeded max_file_size_bytes (2097152)
+[014] prebuilt/build-tools/cmake/4.3.1/cmake-4.3.1-linux-x86_64.tar.xz: file exceeded max_file_size_bytes (2097152)
+[015] prebuilt/build-tools/cmake/4.3.1/cmake-4.3.1-windows-x86_64.tar.xz: file exceeded max_file_size_bytes (2097152)
+[016] prebuilt/build-tools/cmake/4.3.1/manifest.json: unsupported or undetected language
+[017] prebuilt/dev-tools/7zip/26.00/7z2600-linux-x64.tar.xz: binary file skipped by default
+[018] prebuilt/dev-tools/7zip/26.00/manifest.json: unsupported or undetected language
+[019] prebuilt/dev-tools/conan/2.27.1/conan-2.27.1-amd64.deb: file exceeded max_file_size_bytes (2097152)
+[020] prebuilt/dev-tools/conan/2.27.1/conan-2.27.1-windows-x86_64.tar.xz: file exceeded max_file_size_bytes (2097152)
+[021] prebuilt/dev-tools/conan/2.27.1/manifest.json: unsupported or undetected language
+[022] prebuilt/dev-tools/filezilla/3.70.4/FileZilla_3.70.4_x86_64-linux-gnu.tar.xz: file exceeded max_file_size_bytes (2097152)
+[023] prebuilt/dev-tools/filezilla/3.70.4/manifest.json: unsupported or undetected language
+[024] prebuilt/dev-tools/notepadpp/8.9.3/manifest.json: unsupported or undetected language
+[025] prebuilt/dev-tools/notepadpp/8.9.3/npp.8.9.3.portable.x64.zip: file exceeded max_file_size_bytes (2097152)
+[026] prebuilt/dev-tools/putty/0.83/manifest.json: unsupported or undetected language
+[027] prebuilt/dev-tools/putty/0.83/putty-64bit-0.83-installer.msi: file exceeded max_file_size_bytes (2097152)
+[028] prebuilt/dev-tools/servy/7.9/manifest.json: unsupported or undetected language
+[029] prebuilt/dev-tools/servy/7.9/servy-7.9-windows-x64.tar.xz: file exceeded max_file_size_bytes (2097152)
+[030] prebuilt/dev-tools/servy/7.9/servy-7.9-windows-x64.tar.xz.part-aa: file exceeded max_file_size_bytes (2097152)
+[031] prebuilt/dev-tools/servy/7.9/servy-7.9-windows-x64.tar.xz.part-ab: file exceeded max_file_size_bytes (2097152)
+[032] prebuilt/dev-tools/sourcetree/3.4.30/manifest.json: unsupported or undetected language
+[033] prebuilt/dev-tools/sqlite/3.53.0/manifest.json: unsupported or undetected language
+[034] prebuilt/dev-tools/sqlite/3.53.0/sqlite-3.26.0-20.el8_10.x86_64.rpm: minified file skipped by policy
+[035] prebuilt/dev-tools/sqlite/3.53.0/sqlite-tools-3.53.0-linux-x64.tar.xz: binary file skipped by default
+[036] prebuilt/dev-tools/sqlite/3.53.0/sqlite-tools-3.53.0-windows-x64.tar.xz: file exceeded max_file_size_bytes (2097152)
+[037] prebuilt/frameworks/grpc/windows/1.80.0/grpc-1.80.0-windows-x64.tar.xz: file exceeded max_file_size_bytes (2097152)
+[038] prebuilt/frameworks/grpc/windows/1.80.0/manifest.json: unsupported or undetected language
+[039] prebuilt/frameworks/grpc/windows/README.md: unsupported or undetected language
+[040] prebuilt/languages/dotnet/10.0.202/dotnet-sdk-10.0.202-linux-x64.tar.xz.part-aa: file exceeded max_file_size_bytes (2097152)
+[041] prebuilt/languages/dotnet/10.0.202/dotnet-sdk-10.0.202-linux-x64.tar.xz.part-ab: file exceeded max_file_size_bytes (2097152)
+[042] prebuilt/languages/dotnet/10.0.202/dotnet-sdk-10.0.202-linux-x64.tar.xz.part-ac: file exceeded max_file_size_bytes (2097152)
+[043] prebuilt/languages/dotnet/10.0.202/dotnet-sdk-10.0.202-win-x64.tar.xz.part-aa: file exceeded max_file_size_bytes (2097152)
+[044] prebuilt/languages/dotnet/10.0.202/dotnet-sdk-10.0.202-win-x64.tar.xz.part-ab: file exceeded max_file_size_bytes (2097152)
+[045] prebuilt/languages/dotnet/10.0.202/dotnet-sdk-10.0.202-win-x64.tar.xz.part-ac: file exceeded max_file_size_bytes (2097152)
+[046] prebuilt/languages/dotnet/10.0.202/dotnet-sdk-10.0.202-win-x64.tar.xz.part-ad: file exceeded max_file_size_bytes (2097152)
+[047] prebuilt/languages/dotnet/10.0.202/manifest.json: unsupported or undetected language
+[048] prebuilt/languages/python/cpython-3.14.4-linux-x64.tar.xz.part-aa: file exceeded max_file_size_bytes (2097152)
+[049] prebuilt/languages/python/cpython-3.14.4-linux-x64.tar.xz.part-ab: file exceeded max_file_size_bytes (2097152)
+[050] prebuilt/languages/python/manifest.json: unsupported or undetected language
+[051] prebuilt/languages/python/python-3.14.4-amd64.zip: file exceeded max_file_size_bytes (2097152)
+[052] prebuilt/languages/python/python-3.14.4-embed-amd64.zip: file exceeded max_file_size_bytes (2097152)
+[053] prebuilt/README.md: unsupported or undetected language
+[054] prebuilt/toolchains/gcc/linux/gcc-toolset-15-rhel8-rpms.tar.xz.part-aa: file exceeded max_file_size_bytes (2097152)
+[055] prebuilt/toolchains/gcc/linux/gcc-toolset-15-rhel8-rpms.tar.xz.part-ab: file exceeded max_file_size_bytes (2097152)
+[056] prebuilt/toolchains/gcc/linux/manifest.json: unsupported or undetected language
+[057] prebuilt/toolchains/gcc/windows/manifest.json: unsupported or undetected language
+[058] prebuilt/toolchains/gcc/windows/winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.tar.xz.part-aa: file exceeded max_file_size_bytes (2097152)
+[059] prebuilt/toolchains/gcc/windows/winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.tar.xz.part-ab: file exceeded max_file_size_bytes (2097152)
+[060] prebuilt/toolchains/gcc/windows/winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.tar.xz.part-ac: file exceeded max_file_size_bytes (2097152)
+[061] prebuilt/toolchains/gcc/windows/winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.tar.xz.part-ad: file exceeded max_file_size_bytes (2097152)
+[062] prebuilt/toolchains/lcov/2.4/lcov-2.4-0.noarch.rpm: minified file skipped by policy
+[063] prebuilt/toolchains/lcov/2.4/lcov-2.4.tar.xz: binary file skipped by default
+[064] prebuilt/toolchains/lcov/2.4/manifest.json: unsupported or undetected language
+[065] prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-aa: file exceeded max_file_size_bytes (2097152)
+[066] prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-ab: file exceeded max_file_size_bytes (2097152)
+[067] prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-ac: file exceeded max_file_size_bytes (2097152)
+[068] prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-ad: file exceeded max_file_size_bytes (2097152)
+[069] prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-ae: file exceeded max_file_size_bytes (2097152)
+[070] prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-af: file exceeded max_file_size_bytes (2097152)
+[071] prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-ag: file exceeded max_file_size_bytes (2097152)
+[072] prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-ah: file exceeded max_file_size_bytes (2097152)
+[073] prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-ai: file exceeded max_file_size_bytes (2097152)
+[074] prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-aj: file exceeded max_file_size_bytes (2097152)
+[075] prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-ak: file exceeded max_file_size_bytes (2097152)
+[076] prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-al: file exceeded max_file_size_bytes (2097152)
+[077] prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-am: file exceeded max_file_size_bytes (2097152)
+[078] prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-an: file exceeded max_file_size_bytes (2097152)
+[079] prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-ao: file exceeded max_file_size_bytes (2097152)
+[080] prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-ap: file exceeded max_file_size_bytes (2097152)
+[081] prebuilt/toolchains/llvm/22.1.3/clang+llvm-22.1.3-x86_64-pc-windows-msvc.tar.xz.part-aq: file exceeded max_file_size_bytes (2097152)
+[082] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-aa: file exceeded max_file_size_bytes (2097152)
+[083] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ab: file exceeded max_file_size_bytes (2097152)
+[084] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ac: file exceeded max_file_size_bytes (2097152)
+[085] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ad: file exceeded max_file_size_bytes (2097152)
+[086] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ae: file exceeded max_file_size_bytes (2097152)
+[087] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-af: file exceeded max_file_size_bytes (2097152)
+[088] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ag: file exceeded max_file_size_bytes (2097152)
+[089] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ah: file exceeded max_file_size_bytes (2097152)
+[090] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ai: file exceeded max_file_size_bytes (2097152)
+[091] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-aj: file exceeded max_file_size_bytes (2097152)
+[092] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ak: file exceeded max_file_size_bytes (2097152)
+[093] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-al: file exceeded max_file_size_bytes (2097152)
+[094] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-am: file exceeded max_file_size_bytes (2097152)
+[095] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-an: file exceeded max_file_size_bytes (2097152)
+[096] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ao: file exceeded max_file_size_bytes (2097152)
+[097] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ap: file exceeded max_file_size_bytes (2097152)
+[098] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-aq: file exceeded max_file_size_bytes (2097152)
+[099] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ar: file exceeded max_file_size_bytes (2097152)
+[100] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-as: file exceeded max_file_size_bytes (2097152)
+[101] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-at: file exceeded max_file_size_bytes (2097152)
+[102] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-au: file exceeded max_file_size_bytes (2097152)
+[103] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-av: file exceeded max_file_size_bytes (2097152)
+[104] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-aw: file exceeded max_file_size_bytes (2097152)
+[105] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ax: file exceeded max_file_size_bytes (2097152)
+[106] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ay: file exceeded max_file_size_bytes (2097152)
+[107] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-az: file exceeded max_file_size_bytes (2097152)
+[108] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-ba: file exceeded max_file_size_bytes (2097152)
+[109] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-bb: file exceeded max_file_size_bytes (2097152)
+[110] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-bc: file exceeded max_file_size_bytes (2097152)
+[111] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-bd: file exceeded max_file_size_bytes (2097152)
+[112] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-be: file exceeded max_file_size_bytes (2097152)
+[113] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-bf: file exceeded max_file_size_bytes (2097152)
+[114] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-bg: file exceeded max_file_size_bytes (2097152)
+[115] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-bh: file exceeded max_file_size_bytes (2097152)
+[116] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-bi: file exceeded max_file_size_bytes (2097152)
+[117] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-bj: file exceeded max_file_size_bytes (2097152)
+[118] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-bk: file exceeded max_file_size_bytes (2097152)
+[119] prebuilt/toolchains/llvm/22.1.3/LLVM-22.1.3-Linux-X64.tar.xz.part-bl: binary file skipped by default
+[120] prebuilt/toolchains/llvm/22.1.3/manifest.json: unsupported or undetected language
+[121] prebuilt/toolchains/llvm-mingw/20260407/llvm-mingw-20260407-ucrt-ubuntu-22.04-x86_64.tar.xz.part-aa: file exceeded max_file_size_bytes (2097152)
+[122] prebuilt/toolchains/llvm-mingw/20260407/llvm-mingw-20260407-ucrt-ubuntu-22.04-x86_64.tar.xz.part-ab: file exceeded max_file_size_bytes (2097152)
+[123] prebuilt/toolchains/llvm-mingw/20260407/llvm-mingw-20260407-ucrt-x86_64.tar.xz.part-aa: file exceeded max_file_size_bytes (2097152)
+[124] prebuilt/toolchains/llvm-mingw/20260407/llvm-mingw-20260407-ucrt-x86_64.tar.xz.part-ab: file exceeded max_file_size_bytes (2097152)
+[125] prebuilt/toolchains/llvm-mingw/20260407/manifest.json: unsupported or undetected language
+[126] prebuilt/toolchains/ninja/1.13.2/manifest.json: unsupported or undetected language
+[127] prebuilt/toolchains/ninja/1.13.2/ninja-1.13.2-linux.tar.xz: binary file skipped by default
+[128] prebuilt/toolchains/ninja/1.13.2/ninja-1.13.2-windows.tar.xz: binary file skipped by default
+[129] README.md: unsupported or undetected language
+[130] sbom.spdx.json: unsupported or undetected language
+[131] scripts/install-mode.sh: unclosed string literal detected; result is best effort
+[132] server/go.mod: unsupported or undetected language
+[133] server/go.sum: unsupported or undetected language
+[134] server/web/static/app.css: unsupported or undetected language
+[135] server/web/static/htmx.min.js: minified file skipped by policy
+[136] server/web/templates/dashboard.html: unsupported or undetected language
+[137] server/web/templates/logs.html: unsupported or undetected language
+[138] tools/build-tools/cmake/devkit.json: unsupported or undetected language
+[139] tools/build-tools/lcov/devkit.json: unsupported or undetected language
+[140] tools/dev-tools/7zip/devkit.json: unsupported or undetected language
+[141] tools/dev-tools/conan/devkit.json: unsupported or undetected language
+[142] tools/dev-tools/filezilla/devkit.json: unsupported or undetected language
+[143] tools/dev-tools/gdb/devkit.json: unsupported or undetected language
+[144] tools/dev-tools/gdb/sources/gdb-17.1.tar.gz: file exceeded max_file_size_bytes (2097152)
+[145] tools/dev-tools/git/devkit.json: unsupported or undetected language
+[146] tools/dev-tools/git-bundle/devkit.json: unsupported or undetected language
+[147] tools/dev-tools/matlab/devkit.json: unsupported or undetected language
+[148] tools/dev-tools/notepadpp/devkit.json: unsupported or undetected language
+[149] tools/dev-tools/putty/devkit.json: unsupported or undetected language
+[150] tools/dev-tools/putty/sources/putty-0.83.tar.gz: file exceeded max_file_size_bytes (2097152)
+[151] tools/dev-tools/servy/devkit.json: unsupported or undetected language
+[152] tools/dev-tools/sourcetree/devkit.json: unsupported or undetected language
+[153] tools/dev-tools/sqlite/devkit.json: unsupported or undetected language
+[154] tools/dev-tools/vscode-extensions/devkit.json: unsupported or undetected language
+[155] tools/frameworks/grpc/devkit.json: unsupported or undetected language
+[156] tools/frameworks/grpc/setup.sh: unclosed string literal detected; result is best effort
+[157] tools/languages/dotnet/devkit.json: unsupported or undetected language
+[158] tools/languages/python/devkit.json: unsupported or undetected language
+[159] tools/languages/python/sources/Python-3.14.4.tar.xz: file exceeded max_file_size_bytes (2097152)
+[160] tools/LICENSE: unsupported or undetected language
+[161] tools/README.md: unsupported or undetected language
+[162] tools/toolchains/gcc/devkit.json: unsupported or undetected language
+[163] tools/toolchains/gcc/sources/gcc-15.2.0.tar.xz: file exceeded max_file_size_bytes (2097152)
+[164] tools/toolchains/lcov/devkit.json: unsupported or undetected language
+[165] tools/toolchains/lcov/sources/lcov-2.4.tar.xz: binary file skipped by default
+[166] tools/toolchains/llvm/devkit.json: unsupported or undetected language
+[167] tools/toolchains/llvm/sources/llvm-project-22.1.3.src.tar.xz.part-aa: file exceeded max_file_size_bytes (2097152)
+[168] tools/toolchains/llvm/sources/llvm-project-22.1.3.src.tar.xz.part-ab: file exceeded max_file_size_bytes (2097152)
+[169] tools/toolchains/llvm/sources/llvm-project-22.1.3.src.tar.xz.part-ac: file exceeded max_file_size_bytes (2097152)
+[170] tools/toolchains/llvm/sources/llvm-project-22.1.3.src.tar.xz.part-ad: file exceeded max_file_size_bytes (2097152)
+[171] tools/toolchains/llvm/style-formatter/devkit.json: unsupported or undetected language
+[172] tools/toolchains/ninja/devkit.json: unsupported or undetected language
+[173] tools/toolchains/ninja/sources/ninja-1.13.2-src.tar.xz: binary file skipped by default
+[174] tools/TOOLS.md: unsupported or undetected language
+[175] TOOLS.md: unsupported or undetected language</pre>
+                
+              
+            </div>
+          </details>
+        </div>
+
+        <div>
+          <h2>Effective configuration</h2>
+          <pre>{
+  &quot;discovery&quot;: {
+    &quot;root_paths&quot;: [
+      &quot;C:\\Users\\n1mz\\Desktop\\airgap-devkit&quot;
+    ],
+    &quot;include_globs&quot;: [],
+    &quot;exclude_globs&quot;: [],
+    &quot;excluded_directories&quot;: [
+      &quot;.git&quot;,
+      &quot;node_modules&quot;,
+      &quot;target&quot;,
+      &quot;sloc&quot;
+    ],
+    &quot;honor_ignore_files&quot;: true,
+    &quot;ignore_hidden_files&quot;: true,
+    &quot;follow_symlinks&quot;: false,
+    &quot;max_file_size_bytes&quot;: 2097152,
+    &quot;parallelism_limit&quot;: null
+  },
+  &quot;analysis&quot;: {
+    &quot;enabled_languages&quot;: [],
+    &quot;extension_overrides&quot;: {},
+    &quot;shebang_detection&quot;: true,
+    &quot;mixed_line_policy&quot;: &quot;code_only&quot;,
+    &quot;python_docstrings_as_comments&quot;: true,
+    &quot;generated_file_detection&quot;: true,
+    &quot;minified_file_detection&quot;: true,
+    &quot;vendor_directory_detection&quot;: true,
+    &quot;include_lockfiles&quot;: false,
+    &quot;binary_file_behavior&quot;: &quot;skip&quot;,
+    &quot;decode_failure_behavior&quot;: &quot;warn_skip&quot;,
+    &quot;parse_failure_behavior&quot;: &quot;warn_skip&quot;
+  },
+  &quot;reporting&quot;: {
+    &quot;report_title&quot;: &quot;airgap-devkit&quot;,
+    &quot;output_formats&quot;: [
+      &quot;cli&quot;,
+      &quot;json&quot;,
+      &quot;html&quot;
+    ],
+    &quot;include_summary_charts&quot;: true,
+    &quot;include_skipped_files_section&quot;: true,
+    &quot;include_warnings_section&quot;: true,
+    &quot;theme&quot;: &quot;auto&quot;
+  },
+  &quot;web&quot;: {
+    &quot;bind_address&quot;: &quot;127.0.0.1:4317&quot;
+  }
+}</pre>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var body = document.body;
+      var storageKey = 'oxidesloc-theme';
+      var themeToggle = document.querySelector('[data-theme-toggle]');
+      var copyLinkButtons = Array.prototype.slice.call(document.querySelectorAll('[data-copy-link]'));
+      var shareButtons = Array.prototype.slice.call(document.querySelectorAll('[data-share-report]'));
+      var printButtons = Array.prototype.slice.call(document.querySelectorAll('[data-print-report]'));
+      var expandWarningsButton = document.querySelector('[data-expand-warnings]');
+
+      function applyTheme(theme) {
+        body.classList.toggle('dark-theme', theme === 'dark');
+      }
+
+      function currentTheme() {
+        return body.classList.contains('dark-theme') ? 'dark' : 'light';
+      }
+
+      try {
+        var saved = localStorage.getItem(storageKey);
+        if (saved === 'dark' || saved === 'light') {
+          applyTheme(saved);
+        }
+      } catch (e) {}
+
+      if (themeToggle) {
+        themeToggle.addEventListener('click', function () {
+          var next = currentTheme() === 'dark' ? 'light' : 'dark';
+          applyTheme(next);
+          try { localStorage.setItem(storageKey, next); } catch (e) {}
+        });
+      }
+
+      function copyText(value) {
+        if (!value) return;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(value).catch(function () {});
+        }
+      }
+
+      copyLinkButtons.forEach(function (button) {
+        button.addEventListener('click', function () {
+          copyText(window.location.href);
+        });
+      });
+
+      shareButtons.forEach(function (button) {
+        button.addEventListener('click', function () {
+          if (navigator.share) {
+            navigator.share({ title: document.title, url: window.location.href }).catch(function () {});
+          } else {
+            copyText(window.location.href);
+          }
+        });
+      });
+
+      printButtons.forEach(function (button) {
+        button.addEventListener('click', function () {
+          window.print();
+        });
+      });
+
+      if (expandWarningsButton) {
+        expandWarningsButton.addEventListener('click', function () {
+          var preview = document.getElementById('warning-console-preview');
+          var full = document.getElementById('warning-console-full');
+          if (preview) preview.classList.add('hidden');
+          if (full) full.classList.remove('hidden');
+          expandWarningsButton.classList.add('hidden');
+        });
+      }
+
+      function detectType(value) {
+        return /^-?\d+(?:\.\d+)?$/.test(value.trim()) ? parseFloat(value) : value.toLowerCase();
+      }
+
+      document.querySelectorAll('[data-sort-table]').forEach(function (table) {
+        var headers = Array.prototype.slice.call(table.querySelectorAll('th'));
+        headers.forEach(function (th, idx) {
+          var direction = 1;
+          var marker = document.createElement('span');
+          marker.className = 'sort-indicator';
+          marker.textContent = '↕';
+          th.appendChild(marker);
+          th.addEventListener('click', function () {
+            var tbody = table.tBodies[0];
+            var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+            rows.sort(function (a, b) {
+              var av = detectType(a.children[idx].innerText || a.children[idx].textContent || '');
+              var bv = detectType(b.children[idx].innerText || b.children[idx].textContent || '');
+              if (av < bv) return -1 * direction;
+              if (av > bv) return 1 * direction;
+              return 0;
+            });
+            rows.forEach(function (row) { tbody.appendChild(row); });
+            direction = direction * -1;
+          });
+        });
+      });
+
+      document.querySelectorAll('[data-table-filter]').forEach(function (input) {
+        var table = document.getElementById(input.getAttribute('data-table-filter'));
+        if (!table) return;
+        input.addEventListener('input', function () {
+          var q = input.value.toLowerCase();
+          Array.prototype.slice.call(table.tBodies[0].rows).forEach(function (row) {
+            var text = row.innerText.toLowerCase();
+            row.style.display = text.indexOf(q) >= 0 ? '' : 'none';
+          });
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

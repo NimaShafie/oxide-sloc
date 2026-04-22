@@ -1100,8 +1100,6 @@ struct WarningOpportunityRow {
                 <th data-sort-type="number">Comments</th>
                 <th data-sort-type="number">Blank</th>
                 <th data-sort-type="number">Mixed separate</th>
-                <th data-sort-type="text">Status</th>
-                <th data-sort-type="text">Warnings</th>
               </tr>
             </thead>
             <tbody>
@@ -1114,8 +1112,6 @@ struct WarningOpportunityRow {
                 <td>{{ row.comment_lines }}</td>
                 <td>{{ row.blank_lines }}</td>
                 <td>{{ row.mixed_lines_separate }}</td>
-                <td><span class="status-tag status-{{ row.status_class }}">{{ row.status }}</span></td>
-                <td class="small">{{ row.warnings }}</td>
               </tr>
               {% endfor %}
             </tbody>

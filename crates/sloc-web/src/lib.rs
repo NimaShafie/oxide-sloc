@@ -20,6 +20,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use sloc_config::{AppConfig, BinaryFileBehavior, MixedLinePolicy};
+
+static CHART_JS: &[u8] = include_bytes!("../static/chart.umd.min.js");
+
 use sloc_core::{
     analyze, compute_delta, read_json, FileChangeStatus, RegistryEntry, ScanRegistry,
     ScanSummarySnapshot,
@@ -64,7 +67,10 @@ async fn api_key_middleware(request: Request, next: Next) -> Response {
 pub async fn serve(config: AppConfig) -> Result<()> {
     let bind_address = config.web.bind_address.clone();
     let output_root = resolve_output_root(None).unwrap_or_else(|_| PathBuf::from("out/web"));
-    let registry_path = output_root.join("registry.json");
+    // SLOC_REGISTRY_PATH overrides the registry location — useful for shared drives/mounts.
+    let registry_path = std::env::var("SLOC_REGISTRY_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| output_root.join("registry.json"));
     let registry = ScanRegistry::load(&registry_path);
 
     let state = AppState {
@@ -76,12 +82,14 @@ pub async fn serve(config: AppConfig) -> Result<()> {
 
     // Protected routes require API key when SLOC_API_KEY is set.
     let protected = Router::new()
-        .route("/", get(index))
+        .route("/", get(splash))
+        .route("/scan", get(index))
         .route("/analyze", post(analyze_handler))
         .route("/preview", get(preview_handler))
         .route("/pick-directory", get(pick_directory_handler))
         .route("/open-path", get(open_path_handler))
         .route("/history", get(history_handler))
+        .route("/compare-select", get(compare_select_handler))
         .route("/compare", get(compare_handler))
         .route("/images/:folder/:file", get(image_handler))
         .route("/runs/:run_id/:artifact", get(artifact_handler))
@@ -91,11 +99,12 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         .route("/embed/summary", get(embed_handler))
         .layer(middleware::from_fn(api_key_middleware));
 
-    // /healthz and /badge are always accessible (no auth) so badges can be embedded
-    // in external tools without requiring the API key in image URLs.
+    // /healthz, /badge, and /static are always accessible (no auth).
+    // /static serves bundled assets so the tool works fully offline (air-gapped).
     let app = protected
         .route("/healthz", get(healthz))
         .route("/badge/:metric", get(badge_handler))
+        .route("/static/chart.js", get(chart_js_handler))
         // Limit form/body size to 10 MB — analysis paths are short strings, no uploads expected
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state);
@@ -134,6 +143,15 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         .context("web server terminated unexpectedly")
 }
 
+async fn splash() -> impl IntoResponse {
+    let template = SplashTemplate {};
+    Html(
+        template
+            .render()
+            .unwrap_or_else(|err| format!("<pre>{err}</pre>")),
+    )
+}
+
 async fn index() -> impl IntoResponse {
     let template = IndexTemplate {};
 
@@ -148,6 +166,16 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
+async fn chart_js_handler() -> impl IntoResponse {
+    (
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        CHART_JS,
+    )
+}
+
 #[derive(Debug, Deserialize)]
 struct AnalyzeForm {
     path: String,
@@ -160,11 +188,11 @@ struct AnalyzeForm {
     binary_file_behavior: Option<BinaryFileBehavior>,
     output_dir: Option<String>,
     report_title: Option<String>,
-    generate_json: Option<String>,
     generate_html: Option<String>,
     generate_pdf: Option<String>,
     include_globs: Option<String>,
     exclude_globs: Option<String>,
+    submodule_breakdown: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -335,6 +363,7 @@ async fn analyze_handler(
 
     config.discovery.include_globs = split_patterns(form.include_globs.as_deref());
     config.discovery.exclude_globs = split_patterns(form.exclude_globs.as_deref());
+    config.discovery.submodule_breakdown = form.submodule_breakdown.as_deref() == Some("enabled");
 
     // Auto-exclude the output directory so scan artifacts never appear in counts.
     // Resolve the output path early (before analysis) to determine the folder name.
@@ -385,6 +414,7 @@ async fn analyze_handler(
             eprintln!("[oxide-sloc][analyze] analysis failed: {err:#}");
             let template = ErrorTemplate {
                 message: "Analysis failed. Check that the path exists and is readable.".to_string(),
+                last_report_url: None,
             };
             return Html(
                 template
@@ -395,7 +425,7 @@ async fn analyze_handler(
         }
     };
 
-    let run_id = format!("{}", run.tool.run_id);
+    let run_id = run.tool.run_id.to_string();
 
     // Capture the most-recent previous scan for this project before registering the current one.
     let prev_entry: Option<RegistryEntry> = {
@@ -428,6 +458,7 @@ async fn analyze_handler(
             let template = ErrorTemplate {
                 message: "Could not create output directory. Check the output path setting."
                     .to_string(),
+                last_report_url: None,
             };
             return Html(
                 template
@@ -445,7 +476,7 @@ async fn analyze_handler(
         &run,
         &report_html,
         &run_dir,
-        form.generate_json.is_some(),
+        true, // JSON always generated so compare and diff are always available
         form.generate_html.is_some(),
         form.generate_pdf.is_some(),
         &run.effective_configuration.reporting.report_title,
@@ -457,6 +488,7 @@ async fn analyze_handler(
             eprintln!("[oxide-sloc][analyze] artifact write failed: {err:#}");
             let template = ErrorTemplate {
                 message: "Failed to save report artifacts. Check available disk space.".to_string(),
+                last_report_url: None,
             };
             return Html(
                 template
@@ -537,6 +569,64 @@ async fn analyze_handler(
     let blank_lines = language_rows.iter().map(|row| row.blank).sum::<u64>();
     let mixed_lines = language_rows.iter().map(|row| row.mixed).sum::<u64>();
 
+    // Previous scan summary values for the metrics table Previous/Change columns.
+    let prev_sum = prev_entry.as_ref().map(|e| &e.summary);
+    let prev_fa = prev_sum.map(|s| s.files_analyzed);
+    let prev_fs = prev_sum.map(|s| s.files_skipped);
+    let prev_pl = prev_sum.map(|s| s.total_physical_lines);
+    let prev_cl = prev_sum.map(|s| s.code_lines);
+    let prev_cml = prev_sum.map(|s| s.comment_lines);
+    let prev_bl = prev_sum.map(|s| s.blank_lines);
+    let fmt_prev = |opt: Option<u64>| opt.map(|v| v.to_string()).unwrap_or_else(|| "—".into());
+    let prev_fa_str = fmt_prev(prev_fa);
+    let prev_fs_str = fmt_prev(prev_fs);
+    let prev_pl_str = fmt_prev(prev_pl);
+    let prev_cl_str = fmt_prev(prev_cl);
+    let prev_cml_str = fmt_prev(prev_cml);
+    let prev_bl_str = fmt_prev(prev_bl);
+    let (delta_fa_str, delta_fa_class) = summary_delta(files_analyzed, prev_fa);
+    let (delta_fs_str, delta_fs_class) = summary_delta(files_skipped, prev_fs);
+    let (delta_pl_str, delta_pl_class) = summary_delta(physical_lines, prev_pl);
+    let (delta_cl_str, delta_cl_class) = summary_delta(code_lines, prev_cl);
+    let (delta_cml_str, delta_cml_class) = summary_delta(comment_lines, prev_cml);
+    let (delta_bl_str, delta_bl_class) = summary_delta(blank_lines, prev_bl);
+    let delta_fa_class = delta_fa_class.to_string();
+    let delta_fs_class = delta_fs_class.to_string();
+    let delta_pl_class = delta_pl_class.to_string();
+    let delta_cl_class = delta_cl_class.to_string();
+    let delta_cml_class = delta_cml_class.to_string();
+    let delta_bl_class = delta_bl_class.to_string();
+
+    // Pre-compute line-level deltas for the line change summary.
+    let delta_lines_added: Option<i64> = scan_delta.as_ref().map(|d| {
+        d.file_deltas
+            .iter()
+            .map(|f| match f.status {
+                sloc_core::FileChangeStatus::Added => f.current_code,
+                sloc_core::FileChangeStatus::Modified => f.code_delta.max(0),
+                _ => 0,
+            })
+            .sum()
+    });
+    let delta_lines_removed: Option<i64> = scan_delta.as_ref().map(|d| {
+        d.file_deltas
+            .iter()
+            .map(|f| match f.status {
+                sloc_core::FileChangeStatus::Removed => f.baseline_code,
+                sloc_core::FileChangeStatus::Modified => (-f.code_delta).max(0),
+                _ => 0,
+            })
+            .sum()
+    });
+    let (delta_lines_net_str, delta_lines_net_class) =
+        match (delta_lines_added, delta_lines_removed) {
+            (Some(a), Some(r)) => {
+                let net = a - r;
+                (fmt_delta(net), delta_class(net).to_string())
+            }
+            _ => ("—".to_string(), "na".to_string()),
+        };
+
     let template = ResultTemplate {
         report_title: run.effective_configuration.reporting.report_title.clone(),
         project_path: form.path,
@@ -578,31 +668,31 @@ async fn analyze_handler(
         json_path: artifacts.json_path.as_ref().map(|path| display_path(path)),
         language_rows,
         prev_run_id: prev_entry.as_ref().map(|e| e.run_id.clone()),
-        prev_run_timestamp: prev_entry
-            .as_ref()
-            .map(|e| e.timestamp_utc.format("%Y-%m-%d %H:%M UTC").to_string()),
+        prev_run_timestamp: prev_entry.as_ref().map(|e| fmt_pst(e.timestamp_utc)),
         prev_run_code_lines: prev_entry.as_ref().map(|e| e.summary.code_lines),
+        prev_fa_str,
+        prev_fs_str,
+        prev_pl_str,
+        prev_cl_str,
+        prev_cml_str,
+        prev_bl_str,
+        delta_fa_str,
+        delta_fa_class,
+        delta_fs_str,
+        delta_fs_class,
+        delta_pl_str,
+        delta_pl_class,
+        delta_cl_str,
+        delta_cl_class,
+        delta_cml_str,
+        delta_cml_class,
+        delta_bl_str,
+        delta_bl_class,
         // delta metrics derived from the comparison against the previous scan
-        delta_lines_added: scan_delta.as_ref().map(|d| {
-            d.file_deltas
-                .iter()
-                .map(|f| match f.status {
-                    sloc_core::FileChangeStatus::Added => f.current_code,
-                    sloc_core::FileChangeStatus::Modified => f.code_delta.max(0),
-                    _ => 0,
-                })
-                .sum()
-        }),
-        delta_lines_removed: scan_delta.as_ref().map(|d| {
-            d.file_deltas
-                .iter()
-                .map(|f| match f.status {
-                    sloc_core::FileChangeStatus::Removed => f.baseline_code,
-                    sloc_core::FileChangeStatus::Modified => (-f.code_delta).max(0),
-                    _ => 0,
-                })
-                .sum()
-        }),
+        delta_lines_added,
+        delta_lines_removed,
+        delta_lines_net_str,
+        delta_lines_net_class,
         delta_files_added: scan_delta.as_ref().map(|d| d.files_added),
         delta_files_removed: scan_delta.as_ref().map(|d| d.files_removed),
         delta_files_modified: scan_delta.as_ref().map(|d| d.files_modified),
@@ -618,6 +708,19 @@ async fn analyze_handler(
         git_commit: git_commit.clone(),
         current_scan_number: prev_scan_count + 1,
         prev_scan_count,
+        submodule_rows: run
+            .submodule_summaries
+            .iter()
+            .map(|s| SubmoduleRow {
+                name: s.name.clone(),
+                relative_path: s.relative_path.clone(),
+                files_analyzed: s.files_analyzed,
+                code_lines: s.code_lines,
+                comment_lines: s.comment_lines,
+                blank_lines: s.blank_lines,
+                total_physical_lines: s.total_physical_lines,
+            })
+            .collect(),
     };
 
     Html(
@@ -638,8 +741,41 @@ async fn artifact_handler(
         registry.get(&run_id).cloned()
     };
 
-    let Some(artifact_set) = artifact_set else {
-        return StatusCode::NOT_FOUND.into_response();
+    // Fall back to the persisted registry when the server was restarted and the
+    // in-memory artifact map no longer holds the entry.
+    let artifact_set = match artifact_set {
+        Some(a) => a,
+        None => {
+            let reg = state.registry.lock().await;
+            match reg.find_by_run_id(&run_id) {
+                Some(entry) => RunArtifacts {
+                    output_dir: entry
+                        .html_path
+                        .as_ref()
+                        .or(entry.json_path.as_ref())
+                        .and_then(|p| p.parent().map(PathBuf::from))
+                        .unwrap_or_default(),
+                    html_path: entry.html_path.clone(),
+                    pdf_path: None,
+                    json_path: entry.json_path.clone(),
+                    report_title: entry.project_label.clone(),
+                },
+                None => {
+                    let error_html = ErrorTemplate {
+                        message: format!(
+                            "Report not found. Run ID {} is not in the scan history. \
+                             The report may have been deleted, or this is an old run from \
+                             before the scan registry was introduced.",
+                            &run_id[..run_id.len().min(8)]
+                        ),
+                        last_report_url: None,
+                    }
+                    .render()
+                    .unwrap_or_else(|_| "<pre>Report not found.</pre>".to_string());
+                    return (StatusCode::NOT_FOUND, Html(error_html)).into_response();
+                }
+            }
+        }
     };
 
     let wants_download = matches!(
@@ -760,28 +896,50 @@ struct HistoryEntryRow {
     project_label: String,
     project_path: String,
     files_analyzed: u64,
+    files_skipped: u64,
     code_lines: u64,
+    comment_lines: u64,
+    blank_lines: u64,
+    git_branch: String,
     has_html: bool,
 }
 
-async fn history_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let entries: Vec<HistoryEntryRow> = {
-        let reg = state.registry.lock().await;
-        reg.entries
-            .iter()
-            .map(|e| HistoryEntryRow {
-                run_id: e.run_id.clone(),
-                run_id_short: e.run_id.chars().take(8).collect(),
-                timestamp: e.timestamp_utc.format("%Y-%m-%d %H:%M UTC").to_string(),
-                project_label: e.project_label.clone(),
-                project_path: e.input_roots.first().cloned().unwrap_or_default(),
-                files_analyzed: e.summary.files_analyzed,
-                code_lines: e.summary.code_lines,
-                has_html: e.html_path.as_ref().map(|p| p.exists()).unwrap_or(false),
-            })
-            .collect()
-    };
+fn fmt_pst(dt: chrono::DateTime<chrono::Utc>) -> String {
+    dt.with_timezone(&chrono::FixedOffset::west_opt(8 * 3600).unwrap())
+        .format("%Y-%m-%d %H:%M PST")
+        .to_string()
+}
 
+fn make_history_rows(reg: &ScanRegistry) -> Vec<HistoryEntryRow> {
+    reg.entries
+        .iter()
+        .map(|e| HistoryEntryRow {
+            run_id: e.run_id.clone(),
+            run_id_short: e
+                .run_id
+                .split('-')
+                .next_back()
+                .unwrap_or(&e.run_id)
+                .to_string(),
+            timestamp: fmt_pst(e.timestamp_utc),
+            project_label: e.project_label.clone(),
+            project_path: e.input_roots.first().cloned().unwrap_or_default(),
+            files_analyzed: e.summary.files_analyzed,
+            files_skipped: e.summary.files_skipped,
+            code_lines: e.summary.code_lines,
+            comment_lines: e.summary.comment_lines,
+            blank_lines: e.summary.blank_lines,
+            git_branch: e.git_branch.clone().unwrap_or_default(),
+            has_html: e.html_path.as_ref().map(|p| p.exists()).unwrap_or(false),
+        })
+        .collect()
+}
+
+async fn history_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let entries = {
+        let reg = state.registry.lock().await;
+        make_history_rows(&reg)
+    };
     let total_scans = entries.len();
     let template = HistoryTemplate {
         entries,
@@ -795,12 +953,30 @@ async fn history_handler(State(state): State<AppState>) -> impl IntoResponse {
     .into_response()
 }
 
+async fn compare_select_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let entries = {
+        let reg = state.registry.lock().await;
+        make_history_rows(&reg)
+    };
+    let total_scans = entries.len();
+    let template = CompareSelectTemplate {
+        entries,
+        total_scans,
+    };
+    Html(
+        template
+            .render()
+            .unwrap_or_else(|e| format!("<pre>{e}</pre>")),
+    )
+    .into_response()
+}
+
 // ── Compare ───────────────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct CompareQuery {
-    a: String,
-    b: String,
+    a: Option<String>,
+    b: Option<String>,
 }
 
 struct CompareFileDeltaRow {
@@ -835,24 +1011,46 @@ fn delta_class(n: i64) -> &'static str {
     }
 }
 
+/// Returns (display_string, css_class) for a numeric change column cell.
+fn summary_delta(curr: u64, prev: Option<u64>) -> (String, &'static str) {
+    match prev {
+        Some(p) => {
+            let d = curr as i64 - p as i64;
+            (fmt_delta(d), delta_class(d))
+        }
+        None => ("—".to_string(), "na"),
+    }
+}
+
 async fn compare_handler(
     State(state): State<AppState>,
     Query(query): Query<CompareQuery>,
 ) -> impl IntoResponse {
+    // When invoked without run IDs (e.g. clicking the Compare nav link directly)
+    // redirect to the history page where the user can select two runs.
+    let (run_id_a, run_id_b) = match (query.a.as_deref(), query.b.as_deref()) {
+        (Some(a), Some(b)) => (a.to_string(), b.to_string()),
+        _ => return axum::response::Redirect::to("/compare-select").into_response(),
+    };
+
     let (maybe_a, maybe_b) = {
         let reg = state.registry.lock().await;
         (
-            reg.find_by_run_id(&query.a).cloned(),
-            reg.find_by_run_id(&query.b).cloned(),
+            reg.find_by_run_id(&run_id_a).cloned(),
+            reg.find_by_run_id(&run_id_b).cloned(),
         )
     };
 
     let (Some(entry_a), Some(entry_b)) = (maybe_a, maybe_b) else {
-        return (
-            StatusCode::NOT_FOUND,
-            "One or both run IDs not found in history.",
-        )
-            .into_response();
+        let html = ErrorTemplate {
+            message: "One or both run IDs were not found in scan history. \
+                      The runs may have been deleted or the registry may have been reset."
+                .to_string(),
+            last_report_url: None,
+        }
+        .render()
+        .unwrap_or_else(|_| "<pre>Run not found.</pre>".to_string());
+        return Html(html).into_response();
     };
 
     // Ensure older scan is always the baseline.
@@ -866,11 +1064,16 @@ async fn compare_handler(
         baseline_entry.json_path.as_ref(),
         current_entry.json_path.as_ref(),
     ) else {
-        return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "JSON artifact missing for one or both runs. Re-scan with JSON output enabled.",
-        )
-            .into_response();
+        let html = ErrorTemplate {
+            message: "Full comparison requires JSON scan data, which was not saved for one or \
+                      both of these runs. JSON is now always saved for new scans — re-run the \
+                      affected projects to enable comparisons."
+                .to_string(),
+            last_report_url: None,
+        }
+        .render()
+        .unwrap_or_else(|_| "<pre>JSON data missing.</pre>".to_string());
+        return Html(html).into_response();
     };
 
     let baseline_run = match read_json(base_json) {
@@ -926,16 +1129,20 @@ async fn compare_handler(
         .unwrap_or_default();
     let s = &comparison.summary;
     let template = CompareTemplate {
-        baseline_run_id_short: baseline_entry.run_id.chars().take(8).collect(),
-        current_run_id_short: current_entry.run_id.chars().take(8).collect(),
-        baseline_timestamp: baseline_entry
-            .timestamp_utc
-            .format("%Y-%m-%d %H:%M UTC")
+        baseline_run_id_short: baseline_entry
+            .run_id
+            .split('-')
+            .next_back()
+            .unwrap_or(&baseline_entry.run_id)
             .to_string(),
-        current_timestamp: current_entry
-            .timestamp_utc
-            .format("%Y-%m-%d %H:%M UTC")
+        current_run_id_short: current_entry
+            .run_id
+            .split('-')
+            .next_back()
+            .unwrap_or(&current_entry.run_id)
             .to_string(),
+        baseline_timestamp: fmt_pst(baseline_entry.timestamp_utc),
+        current_timestamp: fmt_pst(current_entry.timestamp_utc),
         project_path,
         baseline_code: s.baseline_code,
         current_code: s.current_code,
@@ -1231,7 +1438,7 @@ async fn project_history_handler(
     Json(ProjectHistoryResponse {
         scan_count,
         last_scan_id: last.map(|e| e.run_id.clone()),
-        last_scan_timestamp: last.map(|e| e.timestamp_utc.format("%Y-%m-%d %H:%M UTC").to_string()),
+        last_scan_timestamp: last.map(|e| fmt_pst(e.timestamp_utc)),
         last_scan_code_lines: last.map(|e| e.summary.code_lines),
         last_git_branch: last.and_then(|e| e.git_branch.clone()),
         last_git_commit: last.and_then(|e| e.git_commit.clone()),
@@ -1341,7 +1548,7 @@ fn render_embed_widget(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>OxideSLOC &mdash; {project_esc}</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="/static/chart.js"></script>
   <style>
     *{{box-sizing:border-box;margin:0;padding:0}}
     body{{background:{bg};color:{fg};font-family:system-ui,sans-serif;font-size:13px;padding:12px}}
@@ -1620,20 +1827,15 @@ fn build_preview_html(
     out.push_str(r#"<div class="explorer-title-group">"#);
     out.push_str(r#"<div class="explorer-title">Project scope preview</div>"#);
     out.push_str(r#"<div class="explorer-subtitle wide">Pre-scan explorer view for the current built-in analyzers and default skip rules.</div>"#);
-    out.push_str(r#"</div>"#);
-    out.push_str(r#"<div class="preview-legend better-spacing">"#);
-    out.push_str(r#"<span class="badge badge-scan">supported</span>"#);
-    out.push_str(r#"<span class="badge badge-skip">skipped by policy</span>"#);
-    out.push_str(r#"<span class="badge badge-unsupported">unsupported</span>"#);
     out.push_str(r#"</div></div>"#);
 
     out.push_str(r#"<div class="scope-stats">"#);
-    out.push_str(&format!(r#"<button type="button" class="scope-stat-button" data-filter="dir"><span class="scope-stat-label">Directories</span><span class="scope-stat-value">{}</span></button>"#, stats.directories));
-    out.push_str(&format!(r#"<button type="button" class="scope-stat-button" data-filter="file"><span class="scope-stat-label">Files</span><span class="scope-stat-value">{}</span></button>"#, stats.files));
-    out.push_str(&format!(r#"<button type="button" class="scope-stat-button supported" data-filter="supported"><span class="scope-stat-label">Supported files</span><span class="scope-stat-value">{}</span></button>"#, stats.supported));
-    out.push_str(&format!(r#"<button type="button" class="scope-stat-button skipped" data-filter="skipped"><span class="scope-stat-label">Skipped by policy</span><span class="scope-stat-value">{}</span></button>"#, stats.skipped));
-    out.push_str(&format!(r#"<button type="button" class="scope-stat-button unsupported" data-filter="unsupported"><span class="scope-stat-label">Unsupported files</span><span class="scope-stat-value">{}</span></button>"#, stats.unsupported));
-    out.push_str(r#"<button type="button" class="scope-stat-button reset" data-filter="reset-view"><span class="scope-stat-label">Reset view</span><span class="scope-stat-value">All</span></button>"#);
+    out.push_str(&format!(r#"<button type="button" class="scope-stat-button" data-filter="dir" data-tooltip="Total directories in the project scope. Click to filter the explorer to directories only."><span class="scope-stat-label">Directories</span><span class="scope-stat-value">{}</span></button>"#, stats.directories));
+    out.push_str(&format!(r#"<button type="button" class="scope-stat-button" data-filter="file" data-tooltip="Total files found in the project scope. Click to show only files in the explorer."><span class="scope-stat-label">Files</span><span class="scope-stat-value">{}</span></button>"#, stats.files));
+    out.push_str(&format!(r#"<button type="button" class="scope-stat-button supported" data-filter="supported" data-tooltip="Files with a supported language analyzer — counted in SLOC totals. Click to filter to supported files."><span class="scope-stat-label">Supported files</span><span class="scope-stat-value">{}</span></button>"#, stats.supported));
+    out.push_str(&format!(r#"<button type="button" class="scope-stat-button skipped" data-filter="skipped" data-tooltip="Files excluded by a policy rule such as vendor, generated, or minified detection. Click to see skipped files."><span class="scope-stat-label">Skipped by policy</span><span class="scope-stat-value">{}</span></button>"#, stats.skipped));
+    out.push_str(&format!(r#"<button type="button" class="scope-stat-button unsupported" data-filter="unsupported" data-tooltip="Files outside the supported language set — listed but not counted. Click to filter to unsupported files."><span class="scope-stat-label">Unsupported files</span><span class="scope-stat-value">{}</span></button>"#, stats.unsupported));
+    out.push_str(r#"<button type="button" class="scope-stat-button reset" data-filter="reset-view" data-tooltip="Clear all filters and return to the full project view."><span class="scope-stat-label">Reset view</span><span class="scope-stat-value">All</span></button>"#);
     out.push_str(r#"</div>"#);
 
     out.push_str(r#"<div class="explorer-meta-grid split">"#);
@@ -2110,6 +2312,17 @@ struct LanguageSummaryRow {
     mixed: u64,
 }
 
+#[derive(Clone)]
+struct SubmoduleRow {
+    name: String,
+    relative_path: String,
+    files_analyzed: u64,
+    code_lines: u64,
+    comment_lines: u64,
+    blank_lines: u64,
+    total_physical_lines: u64,
+}
+
 #[derive(Template)]
 #[template(
     source = r##"
@@ -2205,15 +2418,35 @@ struct LanguageSummaryRow {
     .subnav { display:flex; align-items:center; gap:8px; margin-bottom: 14px; color: var(--muted-2); font-size: 13px; }
     .subnav strong { color: var(--text); }
     .summary-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }
-    .workbench-strip { display:flex; align-items:center; justify-content:space-between; gap:0; padding: 12px 20px; margin-bottom: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); flex-wrap: wrap; }
-    .ws-stat { display:flex; flex-direction:column; gap: 2px; flex:1 1 auto; min-width:80px; }
-    .ws-label { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-2); }
-    .ws-value { font-size: 14px; font-weight: 700; color: var(--text); }
-    .ws-divider { width: 1px; height: 30px; background: var(--line); flex: 0 0 auto; margin: 0 12px; }
-    .ws-nav-links { flex-direction:row; align-items:center; gap:6px; flex:0 0 auto; min-width:unset; }
-    .ws-nav-link { font-size:13px; font-weight:700; color:var(--oxide); text-decoration:none; }
-    .ws-nav-link:hover { text-decoration:underline; }
-    .ws-nav-sep { color:var(--muted); }
+    .workbench-strip { display:flex; align-items:stretch; gap:16px; margin-bottom: 18px; flex-wrap: wrap; overflow: visible; }
+    .workbench-box { border: 1px solid var(--line-strong); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
+    body.dark-theme .workbench-box { background: var(--surface); box-shadow: var(--shadow); }
+    .wb-stats { flex: 5 1 0; display:flex; flex-direction:column; overflow: visible; min-width: 0; }
+    .wb-stats-header { padding: 10px 24px 0; }
+    .wb-stats-title { font-size: 9px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted-2); }
+    .ws-left { display:flex; align-items:center; gap:0; flex:1 1 auto; flex-wrap:wrap; padding: 10px 24px 12px; overflow: visible; }
+    .ws-stat { display:flex; flex-direction:column; gap: 2px; flex:0 0 auto; min-width:80px; }
+    .ws-label { font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.10em; color: var(--muted-2); }
+    .ws-value { font-size: 13px; font-weight: 700; color: var(--text); }
+    .ws-badge { display:inline-flex; align-items:center; padding: 1px 8px; border-radius: 999px; background: rgba(184,93,51,0.10); border: 1px solid rgba(184,93,51,0.20); color: var(--oxide-2); font-size: 12px; font-weight: 800; position:relative; cursor:help; overflow: visible; }
+    body.dark-theme .ws-badge { background: rgba(211,122,76,0.15); border-color: rgba(211,122,76,0.25); color: var(--oxide); }
+    .ws-lang-tooltip { display:none; position:absolute; top:calc(100% + 8px); left:0; z-index:200; background:var(--surface); border:1px solid var(--line-strong); border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,0.14); padding:10px 14px; font-size:12px; font-weight:700; color:var(--text); white-space:nowrap; pointer-events:none; }
+    .ws-badge:hover .ws-lang-tooltip { display:block; }
+    .ws-divider { width: 1px; height: 28px; background: var(--line); flex: 0 0 auto; margin: 0 18px; align-self:center; }
+    .ws-path-link { background:none; border:none; padding:0; font:inherit; font-size:13px; font-weight:700; color:var(--oxide-2); cursor:pointer; text-decoration:underline; text-decoration-style:dotted; }
+    .ws-path-link:hover { color:var(--oxide); }
+    body.dark-theme .ws-path-link { color:var(--oxide); }
+    .ws-history-group { display:flex; flex-direction:column; justify-content:center; padding: 12px 24px; flex: 2 1 0; min-width: 320px; }
+    .ws-history-label { font-size: 9px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted-2); margin-bottom: 6px; }
+    .ws-history-inner { display:flex; align-items:center; gap: 10px; }
+    .ws-mini-box { display:flex; flex-direction:column; gap: 2px; padding: 6px 12px; border-radius: 8px; background: rgba(184,93,51,0.06); border: 1px solid rgba(184,93,51,0.15); min-width: 100px; }
+    body.dark-theme .ws-mini-box { background: rgba(211,122,76,0.08); border-color: rgba(211,122,76,0.20); }
+    .ws-mini-label { font-size: 9px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.10em; color: var(--muted-2); }
+    .ws-mini-value { font-size: 13px; font-weight: 700; color: var(--text); }
+    .ws-mini-actions { display:flex; flex-direction:column; gap: 4px; margin-left: 4px; }
+    .ws-action-link { display:inline-flex; align-items:center; gap: 5px; padding: 5px 10px; border-radius: 7px; font-size: 11px; font-weight: 800; color: var(--oxide-2); text-decoration:none; border: 1px solid rgba(184,93,51,0.20); background: rgba(184,93,51,0.06); transition: background 0.15s ease, border-color 0.15s ease; white-space:nowrap; }
+    .ws-action-link:hover { background: rgba(184,93,51,0.14); border-color: rgba(184,93,51,0.35); text-decoration:none; }
+    body.dark-theme .ws-action-link { color: var(--oxide); border-color: rgba(211,122,76,0.25); background: rgba(211,122,76,0.08); }
     .summary-card, .card, .step-nav, .explainer-card, .review-card, .workspace-card, .artifact-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, transform 0.18s ease; }
     .summary-card:hover, .workspace-card:hover, .explainer-card:hover, .artifact-card:hover, .review-card:hover { box-shadow: var(--shadow-strong); border-color: var(--line-strong); transform: translateY(-2px); }
     .card:hover, .step-nav:hover { box-shadow: var(--shadow-strong); border-color: var(--line-strong); }
@@ -2227,7 +2460,7 @@ struct LanguageSummaryRow {
     .summary-body { margin-top: 8px; color: var(--muted); font-size: 13px; line-height: 1.55; }
     .coverage-pills { display:flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
     .coverage-pill, .language-pill, .soft-chip { display:inline-flex; align-items:center; min-height: 32px; padding: 0 12px; border-radius: 999px; border:1px solid var(--line); background: var(--surface-2); color: var(--text); font-size: 13px; font-weight: 700; }
-    .layout { display:grid; grid-template-columns: 280px minmax(0, 1fr); gap: 18px; align-items:start; }
+    .layout { display:grid; grid-template-columns: 218px minmax(0, 1fr); gap: 18px; align-items:start; }
     .side-stack { display:grid; gap: 16px; align-items:start; }
     .step-nav { padding: 14px; position: sticky; top: 88px; }
     .step-nav h3 { margin: 6px 4px 14px; font-size: 15px; }
@@ -2235,8 +2468,17 @@ struct LanguageSummaryRow {
     .step-button:hover { background: var(--surface-2); }
     .step-button.active { background: rgba(37,99,235,0.09); box-shadow: inset 0 0 0 1px rgba(37,99,235,0.18); color: var(--accent-2); }
     .step-num { width:22px; height:22px; border-radius:999px; display:inline-flex; align-items:center; justify-content:center; background: var(--surface-3); color: var(--text); font-size:12px; font-weight:800; flex:0 0 auto; }
+    .quick-scan-divider { height:1px; background:var(--line); margin: 12px 4px; }
+    .quick-scan-section { padding: 4px 4px 6px; }
+    .quick-scan-label { font-size:10px; font-weight:900; text-transform:uppercase; letter-spacing:.08em; color:var(--muted-2); margin-bottom:8px; }
+    .quick-scan-btn { width:100%; display:flex; align-items:center; justify-content:center; gap:8px; padding:11px 14px; border-radius:14px; border:none; background:linear-gradient(135deg,#e07b3a,#b85028); color:#fff; font-size:14px; font-weight:800; cursor:pointer; box-shadow:0 6px 18px rgba(184,80,40,0.28); transition:transform 0.15s ease,box-shadow 0.15s ease; }
+    .quick-scan-btn:hover { transform:translateY(-2px); box-shadow:0 10px 24px rgba(184,80,40,0.35); }
+    .quick-scan-btn:active { transform:translateY(0); }
+    .quick-scan-btn:disabled { opacity:.6; cursor:not-allowed; transform:none; }
+    .quick-scan-hint { font-size:11px; color:var(--muted); margin-top:8px; line-height:1.4; text-align:center; }
     .step-button.active .step-num { background: rgba(37,99,235,0.18); color: var(--accent-2); }
-    .card-header { padding: 22px 22px 18px; border-bottom:1px solid var(--line); background: linear-gradient(180deg, rgba(255,255,255,0.30), transparent), var(--surface); }
+    .card-header { padding: 22px 22px 18px; border-bottom:1px solid var(--line); background: linear-gradient(180deg, rgba(255,255,255,0.30), transparent), var(--surface); position: sticky; top: 68px; z-index: 20; border-radius: var(--radius) var(--radius) 0 0; }
+    body.dark-theme .card-header { background: linear-gradient(180deg, rgba(255,255,255,0.04), transparent), var(--surface); }
     .card-title-row { display:flex; justify-content:space-between; align-items:flex-start; gap:18px; }
     .wizard-progress { min-width: 240px; max-width: 320px; width: 100%; }
     .wizard-progress-top { display:flex; justify-content:space-between; align-items:center; gap: 12px; margin-bottom: 8px; }
@@ -2268,6 +2510,13 @@ struct LanguageSummaryRow {
     .path-history-badge.new   { background: var(--success-bg, #e8f5ed); color: var(--success-text, #1a8f47); border: 1px solid rgba(30,143,71,0.2); }
     .input-group { display:grid; grid-template-columns: 1fr auto auto auto; gap: 8px; align-items:center; }
     .input-group.compact { grid-template-columns: 1fr auto auto; }
+    .path-row-grid { display:grid; grid-template-columns: minmax(0, 0.6fr) minmax(220px, 0.4fr); gap: 18px; align-items:start; }
+    .path-info-card { padding: 16px 18px; border-radius: 14px; border: 1px solid var(--line); background: linear-gradient(135deg, var(--surface-2), rgba(184,93,51,0.03)); }
+    .path-info-card-label { font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.10em; color: var(--muted-2); margin-bottom: 10px; }
+    .path-info-row { display:flex; justify-content:space-between; align-items:baseline; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--line); }
+    .path-info-row:last-child { border-bottom: none; padding-bottom: 0; }
+    .path-info-key { font-size: 12px; color: var(--muted); font-weight: 600; }
+    .path-info-val { font-size: 13px; font-weight: 800; color: var(--text); text-align:right; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:120px; }
     .full-output-row { display:grid; grid-template-columns: 1fr; gap: 16px; }
     .mini-button, button.primary, button.secondary, .artifact-toggle { min-height: 42px; border-radius: 10px; border:1px solid var(--line-strong); background: var(--surface-2); color: var(--text); padding: 0 14px; font-size: 14px; font-weight: 800; cursor: pointer; transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease; }
     .mini-button:hover, button.primary:hover, button.secondary:hover, .artifact-toggle:hover { transform: translateY(-1px); box-shadow: 0 10px 18px rgba(0,0,0,0.08); }
@@ -2281,7 +2530,7 @@ struct LanguageSummaryRow {
     .field-help-grid { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
     .field-help-grid.coupled-help { margin-top: 12px; }
     .field-help-grid.preset-grid { align-items: start; }
-    .preset-inline-row { display:grid; grid-template-columns: minmax(280px, 460px) 0.75fr; gap: 20px; align-items:start; margin-bottom: 16px; }
+    .preset-inline-row { display:grid; grid-template-columns: minmax(0, 0.55fr) 1fr; gap: 20px; align-items:center; margin-bottom: 16px; }
     .preset-inline-row .field { margin: 0; }
     .preset-inline-row .explainer-card { margin: 0; }
     .output-field-row { display:grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items:start; }
@@ -2370,6 +2619,11 @@ struct LanguageSummaryRow {
     .scope-stat-button.reset { background: linear-gradient(180deg, rgba(37,99,235,0.08), transparent), var(--surface); }
     .scope-stat-label { display:block; font-size:12px; font-weight:800; color: var(--muted-2); text-transform: uppercase; letter-spacing: .08em; }
     .scope-stat-value { display:block; margin-top: 6px; font-size: 22px; font-weight: 900; color: var(--text); }
+    [data-tooltip] { position: relative; }
+    [data-tooltip]::after { content: attr(data-tooltip); display: none; position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 7px 12px; border-radius: 8px; font-size: 12px; font-weight: 600; white-space: normal; max-width: 220px; text-align: center; line-height: 1.5; pointer-events: none; z-index: 400; box-shadow: 0 4px 14px rgba(0,0,0,0.22); }
+    [data-tooltip]:hover::after { display: block; }
+    .scope-stat-button[data-tooltip] { cursor: pointer; }
+    .badge[data-tooltip] { cursor: help; }
     .explorer-meta-grid { display:grid; grid-template-columns: 1.4fr 1fr; gap: 12px; }
     .explorer-meta-grid.split { grid-template-columns: 1.3fr .9fr; }
     .explorer-meta-card, .preview-note { padding: 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface-2); }
@@ -2425,8 +2679,8 @@ struct LanguageSummaryRow {
     .site-footer { position: relative; z-index: 2; margin-top: 24px; padding: 20px 24px; border-top: 1px solid var(--line); background: rgba(0,0,0,0.04); text-align: center; color: var(--muted); font-size: 13px; line-height: 1.7; }
     .site-footer a { color: var(--muted-2); font-weight: 700; text-decoration: none; }
     .site-footer a:hover { color: var(--text); text-decoration: underline; }
-    @media (max-width: 1280px) { .layout { grid-template-columns: 230px 1fr; } .scope-stats, .explorer-meta-grid, .explorer-meta-grid.split { grid-template-columns: 1fr 1fr; } }
-    @media (max-width: 980px) { .field-grid, .artifact-grid, .review-grid, .scope-stats, .explorer-meta-grid, .explorer-meta-grid.split, .glob-guidance-grid { grid-template-columns: 1fr; } .layout { grid-template-columns: 1fr; } .step-nav { position:static; } .top-nav-inner { grid-template-columns: 1fr; justify-items: stretch; } .nav-project-slot, .nav-status { justify-content:flex-start; } .input-group { grid-template-columns: 1fr 1fr; } .input-group.compact { grid-template-columns: 1fr 1fr; } .better-spacing { justify-content:flex-start; } .file-explorer-controls { flex-direction: column; align-items:flex-start; flex-wrap: wrap; } .file-explorer-search-row { margin-left: 0; flex-wrap: wrap; width: 100%; } .explorer-search { min-width: 0; width: 100%; } .file-explorer-header, .tree-row { grid-template-columns: minmax(0, 1fr) 110px 110px 140px; } .advanced-rule-row, .advanced-rule-row.static-note, .output-identity-grid, .counting-top-grid, .preset-inline-row { grid-template-columns: 1fr; } .wizard-progress { max-width: none; } }
+    @media (max-width: 1280px) { .layout { grid-template-columns: 200px 1fr; } .scope-stats, .explorer-meta-grid, .explorer-meta-grid.split { grid-template-columns: 1fr 1fr; } }
+    @media (max-width: 980px) { .field-grid, .artifact-grid, .review-grid, .scope-stats, .explorer-meta-grid, .explorer-meta-grid.split, .glob-guidance-grid { grid-template-columns: 1fr; } .layout { grid-template-columns: 1fr; } .step-nav { position:static; } .top-nav-inner { grid-template-columns: 1fr; justify-items: stretch; } .nav-project-slot, .nav-status { justify-content:flex-start; } .input-group { grid-template-columns: 1fr 1fr; } .input-group.compact { grid-template-columns: 1fr 1fr; } .better-spacing { justify-content:flex-start; } .file-explorer-controls { flex-direction: column; align-items:flex-start; flex-wrap: wrap; } .file-explorer-search-row { margin-left: 0; flex-wrap: wrap; width: 100%; } .explorer-search { min-width: 0; width: 100%; } .file-explorer-header, .tree-row { grid-template-columns: minmax(0, 1fr) 110px 110px 140px; } .advanced-rule-row, .advanced-rule-row.static-note, .output-identity-grid, .counting-top-grid, .preset-inline-row { grid-template-columns: 1fr; } .wizard-progress { max-width: none; } .path-row-grid { grid-template-columns: 1fr; } .ws-left { flex-wrap: wrap; } .scan-pills-row { flex-wrap: wrap; } }
   </style>
 </head>
 <body>
@@ -2464,6 +2718,8 @@ struct LanguageSummaryRow {
           <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 1 0 9.8 9.8z"></path></svg>
           <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="M4.9 4.9l1.4 1.4"></path><path d="M17.7 17.7l1.4 1.4"></path><path d="M4.9 19.1l1.4-1.4"></path><path d="M17.7 6.3l1.4-1.4"></path></svg>
         </button>
+        <a class="nav-pill" href="/">Home</a>
+        <a class="nav-pill" href="/history">History</a>
         <div class="nav-pill"><span class="status-dot"></span>Server online</div>
         <div class="nav-pill">Endpoint <code>127.0.0.1:4317</code></div>
         <div class="nav-pill">Mode localhost UI</div>
@@ -2488,22 +2744,49 @@ struct LanguageSummaryRow {
     </div>
 
     <div class="workbench-strip">
-      <div class="ws-stat"><span class="ws-label">Analyzers</span><span class="ws-value">11 languages</span></div>
-      <div class="ws-divider"></div>
-      <div class="ws-stat"><span class="ws-label">Mode</span><span class="ws-value">Localhost workbench</span></div>
-      <div class="ws-divider"></div>
-      <div class="ws-stat"><span class="ws-label">Active project</span><span class="ws-value" id="live-report-title">—</span></div>
-      <div class="ws-divider"></div>
-      <div class="ws-stat"><span class="ws-label">Previous scans</span><span class="ws-value" id="ws-scan-count">—</span></div>
-      <div class="ws-divider"></div>
-      <div class="ws-stat"><span class="ws-label">Last scan</span><span class="ws-value" id="ws-last-scan">—</span></div>
-      <div class="ws-divider"></div>
-      <div class="ws-stat"><span class="ws-label">Output</span><span class="ws-value" id="ws-output-root">project/sloc</span></div>
-      <div class="ws-divider"></div>
-      <div class="ws-stat ws-nav-links">
-        <a class="ws-nav-link" href="/history">History</a>
-        <span class="ws-nav-sep">·</span>
-        <a class="ws-nav-link" href="/compare" id="ws-compare-link">Compare</a>
+      <div class="workbench-box wb-stats">
+        <div class="wb-stats-header">
+          <span class="wb-stats-title">Analysis session</span>
+        </div>
+        <div class="ws-left">
+          <div class="ws-stat">
+            <span class="ws-label">Analyzers</span>
+            <span class="ws-value">
+              <span class="ws-badge">11 languages
+                <div class="ws-lang-tooltip">C &nbsp;·&nbsp; C++ &nbsp;·&nbsp; C# &nbsp;·&nbsp; Go &nbsp;·&nbsp; Java &nbsp;·&nbsp; JavaScript &nbsp;·&nbsp; Python &nbsp;·&nbsp; Rust &nbsp;·&nbsp; Shell &nbsp;·&nbsp; PowerShell &nbsp;·&nbsp; TypeScript</div>
+              </span>
+            </span>
+          </div>
+          <div class="ws-divider"></div>
+          <div class="ws-stat"><span class="ws-label">Mode</span><span class="ws-value">Localhost workbench</span></div>
+          <div class="ws-divider"></div>
+          <div class="ws-stat"><span class="ws-label">Active project</span><span class="ws-value" id="live-report-title">—</span></div>
+          <div class="ws-divider"></div>
+          <div class="ws-stat">
+            <span class="ws-label">Output</span>
+            <span class="ws-value">
+              <button type="button" class="ws-path-link open-folder-button" id="ws-output-link" data-folder="" title="Click to open in file explorer">
+                <span id="ws-output-root">project/sloc</span>
+              </button>
+            </span>
+          </div>
+        </div>
+      </div>
+      <div class="workbench-box ws-history-group">
+        <div class="ws-history-label">Scan history</div>
+        <div class="ws-history-inner">
+          <div class="ws-mini-box">
+            <div class="ws-mini-label">Previous Scans</div>
+            <div class="ws-mini-value" id="ws-scan-count">—</div>
+          </div>
+          <div class="ws-mini-box">
+            <div class="ws-mini-label">Last Scan</div>
+            <div class="ws-mini-value" id="ws-last-scan">—</div>
+          </div>
+          <a class="ws-action-link" href="/history" style="margin-left:4px;">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>History
+          </a>
+        </div>
       </div>
     </div>
 
@@ -2515,25 +2798,43 @@ struct LanguageSummaryRow {
         <button type="button" class="step-button" data-step-target="2"><span class="step-num">2</span><span>Counting rules</span></button>
         <button type="button" class="step-button" data-step-target="3"><span class="step-num">3</span><span>Outputs and reports</span></button>
         <button type="button" class="step-button" data-step-target="4"><span class="step-num">4</span><span>Review and run</span></button>
+        <div class="quick-scan-divider"></div>
+        <div class="quick-scan-section">
+          <div class="quick-scan-label">No customization needed?</div>
+          <button type="button" id="quick-scan-btn" class="quick-scan-btn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+            Quick Scan
+          </button>
+          <div class="quick-scan-hint">Scan immediately with default settings — skips steps 2–4.</div>
+        </div>
         </section>
 
-        <section class="workspace-card side-info-card">
-          <div class="section-kicker">Quick guide</div>
-          <h2 class="workspace-title">Run checklist</h2>
-          <p class="workspace-subtitle">Use the preview first, confirm counting rules, then choose your export bundle before running a larger scan.</p>
+        <section class="workspace-card side-info-card" style="padding:18px 18px 20px;">
+          <div class="section-kicker" style="margin-bottom:12px;">Run details</div>
 
-          <div class="side-mini-list">
-            <div class="side-mini-item"><strong>Project path</strong></div>
-            <div class="preview-code" id="side-path-preview">samples/basic</div>
+          <div style="display:grid;gap:12px;">
+            <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px 13px;">
+              <div style="font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.09em;color:var(--muted-2);margin-bottom:5px;">Project path</div>
+              <div class="preview-code" id="side-path-preview" style="font-size:12px;word-break:break-all;">samples/basic</div>
+            </div>
 
-            <div class="side-mini-item"><strong>Output root</strong></div>
-            <div class="preview-code" id="side-output-preview">out/web</div>
+            <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px 13px;">
+              <div style="font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.09em;color:var(--muted-2);margin-bottom:5px;">Output folder</div>
+              <div class="preview-code" id="side-output-preview" style="font-size:12px;word-break:break-all;">out/web</div>
+            </div>
 
-            <div class="side-mini-item"><strong>Preview first</strong><br />Use Step 1 to verify what will be seen as supported, skipped by policy, or unsupported before you spend time on a full run.</div>
-            <div class="side-mini-item"><strong>Count with intent</strong><br />In Step 2, decide whether mixed code-plus-comment lines should stay code-only, count in both buckets, or be split into a dedicated mixed bucket.</div>
-            <div class="side-mini-item"><strong>Preset then refine</strong><br />Use Step 3 presets as a starting point, then fine tune report title, output location, and artifacts for local review versus automation handoff.</div>
-            <div class="side-mini-item"><strong>Default bundle</strong><br />HTML and PDF are enabled by default so you get both an interactive report and a portable export.</div>
-            <div class="side-mini-item"><strong>Future friendly</strong><br />Stable report titles and JSON output make it easier to compare later runs, store scan history, and feed CI or Jenkins metadata later.</div>
+            <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px 13px;">
+              <div style="font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.09em;color:var(--muted-2);margin-bottom:5px;">Report title</div>
+              <div id="side-title-preview" style="font-size:12px;font-weight:700;color:var(--text);">project</div>
+            </div>
+
+            <div style="border-top:1px solid var(--line);padding-top:12px;display:grid;gap:7px;">
+              <div style="font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.09em;color:var(--muted-2);margin-bottom:2px;">Step guide</div>
+              <div style="font-size:12px;color:var(--muted);line-height:1.5;"><span style="font-weight:800;color:var(--text);">1 · Project</span> — choose folder, set scope filters, preview file list.</div>
+              <div style="font-size:12px;color:var(--muted);line-height:1.5;"><span style="font-weight:800;color:var(--text);">2 · Rules</span> — configure mixed-line policy, docstrings, lockfiles.</div>
+              <div style="font-size:12px;color:var(--muted);line-height:1.5;"><span style="font-weight:800;color:var(--text);">3 · Outputs</span> — set report title, artifacts (HTML, PDF, JSON).</div>
+              <div style="font-size:12px;color:var(--muted);line-height:1.5;"><span style="font-weight:800;color:var(--text);">4 · Review</span> — confirm all settings, then run the analysis.</div>
+            </div>
           </div>
         </section>
       </aside>
@@ -2563,18 +2864,36 @@ struct LanguageSummaryRow {
                 <div class="section-kicker">Step 1</div>
                 <h2>Select project and preview scope</h2>
                 <p class="card-subtitle">Choose the target folder, apply include and exclude filters, and preview what the current build is likely to scan.</p>
-                <div class="field">
-                  <label for="path">Project path</label>
-                  <div class="input-group">
-                    <input id="path" name="path" type="text" value="samples/basic" placeholder="/path/to/repository" required />
-                    <button type="button" class="mini-button oxide" id="browse-path">Browse</button>
-                    <button type="button" class="mini-button" id="use-sample-path">Use sample</button>
+                <div class="path-row-grid" style="margin-top:10px;">
+                  <div class="field" style="margin:0;">
+                    <label for="path">Project path</label>
+                    <div class="input-group">
+                      <input id="path" name="path" type="text" value="samples/basic" placeholder="/path/to/repository" required />
+                      <button type="button" class="mini-button oxide" id="browse-path">Browse</button>
+                      <button type="button" class="mini-button" id="use-sample-path">Use sample</button>
+                    </div>
+                    <div class="hint">Browse opens the native folder picker through the Rust backend, so you do not need to type local paths manually.</div>
+                    <div class="hint" style="margin-top:5px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                      <span style="font-weight:800;color:var(--text);">Scope legend:</span>
+                      <span class="badge badge-scan" data-tooltip="Files with a supported language analyzer — counted in SLOC totals.">supported</span>
+                      <span class="badge badge-skip" data-tooltip="Files excluded by a policy rule such as vendor, generated, or minified detection.">skipped by policy</span>
+                      <span class="badge badge-unsupported" data-tooltip="Files outside the supported language set — listed but not counted.">unsupported</span>
+                    </div>
+                    <div id="path-history-badge" class="path-history-badge" style="display:none"></div>
                   </div>
-                  <div class="hint">Browse opens the native folder picker through the Rust backend, so you do not need to type local paths manually.</div>
-                  <div id="path-history-badge" class="path-history-badge" style="display:none"></div>
+                  <div>
+                    <p class="hint" style="margin:0 0 8px;">Scan history for the selected path — populated once you enter or browse to a folder.</p>
+                    <div class="path-info-card" id="path-info-panel">
+                      <div class="path-info-card-label">Project info</div>
+                      <div class="path-info-row"><span class="path-info-key">Previous scans</span><span class="path-info-val" id="pi-scan-count">—</span></div>
+                      <div class="path-info-row"><span class="path-info-key">Last scan</span><span class="path-info-val" id="pi-last-scan">—</span></div>
+                      <div class="path-info-row"><span class="path-info-key">Last code lines</span><span class="path-info-val" id="pi-code-lines">—</span></div>
+                      <div class="path-info-row"><span class="path-info-key">Last branch</span><span class="path-info-val" id="pi-branch">—</span></div>
+                    </div>
+                  </div>
                 </div>
 
-                <div id="preview-panel">
+                <div id="preview-panel" style="margin-top:8px;">
                   <div class="preview-error">Loading preview...</div>
                 </div>
               </div>
@@ -2608,6 +2927,18 @@ struct LanguageSummaryRow {
                 </div>
               </div>
 
+              <div class="section" style="margin-top:14px;">
+                <div class="toggle-card">
+                  <label class="checkbox">
+                    <input type="checkbox" name="submodule_breakdown" value="enabled" id="submodule_breakdown" checked />
+                    <div>
+                      <span>Detect and separate git submodules</span>
+                      <div class="hint" style="margin-top:4px;">When enabled, oxide-sloc reads <code>.gitmodules</code> in the project root and produces a per-submodule breakdown alongside the overall totals. Useful for super-repositories with many nested sub-projects.</div>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
               <div class="wizard-actions">
                 <div class="left"></div>
                 <div class="right">
@@ -2622,7 +2953,7 @@ struct LanguageSummaryRow {
                 <h2>Choose counting behavior</h2>
                 <p class="card-subtitle counting-intro">These settings decide how mixed code-plus-comment lines and Python docstrings are classified. Pure comment lines, block comments, physical lines, and blank lines are still tracked by supported analyzers even when they do not share a line with executable code.</p>
                 <div class="subsection-bar">Primary line classification</div>
-                <div class="preset-inline-row" style="align-items:start;">
+                <div class="preset-inline-row">
                   <div class="field" style="margin:0;">
                     <label for="mixed_line_policy">Mixed-line policy</label>
                     <select id="mixed_line_policy" name="mixed_line_policy">
@@ -2837,16 +3168,16 @@ struct LanguageSummaryRow {
                     </div>
                     <input type="checkbox" name="generate_pdf" checked class="hidden artifact-checkbox" />
                   </div>
-                  <div class="artifact-card" data-artifact="json">
-                    <div class="marker">✓</div>
+                  <div class="artifact-card selected" data-artifact="json" style="opacity:0.75;pointer-events:none;">
+                    <div class="marker" style="background:var(--oxide);border-color:var(--oxide);color:#fff;">✓</div>
                     <div class="artifact-icon">J</div>
-                    <h4>JSON result</h4>
-                    <p>Structured machine-readable output for automation, downstream processing, or future integrations with other local dashboards and tools.</p>
+                    <h4>JSON result <span style="font-size:11px;font-weight:700;color:var(--oxide-2);">Always on</span></h4>
+                    <p>Machine-readable output always saved — required for run comparison, diff, and history features.</p>
                     <div class="artifact-tags">
-                      <span class="soft-chip">Automation ready</span>
-                      <span class="soft-chip">Script friendly</span>
+                      <span class="soft-chip">Required for compare</span>
+                      <span class="soft-chip">Auto-enabled</span>
                     </div>
-                    <input type="checkbox" name="generate_json" class="hidden artifact-checkbox" />
+                    <input type="checkbox" name="generate_json" checked class="hidden artifact-checkbox" />
                   </div>
                 </div>
                 <div class="hint">Artifact cards are selectable. Presets above can also toggle them for common workflows.</div>
@@ -2950,6 +3281,22 @@ struct LanguageSummaryRow {
       var reportTitleTouched = false;
       var currentStep = 1;
       var previewTimer = null;
+      var quickScanBtn = document.getElementById("quick-scan-btn");
+
+      if (quickScanBtn) {
+        quickScanBtn.addEventListener("click", function () {
+          var pathVal = pathInput ? pathInput.value.trim() : "";
+          if (!pathVal) {
+            alert("Please enter or browse to a project path first.");
+            return;
+          }
+          quickScanBtn.disabled = true;
+          quickScanBtn.textContent = "Scanning...";
+          if (submitButton) { submitButton.disabled = true; submitButton.textContent = "Scanning..."; }
+          if (loading) loading.classList.add("active");
+          if (form) form.submit();
+        });
+      }
 
       var mixedPolicyInfo = {
         code_only: {
@@ -3036,11 +3383,8 @@ struct LanguageSummaryRow {
       }
 
       function updateScrollProgress() {
-        // Progress is purely step-based (0 / 33 / 67 / 100 %).
-        // Scroll-fraction was removed because it caused the bar to appear
-        // to reset to 0% on the first scroll after the 25% CSS initial value.
-        var stepPct = [0, 0, 33, 67, 100];
-        var percent = stepPct[Math.min(currentStep, 4)] || 0;
+        var stepPct = [0, 25, 50, 75, 100];
+        var percent = stepPct[Math.min(currentStep, 4)] !== undefined ? stepPct[Math.min(currentStep, 4)] : 0;
         if (wizardProgressFill) wizardProgressFill.style.width = percent + "%";
         if (wizardProgressValue) wizardProgressValue.textContent = percent + "%";
       }
@@ -3189,9 +3533,14 @@ struct LanguageSummaryRow {
         var excludeText = document.getElementById("exclude_globs").value.trim();
         var sidePathPreview = document.getElementById("side-path-preview");
         var sideOutputPreview = document.getElementById("side-output-preview");
+        var sideTitlePreview = document.getElementById("side-title-preview");
 
         if (sidePathPreview) { sidePathPreview.textContent = pathInput.value || "samples/basic"; }
         if (sideOutputPreview) { sideOutputPreview.textContent = outputDirInput.value || "out/web"; }
+        if (sideTitlePreview) {
+          var rt = document.getElementById("report_title");
+          sideTitlePreview.textContent = (rt && rt.value) ? rt.value : inferTitleFromPath(pathInput.value) || "project";
+        }
 
         scanSummary.innerHTML = ""
           + "<li>Path: " + escapeHtml(pathInput.value || "samples/basic") + "</li>"
@@ -3558,12 +3907,15 @@ struct LanguageSummaryRow {
 
               if (targetInput === pathInput) {
                 updateReportTitleFromPath();
+                autoSetOutputDir(data.selected_path);
+                fetchProjectHistory(data.selected_path);
                 loadPreview();
               }
 
               updateReview();
-            } else if (previewPanel && targetInput === pathInput) {
-              previewPanel.innerHTML = '<div class="preview-error">No folder selected.</div>';
+            } else if (targetInput === pathInput) {
+              // Cancelled — keep existing value and refresh preview with current path
+              loadPreview();
             }
           })
           .catch(function () {
@@ -3638,9 +3990,12 @@ struct LanguageSummaryRow {
       var historyBadge   = document.getElementById("path-history-badge");
       var historyTimer   = null;
 
+      var wsOutputLink = document.getElementById("ws-output-link");
       function syncStripOutputRoot() {
         var val = outputDirInput ? outputDirInput.value : "";
-        if (wsOutputRoot) wsOutputRoot.textContent = val || "project/sloc";
+        var display = val || "project/sloc";
+        if (wsOutputRoot) wsOutputRoot.textContent = display;
+        if (wsOutputLink) wsOutputLink.dataset.folder = val;
       }
 
       function autoSetOutputDir(projectPath) {
@@ -3652,10 +4007,19 @@ struct LanguageSummaryRow {
         updateReview();
       }
 
+      var piScanCount = document.getElementById("pi-scan-count");
+      var piLastScan  = document.getElementById("pi-last-scan");
+      var piCodeLines = document.getElementById("pi-code-lines");
+      var piBranch    = document.getElementById("pi-branch");
+
       function fetchProjectHistory(projectPath) {
         if (!projectPath || !projectPath.trim()) {
           if (wsScanCount) wsScanCount.textContent = "—";
           if (wsLastScan)  wsLastScan.textContent  = "—";
+          if (piScanCount) piScanCount.textContent = "—";
+          if (piLastScan)  piLastScan.textContent  = "—";
+          if (piCodeLines) piCodeLines.textContent = "—";
+          if (piBranch)    piBranch.textContent    = "—";
           if (historyBadge) historyBadge.style.display = "none";
           return;
         }
@@ -3663,25 +4027,32 @@ struct LanguageSummaryRow {
           .then(function (r) { return r.ok ? r.json() : null; })
           .then(function (data) {
             if (!data) return;
-            if (wsScanCount) wsScanCount.textContent = data.scan_count > 0
+            var countStr = data.scan_count > 0
               ? data.scan_count + " scan" + (data.scan_count === 1 ? "" : "s")
               : "never";
-            if (wsLastScan) wsLastScan.textContent = data.last_scan_timestamp
+            var tsStr = data.last_scan_timestamp
               ? data.last_scan_timestamp.replace(" UTC","")
               : "—";
-            if (historyBadge) {
-              if (data.scan_count > 0) {
+            if (wsScanCount) wsScanCount.textContent = countStr;
+            if (wsLastScan)  wsLastScan.textContent  = tsStr;
+            if (piScanCount) piScanCount.textContent = countStr;
+            if (piLastScan)  piLastScan.textContent  = tsStr;
+            if (piCodeLines) piCodeLines.textContent = data.last_scan_code_lines
+              ? Number(data.last_scan_code_lines).toLocaleString()
+              : "—";
+            if (piBranch) piBranch.textContent = data.last_git_branch || "—";
+            if (data.scan_count > 0) {
+              if (historyBadge) {
                 var branch = data.last_git_branch ? " on " + data.last_git_branch : "";
                 historyBadge.textContent = data.scan_count + " previous scan" +
                   (data.scan_count === 1 ? "" : "s") + " found" + branch + ". " +
                   "Last: " + (data.last_scan_timestamp || "—") +
                   " — " + (data.last_scan_code_lines ? Number(data.last_scan_code_lines).toLocaleString() : "?") + " code lines.";
                 historyBadge.className = "path-history-badge found";
-              } else {
-                historyBadge.textContent = "No previous scans found for this path — this will be the first.";
-                historyBadge.className = "path-history-badge new";
+                historyBadge.style.display = "";
               }
-              historyBadge.style.display = "";
+            } else {
+              if (historyBadge) historyBadge.style.display = "none";
             }
           })
           .catch(function () {});
@@ -3751,6 +4122,23 @@ struct LanguageSummaryRow {
         });
       }
 
+      Array.prototype.slice.call(document.querySelectorAll('.open-folder-button')).forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var folder = btn.getAttribute('data-folder') || btn.dataset.folder || '';
+          if (!folder) return;
+          fetch('/open-path?path=' + encodeURIComponent(folder)).catch(function () {});
+        });
+      });
+
+      // Re-bind any dynamically added open-folder-buttons (e.g. ws-output-link after path change)
+      if (wsOutputLink) {
+        wsOutputLink.addEventListener('click', function () {
+          var folder = wsOutputLink.dataset.folder || '';
+          if (!folder) return;
+          fetch('/open-path?path=' + encodeURIComponent(folder)).catch(function () {});
+        });
+      }
+
       loadSavedTheme();
       updateMixedPolicyUI();
       updatePythonDocstringUI();
@@ -3800,7 +4188,7 @@ struct LanguageSummaryRow {
     oxide-sloc — local source line analysis workbench &nbsp;·&nbsp;
     Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/NimaShafie/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
-    &nbsp;·&nbsp; Licensed AGPL-3.0-or-later
+    &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
   </footer>
 </body>
 </html>
@@ -3808,6 +4196,235 @@ struct LanguageSummaryRow {
     ext = "html"
 )]
 struct IndexTemplate {}
+
+// ── SplashTemplate ────────────────────────────────────────────────────────────
+
+#[derive(Template)]
+#[template(
+    source = r##"
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OxideSLOC — Source Line Analysis Workbench</title>
+  <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <style>
+    :root {
+      --radius:18px; --bg:#f5efe8; --surface:rgba(255,255,255,0.86); --surface-2:#fbf7f2;
+      --line:#e6d0bf; --line-strong:#d8bfad; --text:#43342d; --muted:#7b675b; --muted-2:#a08878;
+      --nav:#b85d33; --nav-2:#7a371b; --accent:#6f9bff; --accent-2:#2563eb;
+      --oxide:#d37a4c; --oxide-2:#b85d33; --shadow:0 18px 42px rgba(77,44,20,0.12);
+      --shadow-strong:0 28px 56px rgba(77,44,20,0.20);
+    }
+    body.dark-theme {
+      --bg:#1b1511; --surface:#261c17; --surface-2:#2d221d; --line:#524238; --line-strong:#6b5548;
+      --text:#f5ece6; --muted:#c7b7aa; --muted-2:#9c877a; --shadow:0 18px 42px rgba(0,0,0,0.36);
+    }
+    *{box-sizing:border-box;} html,body{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);}
+    .background-watermarks{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
+    .background-watermarks img{position:absolute;opacity:0.16;filter:blur(0.3px);user-select:none;max-width:none;}
+    .top-nav{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,var(--nav),var(--nav-2));border-bottom:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 14px rgba(0,0,0,0.18);}
+    .top-nav-inner{max-width:1720px;margin:0 auto;padding:4px 24px;min-height:56px;display:flex;align-items:center;gap:14px;}
+    .brand{display:flex;align-items:center;gap:14px;} .brand-logo{width:42px;height:46px;object-fit:contain;flex:0 0 auto;filter:drop-shadow(0 4px 10px rgba(0,0,0,0.22));}
+    .brand-title{margin:0;color:#fff;font-size:17px;font-weight:800;} .brand-subtitle{color:rgba(255,255,255,0.85);font-size:12px;margin-top:2px;}
+    .nav-right{margin-left:auto;display:flex;align-items:center;gap:10px;}
+    .nav-pill,.theme-toggle{display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:0 14px;border-radius:999px;border:1px solid rgba(255,255,255,0.18);color:#fff;background:rgba(255,255,255,0.08);font-size:12px;font-weight:700;text-decoration:none;}
+    .theme-toggle{width:38px;justify-content:center;padding:0;cursor:pointer;transition:transform 0.15s ease;}
+    .theme-toggle:hover{transform:translateY(-1px);background:rgba(255,255,255,0.16);}
+    .theme-toggle svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8;}
+    .theme-toggle .icon-sun{display:none;} body.dark-theme .theme-toggle .icon-sun{display:block;} body.dark-theme .theme-toggle .icon-moon{display:none;}
+    .page{max-width:1100px;margin:0 auto;padding:48px 24px 60px;position:relative;z-index:1;}
+    .hero{text-align:center;margin-bottom:52px;}
+    .hero-logo{width:80px;height:88px;object-fit:contain;margin-bottom:20px;filter:drop-shadow(0 8px 22px rgba(184,93,51,0.30));animation:logoBob 3.6s ease-in-out infinite;}
+    @keyframes logoBob{0%,100%{transform:translateY(0);}50%{transform:translateY(-8px);}}
+    .hero-title{font-size:46px;font-weight:900;letter-spacing:-0.04em;margin:0 0 10px;
+      background:linear-gradient(90deg,#b85d33 0%,#d37a4c 25%,#6f9bff 50%,#b85d33 75%,#d37a4c 100%);
+      background-size:200% auto;-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
+      animation:titleShimmer 4s linear infinite;}
+    @keyframes titleShimmer{0%{background-position:0% center;}100%{background-position:200% center;}}
+    body.dark-theme .hero-title{background:linear-gradient(90deg,#d37a4c 0%,#f0a070 25%,#9bb8ff 50%,#d37a4c 75%,#f0a070 100%);background-size:200% auto;-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;}
+    .hero-subtitle{font-size:18px;color:var(--muted);line-height:1.6;max-width:600px;margin:0 auto;}
+    .action-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px;margin-bottom:40px;}
+    @media(max-width:720px){.action-grid{grid-template-columns:1fr;}}
+    .action-card{display:flex;flex-direction:column;align-items:flex-start;padding:28px 26px 24px;border-radius:var(--radius);border:1px solid var(--line-strong);background:var(--surface);box-shadow:var(--shadow);text-decoration:none;color:var(--text);transition:transform 0.22s cubic-bezier(.34,1.56,.64,1),box-shadow 0.18s ease,border-color 0.18s ease;}
+    .action-card:hover{transform:translateY(-6px) scale(1.012);box-shadow:var(--shadow-strong);border-color:var(--oxide-2);}
+    .action-card-icon{width:52px;height:52px;border-radius:16px;display:flex;align-items:center;justify-content:center;margin-bottom:18px;flex:0 0 auto;transition:transform 0.22s cubic-bezier(.34,1.56,.64,1);}
+    .action-card:hover .action-card-icon{transform:rotate(-8deg) scale(1.12);}
+    .action-card-icon svg{width:26px;height:26px;stroke:currentColor;fill:none;stroke-width:2;}
+    .action-card.scan .action-card-icon{background:linear-gradient(135deg,#e07b3a,#b85028);color:#fff;box-shadow:0 8px 22px rgba(184,80,40,0.30);}
+    .action-card.view .action-card-icon{background:linear-gradient(135deg,#3b82f6,#1d4ed8);color:#fff;box-shadow:0 8px 22px rgba(59,130,246,0.28);}
+    .action-card.compare .action-card-icon{background:linear-gradient(135deg,#8b5cf6,#6d28d9);color:#fff;box-shadow:0 8px 22px rgba(139,92,246,0.28);}
+    .action-card-title{font-size:20px;font-weight:850;letter-spacing:-0.02em;margin:0 0 8px;}
+    .action-card-desc{font-size:14px;color:var(--muted);line-height:1.6;margin:0 0 20px;flex:1;}
+    .action-card-cta{display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:800;color:var(--oxide-2);transition:gap 0.15s ease;}
+    body.dark-theme .action-card-cta{color:var(--oxide);}
+    .action-card.view .action-card-cta{color:var(--accent-2);}
+    body.dark-theme .action-card.view .action-card-cta{color:var(--accent);}
+    .action-card.compare .action-card-cta{color:#7c3aed;}
+    body.dark-theme .action-card.compare .action-card-cta{color:#a78bfa;}
+    .action-card:hover .action-card-cta{gap:12px;}
+    .divider{height:1px;background:var(--line);margin:40px 0;}
+    .info-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;}
+    @media(max-width:720px){.info-strip{grid-template-columns:repeat(2,1fr);}}
+    .info-chip{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 20px;text-align:center;position:relative;cursor:default;
+      transition:transform 0.22s cubic-bezier(.34,1.56,.64,1),box-shadow 0.18s ease,border-color 0.18s ease;}
+    .info-chip:hover{transform:translateY(-5px) scale(1.04);box-shadow:var(--shadow-strong);border-color:var(--oxide-2);}
+    .info-chip-val{font-size:22px;font-weight:900;color:var(--oxide);}
+    body.dark-theme .info-chip-val{color:var(--oxide);}
+    .info-chip-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-top:4px;}
+    .info-chip-tip{display:none;position:absolute;bottom:calc(100% + 10px);left:50%;transform:translateX(-50%);z-index:50;
+      background:var(--text);color:var(--bg);border-radius:9px;padding:8px 13px;font-size:12px;font-weight:600;line-height:1.4;
+      white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,0.22);pointer-events:none;}
+    .info-chip-tip::after{content:"";position:absolute;top:100%;left:50%;transform:translateX(-50%);
+      border:6px solid transparent;border-top-color:var(--text);}
+    .info-chip:hover .info-chip-tip{display:block;}
+    .site-footer{text-align:center;padding:18px 24px;font-size:13px;color:var(--muted);position:relative;z-index:1;}
+    .site-footer a{color:var(--muted);}
+  </style>
+</head>
+<body>
+  <div class="background-watermarks" aria-hidden="true">
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+  </div>
+  <div class="top-nav">
+    <div class="top-nav-inner">
+      <div class="brand">
+        <img class="brand-logo" src="/images/logo/small-logo.png" alt="OxideSLOC logo">
+        <div><p class="brand-title">OxideSLOC</p><p class="brand-subtitle">Source line analysis workbench</p></div>
+      </div>
+      <div class="nav-right">
+        <a class="nav-pill" href="/history">View Reports</a>
+        <a class="nav-pill" href="/compare-select">Compare Scans</a>
+        <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+          <svg class="icon-moon" viewBox="0 0 24 24"><path d="M20 15.5A8.5 8.5 0 1 1 12.5 4 6.7 6.7 0 0 0 20 15.5Z"></path></svg>
+          <svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"></circle><path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.9 5.1l-1.6 1.6M6.7 17.3l-1.6 1.6M18.9 18.9l-1.6-1.6M6.7 6.7 5.1 5.1"></path></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="page">
+    <div class="hero">
+      <img class="hero-logo" src="/images/logo/small-logo.png" alt="OxideSLOC">
+      <h1 class="hero-title">OxideSLOC</h1>
+      <p class="hero-subtitle">A fast, self-contained source line analysis workbench. Count code, track history, and compare scan snapshots — no setup required.</p>
+    </div>
+
+    <div class="action-grid">
+      <a class="action-card scan" href="/scan">
+        <div class="action-card-icon">
+          <svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+        </div>
+        <div class="action-card-title">Scan Project</div>
+        <p class="action-card-desc">Choose a local directory, configure counting rules and output formats, then run a full SLOC analysis in seconds.</p>
+        <span class="action-card-cta">Start scanning <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="9 18 15 12 9 6"></polyline></svg></span>
+      </a>
+
+      <a class="action-card view" href="/history">
+        <div class="action-card-icon">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+        </div>
+        <div class="action-card-title">View Reports</div>
+        <p class="action-card-desc">Browse previously recorded scans, open HTML reports, and review historical metrics — code, comments, blank lines, and git branch info.</p>
+        <span class="action-card-cta">Open reports <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="9 18 15 12 9 6"></polyline></svg></span>
+      </a>
+
+      <a class="action-card compare" href="/compare-select">
+        <div class="action-card-icon">
+          <svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
+        </div>
+        <div class="action-card-title">Compare Scans</div>
+        <p class="action-card-desc">Pick any two scan builds to see a side-by-side delta — added, removed, and modified files with exact line-count changes.</p>
+        <span class="action-card-cta">Compare builds <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="9 18 15 12 9 6"></polyline></svg></span>
+      </a>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="info-strip">
+      <div class="info-chip">
+        <div class="info-chip-tip">C, C++, C#, Go, Java, JavaScript,<br>Python, Rust, Shell, PowerShell, TypeScript</div>
+        <div class="info-chip-val">11</div>
+        <div class="info-chip-label">Languages</div>
+      </div>
+      <div class="info-chip">
+        <div class="info-chip-tip">Single binary — no runtime, no daemon,<br>no install beyond the executable</div>
+        <div class="info-chip-val">100%</div>
+        <div class="info-chip-label">Self-contained</div>
+      </div>
+      <div class="info-chip">
+        <div class="info-chip-tip">Self-contained HTML reports with<br>light/dark theme — share without a server</div>
+        <div class="info-chip-val">HTML</div>
+        <div class="info-chip-label">Exportable reports</div>
+      </div>
+      <div class="info-chip">
+        <div class="info-chip-tip">Detects .gitmodules and produces<br>per-submodule breakdowns automatically</div>
+        <div class="info-chip-val">Git</div>
+        <div class="info-chip-label">Submodule support</div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="site-footer">
+    oxide-sloc — local source line analysis workbench &nbsp;·&nbsp;
+    Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
+    &nbsp;·&nbsp; <a href="https://github.com/NimaShafie/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
+    &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
+  </footer>
+
+  <script>
+    (function () {
+      var storageKey = 'oxidesloc-theme';
+      var body = document.body;
+      try { var s = localStorage.getItem(storageKey); if (s === 'dark' || s === 'light') body.classList.toggle('dark-theme', s === 'dark'); } catch(e) {}
+      var toggle = document.getElementById('theme-toggle');
+      if (toggle) toggle.addEventListener('click', function () {
+        var next = body.classList.contains('dark-theme') ? 'light' : 'dark';
+        body.classList.toggle('dark-theme', next === 'dark');
+        try { localStorage.setItem(storageKey, next); } catch(e) {}
+      });
+      (function randomizeWatermarks() {
+        var wms = Array.prototype.slice.call(document.querySelectorAll('.background-watermarks img'));
+        if (!wms.length) return;
+        var placed = [];
+        function tooClose(top, left) {
+          for (var i = 0; i < placed.length; i++) {
+            var dt = Math.abs(placed[i][0] - top), dl = Math.abs(placed[i][1] - left);
+            if (dt < 16 && dl < 12) return true;
+          }
+          return false;
+        }
+        function pick(leftBand) {
+          for (var attempt = 0; attempt < 50; attempt++) {
+            var top = Math.random() * 88 + 2;
+            var left = leftBand ? Math.random() * 24 + 1 : Math.random() * 24 + 74;
+            if (!tooClose(top, left)) { placed.push([top, left]); return [top, left]; }
+          }
+          var top = Math.random() * 88 + 2;
+          var left = leftBand ? Math.random() * 24 + 1 : Math.random() * 24 + 74;
+          placed.push([top, left]); return [top, left];
+        }
+        var half = Math.floor(wms.length / 2);
+        wms.forEach(function (img, i) {
+          var pos = pick(i < half);
+          var size = Math.floor(Math.random() * 100 + 120);
+          var rot = (Math.random() * 360).toFixed(1);
+          var op = (Math.random() * 0.08 + 0.12).toFixed(2);
+          img.style.cssText = 'width:' + size + 'px;top:' + pos[0].toFixed(1) + '%;left:' + pos[1].toFixed(1) + '%;transform:rotate(' + rot + 'deg);opacity:' + op + ';';
+        });
+      })();
+    })();
+  </script>
+</body>
+</html>
+"##,
+    ext = "html"
+)]
+struct SplashTemplate {}
 
 #[derive(Template)]
 #[template(
@@ -3926,13 +4543,9 @@ struct IndexTemplate {}
     .action-card h3 { margin:0 0 10px; font-size: 16px; }
     .action-buttons { display:flex; flex-wrap:wrap; gap: 10px; }
     .button, .copy-button {
-      display: inline-flex; align-items: center; justify-content: center; border-radius: 14px; border: 1px solid rgba(111, 144, 255, 0.30); padding: 11px 14px; text-decoration: none; color: white; background: linear-gradient(135deg, var(--accent), var(--accent-2)); font-weight: 800; box-shadow: 0 12px 24px rgba(73, 106, 255, 0.22); cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center; border-radius: 14px; border: 1px solid rgba(111, 144, 255, 0.30); padding: 11px 14px; text-decoration: none; color: white; background: linear-gradient(135deg, var(--accent), var(--accent-2)); font-weight: 800; font-size: 14px; box-shadow: 0 12px 24px rgba(73, 106, 255, 0.22); cursor: pointer;
     }
     .button.secondary, .copy-button.secondary { background: var(--surface-3); box-shadow: none; color: var(--text); border-color: var(--line-strong); }
-    .meta-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; margin-top: 18px; }
-    .metric { padding: 16px; }
-    .metric .label { color: var(--muted-2); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
-    .metric .value { font-size: 38px; font-weight: 800; line-height: 1; }
     .path-list { display: grid; gap: 10px; margin-top: 18px; }
     .path-item { padding: 14px; background: var(--surface-2); }
     .path-item strong { display: block; margin-bottom: 6px; }
@@ -3956,6 +4569,26 @@ struct IndexTemplate {}
     .open-path-btn { display:inline-flex; align-items:center; justify-content:center; border-radius: 14px; border: 1px solid var(--line-strong); padding: 11px 14px; color: var(--text); background: var(--surface-3); font-weight: 800; font-size: 14px; cursor: pointer; text-decoration: none; }
     .open-path-btn:hover { border-color: var(--accent); color: var(--accent-2); }
     .empty-card-note { padding: 18px; color: var(--muted); font-size: 14px; line-height: 1.65; border-radius: 12px; border: 1px dashed var(--line-strong); background: var(--surface-2); margin-top: 8px; }
+    .action-empty-note { margin: 6px 0 0; font-size: 12px; color: var(--muted); line-height: 1.4; }
+    /* Metrics table */
+    .metrics-table-wrap { margin-top: 18px; border-radius: 16px; border: 1px solid var(--line); overflow: hidden; background: var(--surface); }
+    .metrics-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .metrics-table thead th { padding: 10px 16px; background: linear-gradient(180deg, var(--surface-2), var(--surface-3)); font-size: 11px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-2); border-bottom: 2px solid var(--line-strong); text-align: left; }
+    .metrics-table thead th:not(:first-child) { text-align: right; }
+    .metrics-table tbody td { padding: 11px 16px; border-bottom: 1px solid var(--line); font-size: 14px; vertical-align: middle; }
+    .metrics-table tbody tr:last-child td { border-bottom: none; }
+    .metrics-table tbody td:not(:first-child) { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .metrics-table tbody td:first-child { font-weight: 600; color: var(--text); }
+    .metrics-table tbody tr:hover td { background: var(--surface-2); }
+    .mt-category { font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted-2); }
+    .metrics-section-header td { background: linear-gradient(180deg, rgba(184,93,51,0.04), transparent); font-size: 11px !important; font-weight: 900 !important; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-2) !important; padding: 8px 16px !important; border-bottom: 1px solid var(--line) !important; }
+    .metrics-section-header.metrics-section-gap td { padding-top: 30px !important; border-top: 2px solid var(--line) !important; }
+    .mt-val-large { font-size: 16px; font-weight: 800; color: var(--text); }
+    .mt-val-pos { color: #1e7e34; font-weight: 700; }
+    .mt-val-neg { color: #b91c1c; font-weight: 700; }
+    .mt-val-zero { color: var(--muted); }
+    .mt-val-mod { color: var(--oxide-2); }
+    .mt-val-na { color: var(--muted-2); font-size: 13px; font-style: italic; }
     @media (max-width: 1180px) {
       .top-nav-inner, .two-col, .action-grid { grid-template-columns: 1fr; }
       .nav-project-slot, .nav-status { justify-content:flex-start; }
@@ -3965,18 +4598,18 @@ struct IndexTemplate {}
 </head>
 <body>
   <div class="background-watermarks" aria-hidden="true">
-    <img src="/images/logo/small-logo.png" alt="" />
-    <img src="/images/logo/small-logo.png" alt="" />
-    <img src="/images/logo/small-logo.png" alt="" />
-    <img src="/images/logo/small-logo.png" alt="" />
-    <img src="/images/logo/small-logo.png" alt="" />
-    <img src="/images/logo/small-logo.png" alt="" />
-    <img src="/images/logo/small-logo.png" alt="" />
-    <img src="/images/logo/small-logo.png" alt="" />
-    <img src="/images/logo/small-logo.png" alt="" />
-    <img src="/images/logo/small-logo.png" alt="" />
-    <img src="/images/logo/small-logo.png" alt="" />
-    <img src="/images/logo/small-logo.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
   </div>
   <div class="top-nav">
     <div class="top-nav-inner">
@@ -4011,7 +4644,7 @@ struct IndexTemplate {}
           <p class="hero-note">The embedded preview below now reflects the current saved-report theme instead of the older blue prototype layout.</p>
         </div>
         <div class="pill-row">
-          <a class="button secondary" href="/">New scan</a>
+          <a class="button secondary" href="/scan">New scan</a>
           <button type="button" class="copy-button secondary" data-copy-value="{{ output_dir }}">Copy output folder</button>
           <button type="button" class="copy-button secondary" data-copy-value="{{ run_id }}">Copy run ID</button>
         </div>
@@ -4124,20 +4757,106 @@ struct IndexTemplate {}
               {% when Some with (_path) %}
                 <button type="button" class="open-path-btn open-folder-button" data-folder="{{ output_dir }}">Open JSON folder</button>
               {% when None %}
-                <div class="empty-card-note">JSON was not generated for this run. Re-run with the JSON artifact enabled to get a machine-readable result file.</div>
+                <p class="action-empty-note">JSON not enabled for this run — re-run with JSON artifact enabled to get a machine-readable result.</p>
               {% endmatch %}
           </div>
         </div>
       </div>
 
-      <div class="meta-grid">
-        <div class="metric"><div class="label">Files analyzed</div><div class="value">{{ files_analyzed }}</div></div>
-        <div class="metric"><div class="label">Files skipped</div><div class="value">{{ files_skipped }}</div></div>
-        <div class="metric"><div class="label">Physical lines</div><div class="value">{{ physical_lines }}</div></div>
-        <div class="metric"><div class="label">Code</div><div class="value">{{ code_lines }}</div></div>
-        <div class="metric"><div class="label">Comments</div><div class="value">{{ comment_lines }}</div></div>
-        <div class="metric"><div class="label">Blank</div><div class="value">{{ blank_lines }}</div></div>
-        <div class="metric"><div class="label">Mixed separate</div><div class="value">{{ mixed_lines }}</div></div>
+      <div class="metrics-table-wrap">
+        <table class="metrics-table">
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th>This Run</th>
+              <th>Previous</th>
+              <th>Change</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="metrics-section-header"><td colspan="4">Files</td></tr>
+            <tr>
+              <td>Files analyzed</td>
+              <td class="mt-val-large">{{ files_analyzed }}</td>
+              <td>{{ prev_fa_str }}</td>
+              <td><span class="mt-val-{{ delta_fa_class }}">{{ delta_fa_str }}</span></td>
+            </tr>
+            <tr>
+              <td>Files skipped</td>
+              <td>{{ files_skipped }}</td>
+              <td>{{ prev_fs_str }}</td>
+              <td><span class="mt-val-{{ delta_fs_class }}">{{ delta_fs_str }}</span></td>
+            </tr>
+            <tr>
+              <td>Files modified</td>
+              <td class="mt-val-na">—</td>
+              <td class="mt-val-na">—</td>
+              <td>{% if let Some(v) = delta_files_modified %}<span class="mt-val-mod">{{ v }} modified</span>{% else %}<span class="mt-val-na">—</span>{% endif %}</td>
+            </tr>
+            <tr>
+              <td>Files unchanged</td>
+              <td class="mt-val-na">—</td>
+              <td class="mt-val-na">—</td>
+              <td>{% if let Some(v) = delta_files_unchanged %}<span>{{ v }}</span>{% else %}<span class="mt-val-na">—</span>{% endif %}</td>
+            </tr>
+            <tr class="metrics-section-header"><td colspan="4">Line counts</td></tr>
+            <tr>
+              <td>Physical lines</td>
+              <td class="mt-val-large">{{ physical_lines }}</td>
+              <td>{{ prev_pl_str }}</td>
+              <td><span class="mt-val-{{ delta_pl_class }}">{{ delta_pl_str }}</span></td>
+            </tr>
+            <tr>
+              <td>Code lines</td>
+              <td class="mt-val-large">{{ code_lines }}</td>
+              <td>{{ prev_cl_str }}</td>
+              <td><span class="mt-val-{{ delta_cl_class }}">{{ delta_cl_str }}</span></td>
+            </tr>
+            <tr>
+              <td>Comment lines</td>
+              <td>{{ comment_lines }}</td>
+              <td>{{ prev_cml_str }}</td>
+              <td><span class="mt-val-{{ delta_cml_class }}">{{ delta_cml_str }}</span></td>
+            </tr>
+            <tr>
+              <td>Blank lines</td>
+              <td>{{ blank_lines }}</td>
+              <td>{{ prev_bl_str }}</td>
+              <td><span class="mt-val-{{ delta_bl_class }}">{{ delta_bl_str }}</span></td>
+            </tr>
+            <tr>
+              <td>Mixed (separate)</td>
+              <td>{{ mixed_lines }}</td>
+              <td class="mt-val-na">—</td>
+              <td class="mt-val-na">—</td>
+            </tr>
+            <tr class="metrics-section-header metrics-section-gap"><td colspan="4">Line change summary (vs previous scan)</td></tr>
+            <tr>
+              <td>Lines added</td>
+              <td class="mt-val-na">—</td>
+              <td class="mt-val-na">—</td>
+              <td>{% if let Some(v) = delta_lines_added %}<span class="mt-val-pos">+{{ v }}</span>{% else %}<span class="mt-val-na">No prior scan</span>{% endif %}</td>
+            </tr>
+            <tr>
+              <td>Lines removed</td>
+              <td class="mt-val-na">—</td>
+              <td class="mt-val-na">—</td>
+              <td>{% if let Some(v) = delta_lines_removed %}<span class="mt-val-neg">&minus;{{ v }}</span>{% else %}<span class="mt-val-na">No prior scan</span>{% endif %}</td>
+            </tr>
+            <tr>
+              <td>Lines modified (net)</td>
+              <td class="mt-val-na">—</td>
+              <td class="mt-val-na">—</td>
+              <td><span class="mt-val-{{ delta_lines_net_class }}">{{ delta_lines_net_str }}</span></td>
+            </tr>
+            <tr>
+              <td>Lines unmodified</td>
+              <td class="mt-val-na">—</td>
+              <td class="mt-val-na">—</td>
+              <td>{% if let Some(v) = delta_unmodified_lines %}<span>{{ v }}</span>{% else %}<span class="mt-val-na">No prior scan</span>{% endif %}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
 
       <div class="path-list">
@@ -4191,6 +4910,44 @@ struct IndexTemplate {}
           </tbody>
         </table>
     </section>
+
+    {% if !submodule_rows.is_empty() %}
+    <section class="panel" style="margin-bottom: 18px;">
+      <div class="toolbar-row">
+        <div>
+          <h2>Submodule breakdown</h2>
+          <p class="muted">Git submodules detected in this project — each submodule is shown as a separate project slice.</p>
+        </div>
+        <div class="pill-row"><span class="soft-chip">{{ submodule_rows.len() }} submodule{% if submodule_rows.len() != 1 %}s{% endif %}</span></div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Submodule</th>
+            <th>Path</th>
+            <th>Files</th>
+            <th>Physical</th>
+            <th>Code</th>
+            <th>Comments</th>
+            <th>Blank</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in submodule_rows %}
+          <tr>
+            <td><strong>{{ row.name }}</strong></td>
+            <td><code style="font-size:12px;">{{ row.relative_path }}</code></td>
+            <td>{{ row.files_analyzed }}</td>
+            <td>{{ row.total_physical_lines }}</td>
+            <td>{{ row.code_lines }}</td>
+            <td>{{ row.comment_lines }}</td>
+            <td>{{ row.blank_lines }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+    {% endif %}
 
   </div>
 
@@ -4249,28 +5006,29 @@ struct IndexTemplate {}
           for (var i = 0; i < placed.length; i++) {
             var dt = Math.abs(placed[i][0] - top);
             var dl = Math.abs(placed[i][1] - left);
-            if (dt < 16 && dl < 12) return true;
+            if (dt < 20 && dl < 18) return true;
           }
           return false;
         }
         function pick(leftBand) {
           for (var attempt = 0; attempt < 50; attempt++) {
-            var top = Math.random() * 88 + 2;
-            var left = leftBand ? Math.random() * 24 + 1 : Math.random() * 24 + 74;
+            var top = Math.random() * 85 + 5;
+            var left = leftBand ? Math.random() * 22 + 1 : Math.random() * 22 + 72;
             if (!tooClose(top, left)) { placed.push([top, left]); return [top, left]; }
           }
-          var top = Math.random() * 88 + 2;
-          var left = leftBand ? Math.random() * 24 + 1 : Math.random() * 24 + 74;
+          var top = Math.random() * 85 + 5;
+          var left = leftBand ? Math.random() * 22 + 1 : Math.random() * 22 + 72;
           placed.push([top, left]);
           return [top, left];
         }
+        var angles = [-25, -15, -8, 0, 8, 15, 25, -20, 20, -10, 10, -5];
         var half = Math.floor(wms.length / 2);
         wms.forEach(function (img, i) {
           var pos = pick(i < half);
-          var size = Math.floor(Math.random() * 80 + 110);
-          var rot = (Math.random() * 360).toFixed(1);
-          var op = (Math.random() * 0.08 + 0.13).toFixed(2);
-          img.style.cssText = "width:" + size + "px;top:" + pos[0].toFixed(1) + "%;left:" + pos[1].toFixed(1) + "%;transform:rotate(" + rot + "deg);opacity:" + op + ";";
+          var size = Math.floor(Math.random() * 100 + 160);
+          var rot = angles[i % angles.length] + (Math.random() * 6 - 3);
+          var op = (Math.random() * 0.06 + 0.07).toFixed(2);
+          img.style.cssText = "width:" + size + "px;top:" + pos[0].toFixed(1) + "%;left:" + pos[1].toFixed(1) + "%;transform:rotate(" + rot.toFixed(1) + "deg);opacity:" + op + ";";
         });
       })();
     })();
@@ -4279,7 +5037,7 @@ struct IndexTemplate {}
     oxide-sloc — local source line analysis workbench &nbsp;·&nbsp;
     Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/NimaShafie/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
-    &nbsp;·&nbsp; Licensed AGPL-3.0-or-later
+    &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
   </footer>
 </body>
 </html>
@@ -4311,9 +5069,31 @@ struct ResultTemplate {
     prev_run_id: Option<String>,
     prev_run_timestamp: Option<String>,
     prev_run_code_lines: Option<u64>,
+    // Previous scan summary columns (pre-formatted; "—" when no prior scan)
+    prev_fa_str: String,
+    prev_fs_str: String,
+    prev_pl_str: String,
+    prev_cl_str: String,
+    prev_cml_str: String,
+    prev_bl_str: String,
+    // Signed change column for main metrics
+    delta_fa_str: String,
+    delta_fa_class: String,
+    delta_fs_str: String,
+    delta_fs_class: String,
+    delta_pl_str: String,
+    delta_pl_class: String,
+    delta_cl_str: String,
+    delta_cl_class: String,
+    delta_cml_str: String,
+    delta_cml_class: String,
+    delta_bl_str: String,
+    delta_bl_class: String,
     // delta vs previous scan
     delta_lines_added: Option<i64>,
     delta_lines_removed: Option<i64>,
+    delta_lines_net_str: String,
+    delta_lines_net_class: String,
     delta_files_added: Option<usize>,
     delta_files_removed: Option<usize>,
     delta_files_modified: Option<usize>,
@@ -4325,6 +5105,8 @@ struct ResultTemplate {
     // history
     prev_scan_count: usize,
     current_scan_number: usize,
+    // submodule breakdown (empty when not requested)
+    submodule_rows: Vec<SubmoduleRow>,
 }
 
 #[derive(Template)]
@@ -4446,6 +5228,9 @@ struct ResultTemplate {
 
     .actions {
       margin-top: 18px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
     }
 
     a {
@@ -4460,7 +5245,15 @@ struct ResultTemplate {
       color: white;
       background: linear-gradient(135deg, var(--accent), var(--accent-2));
       font-weight: 800;
+      font-size: 14px;
       box-shadow: 0 12px 24px rgba(73, 106, 255, 0.22);
+    }
+
+    a.secondary {
+      background: rgba(0,0,0,0.06);
+      color: var(--text);
+      border: 1px solid var(--line-strong);
+      box-shadow: none;
     }
   </style>
 </head>
@@ -4480,7 +5273,11 @@ struct ResultTemplate {
       <h1>Analysis failed</h1>
       <div class="error-box">{{ message }}</div>
       <div class="actions">
-        <a href="/">Back to setup</a>
+        <a href="/scan">Back to setup</a>
+        {% if let Some(report_url) = last_report_url %}
+        <a class="secondary" href="{{ report_url }}">View last report</a>
+        {% endif %}
+        <a class="secondary" href="/history">Scan history</a>
       </div>
     </div>
   </div>
@@ -4491,9 +5288,11 @@ struct ResultTemplate {
 )]
 struct ErrorTemplate {
     message: String,
+    /// URL of the most recent successful report, if known.
+    last_report_url: Option<String>,
 }
 
-// ── HistoryTemplate ────────────────────────────────────────────────────────────
+// ── HistoryTemplate (View Reports) ────────────────────────────────────────────
 
 #[derive(Template)]
 #[template(
@@ -4503,60 +5302,105 @@ struct ErrorTemplate {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Oxide-SLOC | Scan History</title>
+  <title>OxideSLOC | View Reports</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
   <style>
     :root {
-      --radius: 18px; --bg: #f5efe8; --surface: rgba(255,255,255,0.82); --surface-2: #fbf7f2;
-      --line: #e6d0bf; --text: #43342d; --muted: #7b675b; --nav: #b85d33; --nav-2: #7a371b;
-      --accent: #6f9bff; --oxide: #d37a4c; --shadow: 0 18px 42px rgba(77,44,20,0.12);
+      --radius:18px; --bg:#f5efe8; --surface:rgba(255,255,255,0.82); --surface-2:#fbf7f2;
+      --line:#e6d0bf; --line-strong:#d8bfad; --text:#43342d; --muted:#7b675b; --muted-2:#a08878;
+      --nav:#b85d33; --nav-2:#7a371b; --accent:#6f9bff; --accent-2:#2563eb;
+      --oxide:#d37a4c; --oxide-2:#b85d33; --shadow:0 18px 42px rgba(77,44,20,0.12);
+      --pos:#1a8f47; --pos-bg:#e8f5ed; --neg:#b33b3b; --neg-bg:#fdeaea;
     }
-    body.dark-theme { --bg:#1b1511; --surface:#261c17; --surface-2:#2d221d; --line:#524238; --text:#f5ece6; --muted:#c7b7aa; }
+    body.dark-theme { --bg:#1b1511; --surface:#261c17; --surface-2:#2d221d; --line:#524238; --line-strong:#6b5548; --text:#f5ece6; --muted:#c7b7aa; --muted-2:#9c877a; }
     *{box-sizing:border-box;} html,body{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);}
+    .background-watermarks{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
+    .background-watermarks img{position:absolute;opacity:0.15;filter:blur(0.3px);user-select:none;max-width:none;}
     .top-nav{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,var(--nav),var(--nav-2));border-bottom:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 14px rgba(0,0,0,0.18);}
     .top-nav-inner{max-width:1720px;margin:0 auto;padding:4px 24px;min-height:56px;display:flex;align-items:center;gap:14px;}
-    .brand{display:flex;align-items:center;gap:14px;} .brand-logo{width:42px;height:46px;object-fit:contain;flex:0 0 auto;filter:drop-shadow(0 4px 10px rgba(0,0,0,0.22));}
+    .brand{display:flex;align-items:center;gap:14px;text-decoration:none;} .brand-logo{width:42px;height:46px;object-fit:contain;flex:0 0 auto;filter:drop-shadow(0 4px 10px rgba(0,0,0,0.22));}
     .brand-title{margin:0;color:#fff;font-size:17px;font-weight:800;} .brand-subtitle{color:rgba(255,255,255,0.85);font-size:12px;margin-top:2px;}
     .nav-right{margin-left:auto;display:flex;align-items:center;gap:10px;}
-    .nav-pill,.theme-toggle{display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:0 14px;border-radius:999px;border:1px solid rgba(255,255,255,0.18);color:#fff;background:rgba(255,255,255,0.08);font-size:12px;font-weight:700;text-decoration:none;}
-    .theme-toggle{width:38px;justify-content:center;padding:0;cursor:pointer;transition:transform 0.15s ease;}
+    .nav-pill,.theme-toggle{display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:0 14px;border-radius:999px;border:1px solid rgba(255,255,255,0.18);color:#fff;background:rgba(255,255,255,0.08);font-size:12px;font-weight:700;text-decoration:none;transition:background .15s ease,transform .15s ease;}
+    .nav-pill:hover{background:rgba(255,255,255,0.18);transform:translateY(-1px);}
+    .theme-toggle{width:38px;justify-content:center;padding:0;cursor:pointer;}
     .theme-toggle:hover{transform:translateY(-1px);background:rgba(255,255,255,0.16);}
     .theme-toggle svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8;}
     .theme-toggle .icon-sun{display:none;} body.dark-theme .theme-toggle .icon-sun{display:block;} body.dark-theme .theme-toggle .icon-moon{display:none;}
-    .page{max-width:1720px;margin:0 auto;padding:18px 24px 40px;}
+    .page{max-width:1720px;margin:0 auto;padding:18px 24px 40px;position:relative;z-index:1;}
     .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:22px;margin-bottom:18px;}
-    h1{margin:0 0 6px;font-size:26px;font-weight:850;letter-spacing:-0.03em;}
-    h2{margin:0 0 14px;font-size:18px;font-weight:750;}
-    .muted{color:var(--muted);font-size:14px;margin:0 0 18px;}
-    .compare-controls{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;}
-    .compare-hint{font-size:13px;color:var(--muted);}
-    table{width:100%;border-collapse:collapse;font-size:14px;}
-    th{text-align:left;font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);padding:8px 12px;border-bottom:2px solid var(--line);}
-    td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle;}
+    .panel-header{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:18px;flex-wrap:wrap;}
+    .panel-header h1{margin:0;font-size:24px;font-weight:850;letter-spacing:-0.03em;}
+    .panel-meta{font-size:13px;color:var(--muted);}
+    .controls-bar{display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap;}
+    .filter-bar{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;}
+    .per-page-label{font-size:13px;color:var(--muted);}
+    select.per-page,.filter-input,.filter-select{border:1px solid var(--line-strong);border-radius:8px;background:var(--surface-2);color:var(--text);padding:5px 10px;font-size:13px;cursor:pointer;}
+    .filter-input{min-width:180px;cursor:text;}
+    .table-wrap{width:100%;overflow-x:auto;}
+    table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed;}
+    th{text-align:left;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted-2);padding:8px 12px;border-bottom:2px solid var(--line);white-space:nowrap;position:relative;user-select:none;}
+    th.sortable{cursor:pointer;} th.sortable:hover{color:var(--oxide);}
+    .sort-icon{margin-left:4px;font-size:10px;opacity:0.45;display:inline-block;vertical-align:middle;}
+    th.sort-asc .sort-icon,th.sort-desc .sort-icon{opacity:1;color:var(--oxide);}
+    .col-resize-handle{position:absolute;top:0;right:0;bottom:0;width:6px;cursor:col-resize;z-index:2;}
+    .col-resize-handle:hover,.col-resize-handle.dragging{background:rgba(211,122,76,0.3);}
+    td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
     tr:last-child td{border-bottom:none;}
     tr:hover td{background:var(--surface-2);}
-    .run-id-chip{font-family:ui-monospace,monospace;font-size:12px;background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:2px 7px;color:var(--muted);}
-    .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;border:1px solid var(--line);background:var(--surface-2);color:var(--text);text-decoration:none;transition:background .12s ease;}
+    .run-id-chip{font-family:ui-monospace,monospace;font-size:11px;background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:2px 7px;color:var(--muted);}
+    .git-chip{font-family:ui-monospace,monospace;font-size:11px;background:rgba(100,130,220,0.08);border:1px solid rgba(100,130,220,0.20);border-radius:6px;padding:2px 7px;color:var(--accent-2);}
+    body.dark-theme .git-chip{background:rgba(111,155,255,0.12);border-color:rgba(111,155,255,0.25);color:var(--accent);}
+    .metric-num{font-weight:700;color:var(--text);}
+    .metric-secondary{font-size:11px;color:var(--muted);margin-top:2px;}
+    .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;border:1px solid var(--line);background:var(--surface-2);color:var(--text);text-decoration:none;transition:background .12s ease;white-space:nowrap;}
     .btn:hover{background:var(--line);}
-    .btn.primary{background:var(--accent,#6f9bff);border-color:var(--accent,#6f9bff);color:#fff;}
+    .btn.primary{background:var(--oxide-2);border-color:var(--oxide-2);color:#fff;}
     .btn.primary:hover{opacity:.9;}
-    .btn:disabled{opacity:.4;cursor:default;pointer-events:none;}
+    .btn-back{display:inline-flex;align-items:center;gap:7px;padding:7px 14px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;border:1px solid var(--line);background:var(--surface-2);color:var(--text);text-decoration:none;transition:background .12s ease;}
+    .btn-back:hover{background:var(--line);}
+    .actions-cell{display:flex;gap:6px;flex-wrap:nowrap;align-items:center;}
+    .no-report{color:var(--muted);font-size:11px;font-style:italic;}
     .empty-state{text-align:center;padding:48px 24px;color:var(--muted);}
     .empty-state strong{display:block;font-size:18px;margin-bottom:8px;color:var(--text);}
-    .site-footer{text-align:center;padding:18px 24px;font-size:13px;color:var(--muted);}
+    .pagination{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:18px;flex-wrap:wrap;}
+    .pagination-info{font-size:13px;color:var(--muted);}
+    .pagination-btns{display:flex;gap:6px;}
+    .pg-btn{min-width:34px;min-height:34px;display:inline-flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid var(--line);background:var(--surface-2);color:var(--text);font-size:13px;font-weight:700;cursor:pointer;transition:background .12s ease;}
+    .pg-btn:hover:not(:disabled){background:var(--line);}
+    .pg-btn.active{background:var(--oxide-2);border-color:var(--oxide-2);color:#fff;}
+    .pg-btn:disabled{opacity:.35;cursor:default;}
+    .summary-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px;}
+    @media(max-width:800px){.summary-strip{grid-template-columns:repeat(2,1fr);}}
+    .stat-chip{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;position:relative;cursor:default;transition:transform .2s ease,box-shadow .2s ease;}
+    .stat-chip:hover{transform:translateY(-4px);box-shadow:0 12px 32px rgba(77,44,20,0.2);}
+    .stat-chip-val{font-size:20px;font-weight:900;color:var(--oxide);}
+    .stat-chip-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-top:4px;}
+    .stat-chip-tip{position:absolute;bottom:calc(100% + 10px);left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:7px 12px;border-radius:8px;font-size:11px;font-weight:500;line-height:1.4;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .2s ease;z-index:100;box-shadow:0 4px 14px rgba(0,0,0,0.2);}
+    .stat-chip-tip::after{content:'';position:absolute;top:100%;left:50%;transform:translateX(-50%);border:5px solid transparent;border-top-color:var(--text);}
+    .stat-chip:hover .stat-chip-tip{opacity:1;}
+    .site-footer{text-align:center;padding:18px 24px;font-size:13px;color:var(--muted);position:relative;z-index:1;}
     .site-footer a{color:var(--muted);}
-    @media(max-width:700px){td,th{padding:7px 8px;} .run-id-chip{display:none;}}
+    @media(max-width:700px){td,th{padding:7px 8px;}.run-id-chip,.git-chip{display:none;}}
   </style>
 </head>
 <body>
+  <div class="background-watermarks" aria-hidden="true">
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+  </div>
   <div class="top-nav">
     <div class="top-nav-inner">
-      <div class="brand">
+      <a class="brand" href="/">
         <img class="brand-logo" src="/images/logo/small-logo.png" alt="OxideSLOC logo">
-        <div><p class="brand-title">OxideSLOC</p><p class="brand-subtitle">Scan history</p></div>
-      </div>
+        <div><p class="brand-title">OxideSLOC</p><p class="brand-subtitle">View reports</p></div>
+      </a>
       <div class="nav-right">
-        <a class="nav-pill" href="/">New scan</a>
+        <a class="nav-pill" href="/compare-select">Compare Scans</a>
+        <a class="nav-pill" href="/scan">New scan</a>
         <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
           <svg class="icon-moon" viewBox="0 0 24 24"><path d="M20 15.5A8.5 8.5 0 1 1 12.5 4 6.7 6.7 0 0 0 20 15.5Z"></path></svg>
           <svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"></circle><path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.9 5.1l-1.6 1.6M6.7 17.3l-1.6 1.6M18.9 18.9l-1.6-1.6M6.7 6.7 5.1 5.1"></path></svg>
@@ -4566,50 +5410,112 @@ struct ErrorTemplate {
   </div>
 
   <div class="page">
+    {% if total_scans > 0 %}
+    <div class="summary-strip">
+      <div class="stat-chip"><div class="stat-chip-tip">Total scan runs recorded in this workspace</div><div class="stat-chip-val">{{ total_scans }}</div><div class="stat-chip-label">Total scans</div></div>
+      <div class="stat-chip"><div class="stat-chip-tip">Source lines of code in the most recent scan — excludes comments and blank lines</div><div class="stat-chip-val" id="agg-code">—</div><div class="stat-chip-label">Latest code lines</div></div>
+      <div class="stat-chip"><div class="stat-chip-tip">Number of source files analyzed in the most recent scan</div><div class="stat-chip-val" id="agg-files">—</div><div class="stat-chip-label">Latest files</div></div>
+      <div class="stat-chip"><div class="stat-chip-tip">Files excluded by policy rules (vendor, generated, binary, lockfiles, etc.) in the most recent scan</div><div class="stat-chip-val" id="agg-skipped">—</div><div class="stat-chip-label">Latest files skipped</div></div>
+    </div>
+    {% endif %}
+
     <section class="panel">
-      <h1>Scan History</h1>
-      <p class="muted">{{ total_scans }} scan(s) recorded in this workspace. Select any two runs to compare them.</p>
+      <div class="panel-header">
+        <div>
+          <h1>View Reports</h1>
+          <p class="panel-meta">{{ total_scans }} scan record(s) in this workspace. Click any row to open its report.</p>
+        </div>
+        <a class="btn-back" href="/">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="15 18 9 12 15 6"></polyline></svg>
+          Home
+        </a>
+      </div>
 
       {% if entries.is_empty() %}
       <div class="empty-state">
-        <strong>No scans yet</strong>
-        Run your first analysis from the <a href="/">main dashboard</a>.
+        <strong>No reports yet</strong>
+        Run your first analysis from the <a href="/scan">scan page</a>.
       </div>
       {% else %}
-      <div class="compare-controls">
-        <button class="btn primary" id="compare-btn" onclick="doCompare()" disabled>Compare selected (0/2)</button>
-        <span class="compare-hint">Check two rows then click compare.</span>
+      <div class="filter-bar">
+        <input class="filter-input" id="project-filter" type="text" placeholder="Filter by project…" oninput="applyFilters()">
+        <select class="filter-select" id="branch-filter" onchange="applyFilters()"><option value="">All branches</option></select>
+        <button type="button" class="btn" onclick="resetView()">&#8635; Reset view</button>
       </div>
-      <table>
-        <thead>
-          <tr>
-            <th style="width:36px"></th>
-            <th>Timestamp</th>
-            <th>Project</th>
-            <th>Run ID</th>
-            <th>Files</th>
-            <th>Code lines</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for entry in entries %}
-          <tr>
-            <td><input type="checkbox" class="row-select" value="{{ entry.run_id }}" aria-label="Select run {{ entry.run_id_short }}"></td>
-            <td>{{ entry.timestamp }}</td>
-            <td title="{{ entry.project_path }}" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ entry.project_label }}</td>
-            <td><span class="run-id-chip">{{ entry.run_id_short }}</span></td>
-            <td>{{ entry.files_analyzed }}</td>
-            <td>{{ entry.code_lines }}</td>
-            <td style="display:flex;gap:8px;flex-wrap:wrap;">
-              {% if entry.has_html %}
-              <a class="btn" href="/runs/{{ entry.run_id }}/html" target="_blank" rel="noopener">View report</a>
-              {% endif %}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+      <div class="controls-bar">
+        <span class="per-page-label">Show</span>
+        <select class="per-page" id="per-page-sel" onchange="setPerPage(this.value)">
+          <option value="10">10 per page</option>
+          <option value="25" selected>25 per page</option>
+          <option value="50">50 per page</option>
+          <option value="100">100 per page</option>
+        </select>
+        <span class="per-page-label" id="page-range-label"></span>
+      </div>
+      <div class="table-wrap">
+        <table id="history-table">
+          <colgroup>
+            <col style="width:175px">
+            <col style="width:200px">
+            <col style="width:130px">
+            <col style="width:105px">
+            <col style="width:105px">
+            <col style="width:100px">
+            <col style="width:90px">
+            <col style="width:110px">
+            <col style="width:95px">
+          </colgroup>
+          <thead>
+            <tr id="history-thead">
+              <th class="sortable" data-sort-col="timestamp" data-sort-type="str">Timestamp<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+              <th class="sortable" data-sort-col="project" data-sort-type="str">Project<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+              <th>Run ID<div class="col-resize-handle"></div></th>
+              <th class="sortable" data-sort-col="files" data-sort-type="num">Files<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+              <th class="sortable" data-sort-col="code" data-sort-type="num">Code lines<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+              <th class="sortable" data-sort-col="comments" data-sort-type="num">Comments<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+              <th class="sortable" data-sort-col="blank" data-sort-type="num">Blank<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+              <th class="sortable" data-sort-col="branch" data-sort-type="str">Branch<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+              <th>Report<div class="col-resize-handle"></div></th>
+            </tr>
+          </thead>
+          <tbody id="history-tbody">
+            {% for entry in entries %}
+            <tr class="history-row" data-run="{{ entry.run_id }}" data-has-html="{{ entry.has_html }}"
+                data-timestamp="{{ entry.timestamp }}"
+                data-project="{{ entry.project_label }}"
+                data-code="{{ entry.code_lines }}" data-files="{{ entry.files_analyzed }}"
+                data-skipped="{{ entry.files_skipped }}"
+                data-comments="{{ entry.comment_lines }}"
+                data-blank="{{ entry.blank_lines }}"
+                data-branch="{{ entry.git_branch }}"
+                style="cursor:{% if entry.has_html %}pointer{% else %}default{% endif %};"
+                onclick="rowClick('{{ entry.run_id }}', {{ entry.has_html }})">
+              <td>{{ entry.timestamp }}</td>
+              <td title="{{ entry.project_path }}">{{ entry.project_label }}</td>
+              <td><span class="run-id-chip">{{ entry.run_id_short }}</span></td>
+              <td><span class="metric-num">{{ entry.files_analyzed }}</span><div class="metric-secondary">{{ entry.files_skipped }} skipped</div></td>
+              <td><span class="metric-num">{{ entry.code_lines }}</span></td>
+              <td><span class="metric-num">{{ entry.comment_lines }}</span></td>
+              <td><span class="metric-num">{{ entry.blank_lines }}</span></td>
+              <td>{% if !entry.git_branch.is_empty() %}<span class="git-chip">{{ entry.git_branch }}</span>{% else %}<span class="metric-secondary">&#8212;</span>{% endif %}</td>
+              <td>
+                <div class="actions-cell">
+                {% if entry.has_html %}
+                <a class="btn primary" href="/runs/{{ entry.run_id }}/html" target="_blank" rel="noopener" onclick="event.stopPropagation()">View</a>
+                {% else %}
+                <span class="no-report" title="HTML report not generated for this scan — re-run with HTML output enabled">Not generated</span>
+                {% endif %}
+                </div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="pagination">
+        <span class="pagination-info" id="pagination-info"></span>
+        <div class="pagination-btns" id="pagination-btns"></div>
+      </div>
       {% endif %}
     </section>
   </div>
@@ -4618,10 +5524,12 @@ struct ErrorTemplate {
     oxide-sloc — local source line analysis workbench &nbsp;·&nbsp;
     Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/NimaShafie/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
+    &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
   </footer>
 
   <script>
     (function () {
+      // ── Theme ──────────────────────────────────────────────────────────────
       var storageKey = 'oxidesloc-theme';
       var body = document.body;
       try { var s = localStorage.getItem(storageKey); if (s === 'dark' || s === 'light') body.classList.toggle('dark-theme', s === 'dark'); } catch(e) {}
@@ -4632,34 +5540,158 @@ struct ErrorTemplate {
         try { localStorage.setItem(storageKey, next); } catch(e) {}
       });
 
-      var selected = [];
-      var btn = document.getElementById('compare-btn');
+      // ── State ─────────────────────────────────────────────────────────────
+      var perPage = 25, currentPage = 1, sortCol = null, sortOrder = 'asc';
+      var allRows = Array.prototype.slice.call(document.querySelectorAll('.history-row'));
+      allRows.forEach(function(r, i) { r.dataset.origIdx = i; });
 
-      function updateBtn() {
-        if (!btn) return;
-        btn.disabled = selected.length !== 2;
-        btn.textContent = 'Compare selected (' + selected.length + '/2)';
+      // Aggregate stats from first (most recent) row
+      if (allRows.length) {
+        var first = allRows[0];
+        var ce = document.getElementById('agg-code'); if (ce) ce.textContent = Number(first.dataset.code).toLocaleString();
+        var fe = document.getElementById('agg-files'); if (fe) fe.textContent = first.dataset.files;
+        var se = document.getElementById('agg-skipped'); if (se) se.textContent = first.dataset.skipped;
       }
 
-      Array.prototype.slice.call(document.querySelectorAll('.row-select')).forEach(function (cb) {
-        cb.addEventListener('change', function () {
-          if (this.checked) {
-            if (selected.length >= 2) { this.checked = false; return; }
-            selected.push(this.value);
-          } else {
-            var v = this.value;
-            selected = selected.filter(function (id) { return id !== v; });
-          }
-          updateBtn();
+      // ── Branch filter population ──────────────────────────────────────────
+      (function() {
+        var branches = {};
+        allRows.forEach(function(r) { var b = r.dataset.branch || ''; if (b) branches[b] = true; });
+        var sel = document.getElementById('branch-filter');
+        if (sel) Object.keys(branches).sort().forEach(function(b) {
+          var opt = document.createElement('option'); opt.value = b; opt.textContent = b; sel.appendChild(opt);
+        });
+      })();
+
+      // ── Filter ────────────────────────────────────────────────────────────
+      function getFilteredRows() {
+        var proj = ((document.getElementById('project-filter') || {}).value || '').toLowerCase().trim();
+        var branch = ((document.getElementById('branch-filter') || {}).value || '');
+        return Array.prototype.slice.call(document.querySelectorAll('#history-tbody .history-row')).filter(function(r) {
+          if (proj && !(r.dataset.project || '').toLowerCase().includes(proj)) return false;
+          if (branch && (r.dataset.branch || '') !== branch) return false;
+          return true;
+        });
+      }
+
+      // ── Pagination ────────────────────────────────────────────────────────
+      function renderPage() {
+        var filtered = getFilteredRows();
+        var total = filtered.length;
+        var totalPages = Math.max(1, Math.ceil(total / perPage));
+        currentPage = Math.min(currentPage, totalPages);
+        var start = (currentPage - 1) * perPage;
+        var end = Math.min(start + perPage, total);
+        var shown = {};
+        filtered.slice(start, end).forEach(function(r) { shown[r.dataset.run] = true; });
+        Array.prototype.slice.call(document.querySelectorAll('#history-tbody .history-row')).forEach(function(r) {
+          r.style.display = shown[r.dataset.run] ? '' : 'none';
+        });
+        var rl = document.getElementById('page-range-label');
+        if (rl) rl.textContent = total ? 'Showing ' + (start + 1) + '–' + end + ' of ' + total : 'No results';
+        var info = document.getElementById('pagination-info');
+        if (info) info.textContent = 'Page ' + currentPage + ' of ' + totalPages;
+        var btns = document.getElementById('pagination-btns');
+        if (!btns) return;
+        btns.innerHTML = '';
+        function makeBtn(lbl, pg, active, disabled) {
+          var b = document.createElement('button');
+          b.className = 'pg-btn' + (active ? ' active' : '');
+          b.textContent = lbl; b.disabled = disabled;
+          if (!disabled) b.addEventListener('click', function() { currentPage = pg; renderPage(); });
+          return b;
+        }
+        btns.appendChild(makeBtn('‹', currentPage - 1, false, currentPage === 1));
+        var ws = Math.max(1, currentPage - 2), we = Math.min(totalPages, ws + 4); ws = Math.max(1, we - 4);
+        for (var p = ws; p <= we; p++) btns.appendChild(makeBtn(String(p), p, p === currentPage, false));
+        btns.appendChild(makeBtn('›', currentPage + 1, false, currentPage === totalPages));
+      }
+
+      window.setPerPage = function(v) { perPage = parseInt(v, 10) || 25; currentPage = 1; renderPage(); };
+      window.applyFilters = function() { currentPage = 1; renderPage(); };
+
+      // ── Sorting ───────────────────────────────────────────────────────────
+      var sortHeaders = Array.prototype.slice.call(document.querySelectorAll('#history-thead .sortable'));
+      function doSort(col, type, order) {
+        var tbody = document.getElementById('history-tbody');
+        if (!tbody) return;
+        var rows = Array.prototype.slice.call(tbody.querySelectorAll('.history-row'));
+        rows.sort(function(a, b) {
+          var va = a.dataset[col] || '', vb = b.dataset[col] || '';
+          if (type === 'num') { var na = parseFloat(va) || 0, nb = parseFloat(vb) || 0; return order === 'asc' ? na - nb : nb - na; }
+          if (order === 'asc') return va < vb ? -1 : va > vb ? 1 : 0;
+          return va < vb ? 1 : va > vb ? -1 : 0;
+        });
+        rows.forEach(function(r) { tbody.appendChild(r); });
+        currentPage = 1; renderPage();
+      }
+      sortHeaders.forEach(function(th) {
+        th.addEventListener('click', function(e) {
+          if (e.target.classList.contains('col-resize-handle')) return;
+          var col = th.dataset.sortCol, type = th.dataset.sortType || 'str';
+          if (sortCol === col) { sortOrder = sortOrder === 'asc' ? 'desc' : 'asc'; } else { sortCol = col; sortOrder = 'asc'; }
+          sortHeaders.forEach(function(t) { var si = t.querySelector('.sort-icon'); if (si) si.textContent = '↕'; t.classList.remove('sort-asc', 'sort-desc'); });
+          th.classList.add('sort-' + sortOrder);
+          var si = th.querySelector('.sort-icon'); if (si) si.textContent = sortOrder === 'asc' ? '↑' : '↓';
+          doSort(col, type, sortOrder);
         });
       });
+
+      // ── Column resize ─────────────────────────────────────────────────────
+      (function() {
+        var table = document.getElementById('history-table');
+        if (!table) return;
+        var cols = Array.prototype.slice.call(table.querySelectorAll('col'));
+        var ths = Array.prototype.slice.call(table.querySelectorAll('#history-thead th'));
+        ths.forEach(function(th, i) {
+          var handle = th.querySelector('.col-resize-handle');
+          if (!handle || !cols[i]) return;
+          var startX, startW;
+          handle.addEventListener('mousedown', function(e) {
+            e.stopPropagation(); e.preventDefault();
+            startX = e.clientX; startW = cols[i].offsetWidth || th.offsetWidth;
+            handle.classList.add('dragging');
+            function onMove(e) { cols[i].style.width = Math.max(40, startW + e.clientX - startX) + 'px'; }
+            function onUp() { handle.classList.remove('dragging'); document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); }
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+          });
+        });
+      })();
+
+      // ── Reset view ────────────────────────────────────────────────────────
+      window.resetView = function() {
+        var pf = document.getElementById('project-filter'); if (pf) pf.value = '';
+        var bf = document.getElementById('branch-filter'); if (bf) bf.value = '';
+        sortCol = null; sortOrder = 'asc';
+        sortHeaders.forEach(function(t) { var si = t.querySelector('.sort-icon'); if (si) si.textContent = '↕'; t.classList.remove('sort-asc', 'sort-desc'); });
+        var tbody = document.getElementById('history-tbody');
+        if (tbody) {
+          var rows = Array.prototype.slice.call(tbody.querySelectorAll('.history-row'));
+          rows.sort(function(a, b) { return parseInt(a.dataset.origIdx || 0) - parseInt(b.dataset.origIdx || 0); });
+          rows.forEach(function(r) { tbody.appendChild(r); });
+        }
+        var pps = document.getElementById('per-page-sel'); if (pps) { pps.value = '25'; perPage = 25; }
+        var table = document.getElementById('history-table');
+        if (table) Array.prototype.slice.call(table.querySelectorAll('col')).forEach(function(c) { c.style.width = ''; });
+        currentPage = 1; renderPage();
+      };
+
+      renderPage();
+
+      (function randomizeWatermarks() {
+        var wms = Array.prototype.slice.call(document.querySelectorAll('.background-watermarks img'));
+        if (!wms.length) return;
+        var placed = [];
+        function tooClose(t,l){for(var i=0;i<placed.length;i++){if(Math.abs(placed[i][0]-t)<16&&Math.abs(placed[i][1]-l)<12)return true;}return false;}
+        function pick(lb){for(var a=0;a<50;a++){var t=Math.random()*88+2,l=lb?Math.random()*24+1:Math.random()*24+74;if(!tooClose(t,l)){placed.push([t,l]);return[t,l];}}var t=Math.random()*88+2,l=lb?Math.random()*24+1:Math.random()*24+74;placed.push([t,l]);return[t,l];}
+        var half=Math.floor(wms.length/2);
+        wms.forEach(function(img,i){var pos=pick(i<half),sz=Math.floor(Math.random()*80+110),rot=(Math.random()*360).toFixed(1),op=(Math.random()*0.07+0.10).toFixed(2);img.style.cssText='width:'+sz+'px;top:'+pos[0].toFixed(1)+'%;left:'+pos[1].toFixed(1)+'%;transform:rotate('+rot+'deg);opacity:'+op+';';});
+      })();
     })();
 
-    function doCompare() {
-      var checks = Array.prototype.slice.call(document.querySelectorAll('.row-select:checked'));
-      if (checks.length !== 2) return;
-      var a = checks[0].value, b = checks[1].value;
-      window.location.href = '/compare?a=' + encodeURIComponent(a) + '&b=' + encodeURIComponent(b);
+    function rowClick(runId, hasHtml) {
+      if (hasHtml) window.open('/runs/' + runId + '/html', '_blank');
     }
   </script>
 </body>
@@ -4668,6 +5700,426 @@ struct ErrorTemplate {
     ext = "html"
 )]
 struct HistoryTemplate {
+    entries: Vec<HistoryEntryRow>,
+    total_scans: usize,
+}
+
+// ── CompareSelectTemplate ──────────────────────────────────────────────────────
+
+#[derive(Template)]
+#[template(
+    source = r##"
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OxideSLOC | Compare Scans</title>
+  <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
+  <style>
+    :root {
+      --radius:18px; --bg:#f5efe8; --surface:rgba(255,255,255,0.82); --surface-2:#fbf7f2;
+      --line:#e6d0bf; --line-strong:#d8bfad; --text:#43342d; --muted:#7b675b; --muted-2:#a08878;
+      --nav:#b85d33; --nav-2:#7a371b; --accent:#6f9bff; --accent-2:#2563eb;
+      --oxide:#d37a4c; --oxide-2:#b85d33; --shadow:0 18px 42px rgba(77,44,20,0.12);
+      --sel-border:#6f9bff; --sel-bg:rgba(111,155,255,0.06);
+    }
+    body.dark-theme { --bg:#1b1511; --surface:#261c17; --surface-2:#2d221d; --line:#524238; --line-strong:#6b5548; --text:#f5ece6; --muted:#c7b7aa; --muted-2:#9c877a; }
+    *{box-sizing:border-box;} html,body{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);}
+    .background-watermarks{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
+    .background-watermarks img{position:absolute;opacity:0.15;filter:blur(0.3px);user-select:none;max-width:none;}
+    .top-nav{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,var(--nav),var(--nav-2));border-bottom:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 14px rgba(0,0,0,0.18);}
+    .top-nav-inner{max-width:1720px;margin:0 auto;padding:4px 24px;min-height:56px;display:flex;align-items:center;gap:14px;}
+    .brand{display:flex;align-items:center;gap:14px;text-decoration:none;} .brand-logo{width:42px;height:46px;object-fit:contain;flex:0 0 auto;filter:drop-shadow(0 4px 10px rgba(0,0,0,0.22));}
+    .brand-title{margin:0;color:#fff;font-size:17px;font-weight:800;} .brand-subtitle{color:rgba(255,255,255,0.85);font-size:12px;margin-top:2px;}
+    .nav-right{margin-left:auto;display:flex;align-items:center;gap:10px;}
+    .nav-pill,.theme-toggle{display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:0 14px;border-radius:999px;border:1px solid rgba(255,255,255,0.18);color:#fff;background:rgba(255,255,255,0.08);font-size:12px;font-weight:700;text-decoration:none;transition:background .15s ease,transform .15s ease;}
+    .nav-pill:hover{background:rgba(255,255,255,0.18);transform:translateY(-1px);}
+    .theme-toggle{width:38px;justify-content:center;padding:0;cursor:pointer;}
+    .theme-toggle:hover{transform:translateY(-1px);background:rgba(255,255,255,0.16);}
+    .theme-toggle svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8;}
+    .theme-toggle .icon-sun{display:none;} body.dark-theme .theme-toggle .icon-sun{display:block;} body.dark-theme .theme-toggle .icon-moon{display:none;}
+    .page{max-width:1720px;margin:0 auto;padding:18px 24px 40px;position:relative;z-index:1;}
+    .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:22px;margin-bottom:18px;}
+    .panel-header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:18px;flex-wrap:wrap;}
+    .panel-header h1{margin:0 0 4px;font-size:24px;font-weight:850;letter-spacing:-0.03em;}
+    .panel-meta{font-size:13px;color:var(--muted);margin:0;}
+    .instruction-bar{background:rgba(111,155,255,0.08);border:1px solid rgba(111,155,255,0.22);border-radius:10px;padding:10px 16px;font-size:13px;color:var(--accent-2);display:flex;align-items:center;gap:10px;margin-bottom:14px;}
+    body.dark-theme .instruction-bar{background:rgba(111,155,255,0.12);color:var(--accent);}
+    .compare-bar{display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap;}
+    .controls-bar{display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap;}
+    .filter-bar{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;}
+    .per-page-label{font-size:13px;color:var(--muted);}
+    select.per-page,.filter-input,.filter-select{border:1px solid var(--line-strong);border-radius:8px;background:var(--surface-2);color:var(--text);padding:5px 10px;font-size:13px;cursor:pointer;}
+    .filter-input{min-width:180px;cursor:text;}
+    .table-wrap{width:100%;overflow-x:auto;}
+    table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed;}
+    th{text-align:left;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted-2);padding:8px 12px;border-bottom:2px solid var(--line);white-space:nowrap;position:relative;user-select:none;}
+    th.sortable{cursor:pointer;} th.sortable:hover{color:var(--accent-2);}
+    .sort-icon{margin-left:4px;font-size:10px;opacity:0.45;display:inline-block;vertical-align:middle;}
+    th.sort-asc .sort-icon,th.sort-desc .sort-icon{opacity:1;color:var(--accent-2);}
+    .col-resize-handle{position:absolute;top:0;right:0;bottom:0;width:6px;cursor:col-resize;z-index:2;}
+    .col-resize-handle:hover,.col-resize-handle.dragging{background:rgba(111,155,255,0.3);}
+    td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    tr:last-child td{border-bottom:none;}
+    tr.selected td{background:var(--sel-bg);outline:2px solid var(--sel-border);outline-offset:-1px;}
+    tr:hover:not(.selected) td{background:var(--surface-2);}
+    tr{cursor:pointer;}
+    .run-id-chip{font-family:ui-monospace,monospace;font-size:11px;background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:2px 7px;color:var(--muted);}
+    .git-chip{font-family:ui-monospace,monospace;font-size:11px;background:rgba(100,130,220,0.08);border:1px solid rgba(100,130,220,0.20);border-radius:6px;padding:2px 7px;color:var(--accent-2);}
+    body.dark-theme .git-chip{background:rgba(111,155,255,0.12);border-color:rgba(111,155,255,0.25);color:var(--accent);}
+    .metric-num{font-weight:700;}
+    .metric-secondary{font-size:11px;color:var(--muted);margin-top:2px;}
+    .sel-badge{width:22px;height:22px;border-radius:6px;border:1.5px solid var(--line-strong);background:var(--surface-2);display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:900;color:var(--muted-2);flex:0 0 auto;transition:background .12s,border-color .12s;}
+    tr.selected .sel-badge{background:var(--sel-border);border-color:var(--sel-border);color:#fff;}
+    .btn{display:inline-flex;align-items:center;gap:6px;padding:8px 18px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;border:1px solid var(--line);background:var(--surface-2);color:var(--text);text-decoration:none;transition:background .12s ease;white-space:nowrap;}
+    .btn:hover{background:var(--line);}
+    .btn.primary{background:var(--accent-2);border-color:var(--accent-2);color:#fff;}
+    .btn.primary:hover{opacity:.9;}
+    .btn:disabled{opacity:.35;cursor:default;pointer-events:none;}
+    .btn-back{display:inline-flex;align-items:center;gap:7px;padding:7px 14px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;border:1px solid var(--line);background:var(--surface-2);color:var(--text);text-decoration:none;transition:background .12s ease;}
+    .btn-back:hover{background:var(--line);}
+    .empty-state{text-align:center;padding:48px 24px;color:var(--muted);}
+    .empty-state strong{display:block;font-size:18px;margin-bottom:8px;color:var(--text);}
+    .pagination{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:18px;flex-wrap:wrap;}
+    .pagination-info{font-size:13px;color:var(--muted);}
+    .pagination-btns{display:flex;gap:6px;}
+    .pg-btn{min-width:34px;min-height:34px;display:inline-flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid var(--line);background:var(--surface-2);color:var(--text);font-size:13px;font-weight:700;cursor:pointer;transition:background .12s ease;}
+    .pg-btn:hover:not(:disabled){background:var(--line);}
+    .pg-btn.active{background:var(--accent-2);border-color:var(--accent-2);color:#fff;}
+    .pg-btn:disabled{opacity:.35;cursor:default;}
+    .site-footer{text-align:center;padding:18px 24px;font-size:13px;color:var(--muted);position:relative;z-index:1;}
+    .site-footer a{color:var(--muted);}
+    @media(max-width:700px){td,th{padding:7px 8px;}.run-id-chip,.git-chip{display:none;}}
+  </style>
+</head>
+<body>
+  <div class="background-watermarks" aria-hidden="true">
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+  </div>
+  <div class="top-nav">
+    <div class="top-nav-inner">
+      <a class="brand" href="/">
+        <img class="brand-logo" src="/images/logo/small-logo.png" alt="OxideSLOC logo">
+        <div><p class="brand-title">OxideSLOC</p><p class="brand-subtitle">Compare scans</p></div>
+      </a>
+      <div class="nav-right">
+        <a class="nav-pill" href="/history">View Reports</a>
+        <a class="nav-pill" href="/scan">New scan</a>
+        <a class="nav-pill" href="/">Home</a>
+        <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+          <svg class="icon-moon" viewBox="0 0 24 24"><path d="M20 15.5A8.5 8.5 0 1 1 12.5 4 6.7 6.7 0 0 0 20 15.5Z"></path></svg>
+          <svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"></circle><path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.9 5.1l-1.6 1.6M6.7 17.3l-1.6 1.6M18.9 18.9l-1.6-1.6M6.7 6.7 5.1 5.1"></path></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="page">
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h1>Compare Scans</h1>
+          <p class="panel-meta">{{ total_scans }} scan record(s) available. Select exactly two to compare their metrics side-by-side.</p>
+        </div>
+        <a class="btn-back" href="/">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="15 18 9 12 15 6"></polyline></svg>
+          Home
+        </a>
+      </div>
+
+      {% if entries.is_empty() %}
+      <div class="empty-state">
+        <strong>No scans yet</strong>
+        Run your first analysis from the <a href="/scan">scan page</a>.
+      </div>
+      {% else %}
+      <div class="instruction-bar">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+        Click any two rows to select them, then press <strong>&nbsp;Compare&nbsp;</strong> to view the scan delta.
+      </div>
+      <div class="compare-bar">
+        <button class="btn primary" id="compare-btn" onclick="doCompare()" disabled>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
+          Compare (0/2 selected)
+        </button>
+      </div>
+      <div class="filter-bar">
+        <input class="filter-input" id="project-filter" type="text" placeholder="Filter by project…" oninput="applyFilters()">
+        <select class="filter-select" id="branch-filter" onchange="applyFilters()"><option value="">All branches</option></select>
+        <button type="button" class="btn" onclick="resetView()">&#8635; Reset view</button>
+      </div>
+      <div class="controls-bar">
+        <span class="per-page-label">Show</span>
+        <select class="per-page" id="per-page-sel" onchange="setPerPage(this.value)">
+          <option value="10">10 per page</option>
+          <option value="25" selected>25 per page</option>
+          <option value="50">50 per page</option>
+          <option value="100">100 per page</option>
+        </select>
+        <span class="per-page-label" id="page-range-label"></span>
+      </div>
+      <div class="table-wrap">
+        <table id="compare-table">
+          <colgroup>
+            <col style="width:44px">
+            <col style="width:175px">
+            <col style="width:200px">
+            <col style="width:130px">
+            <col style="width:90px">
+            <col style="width:105px">
+            <col style="width:100px">
+            <col style="width:110px">
+          </colgroup>
+          <thead>
+            <tr id="compare-thead">
+              <th style="text-align:center;padding-left:8px;padding-right:8px;"><div class="col-resize-handle"></div></th>
+              <th class="sortable" data-sort-col="timestamp" data-sort-type="str">Timestamp<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+              <th class="sortable" data-sort-col="project" data-sort-type="str">Project<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+              <th>Run ID<div class="col-resize-handle"></div></th>
+              <th class="sortable" data-sort-col="files" data-sort-type="num">Files<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+              <th class="sortable" data-sort-col="code" data-sort-type="num">Code lines<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+              <th class="sortable" data-sort-col="comments" data-sort-type="num">Comments<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+              <th class="sortable" data-sort-col="branch" data-sort-type="str">Branch<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+            </tr>
+          </thead>
+          <tbody id="compare-tbody">
+            {% for entry in entries %}
+            <tr class="compare-row" data-run="{{ entry.run_id }}"
+                data-timestamp="{{ entry.timestamp }}"
+                data-project="{{ entry.project_label }}"
+                data-files="{{ entry.files_analyzed }}"
+                data-code="{{ entry.code_lines }}"
+                data-comments="{{ entry.comment_lines }}"
+                data-branch="{{ entry.git_branch }}"
+                onclick="toggleRow(this, '{{ entry.run_id }}')">
+              <td style="text-align:center;padding-left:8px;padding-right:8px;"><span class="sel-badge" id="badge-{{ entry.run_id }}"></span></td>
+              <td>{{ entry.timestamp }}</td>
+              <td title="{{ entry.project_path }}">{{ entry.project_label }}</td>
+              <td><span class="run-id-chip">{{ entry.run_id_short }}</span></td>
+              <td><span class="metric-num">{{ entry.files_analyzed }}</span></td>
+              <td><span class="metric-num">{{ entry.code_lines }}</span></td>
+              <td><span class="metric-num">{{ entry.comment_lines }}</span></td>
+              <td>{% if !entry.git_branch.is_empty() %}<span class="git-chip">{{ entry.git_branch }}</span>{% else %}<span style="color:var(--muted)">&#8212;</span>{% endif %}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="pagination">
+        <span class="pagination-info" id="pagination-info"></span>
+        <div class="pagination-btns" id="pagination-btns"></div>
+      </div>
+      {% endif %}
+    </section>
+  </div>
+
+  <footer class="site-footer">
+    oxide-sloc — local source line analysis workbench &nbsp;·&nbsp;
+    Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
+    &nbsp;·&nbsp; <a href="https://github.com/NimaShafie/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
+    &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
+  </footer>
+
+  <script>
+    (function () {
+      // ── Theme ──────────────────────────────────────────────────────────────
+      var storageKey = 'oxidesloc-theme';
+      var body = document.body;
+      try { var s = localStorage.getItem(storageKey); if (s === 'dark' || s === 'light') body.classList.toggle('dark-theme', s === 'dark'); } catch(e) {}
+      var toggle = document.getElementById('theme-toggle');
+      if (toggle) toggle.addEventListener('click', function () {
+        var next = body.classList.contains('dark-theme') ? 'light' : 'dark';
+        body.classList.toggle('dark-theme', next === 'dark');
+        try { localStorage.setItem(storageKey, next); } catch(e) {}
+      });
+
+      // ── State ─────────────────────────────────────────────────────────────
+      var perPage = 25, currentPage = 1, sortCol = null, sortOrder = 'asc';
+      var allRows = Array.prototype.slice.call(document.querySelectorAll('.compare-row'));
+      allRows.forEach(function(r, i) { r.dataset.origIdx = i; });
+
+      // ── Branch filter population ──────────────────────────────────────────
+      (function() {
+        var branches = {};
+        allRows.forEach(function(r) { var b = r.dataset.branch || ''; if (b) branches[b] = true; });
+        var sel = document.getElementById('branch-filter');
+        if (sel) Object.keys(branches).sort().forEach(function(b) {
+          var opt = document.createElement('option'); opt.value = b; opt.textContent = b; sel.appendChild(opt);
+        });
+      })();
+
+      // ── Filter ────────────────────────────────────────────────────────────
+      function getFilteredRows() {
+        var proj = ((document.getElementById('project-filter') || {}).value || '').toLowerCase().trim();
+        var branch = ((document.getElementById('branch-filter') || {}).value || '');
+        return Array.prototype.slice.call(document.querySelectorAll('#compare-tbody .compare-row')).filter(function(r) {
+          if (proj && !(r.dataset.project || '').toLowerCase().includes(proj)) return false;
+          if (branch && (r.dataset.branch || '') !== branch) return false;
+          return true;
+        });
+      }
+
+      // ── Pagination ────────────────────────────────────────────────────────
+      function renderPage() {
+        var filtered = getFilteredRows();
+        var total = filtered.length;
+        var totalPages = Math.max(1, Math.ceil(total / perPage));
+        currentPage = Math.min(currentPage, totalPages);
+        var start = (currentPage - 1) * perPage;
+        var end = Math.min(start + perPage, total);
+        var shown = {};
+        filtered.slice(start, end).forEach(function(r) { shown[r.dataset.run] = true; });
+        Array.prototype.slice.call(document.querySelectorAll('#compare-tbody .compare-row')).forEach(function(r) {
+          r.style.display = shown[r.dataset.run] ? '' : 'none';
+        });
+        var rl = document.getElementById('page-range-label');
+        if (rl) rl.textContent = total ? 'Showing ' + (start + 1) + '–' + end + ' of ' + total : 'No results';
+        var info = document.getElementById('pagination-info');
+        if (info) info.textContent = 'Page ' + currentPage + ' of ' + totalPages;
+        var btns = document.getElementById('pagination-btns');
+        if (!btns) return;
+        btns.innerHTML = '';
+        function makeBtn(lbl, pg, active, disabled) {
+          var b = document.createElement('button');
+          b.className = 'pg-btn' + (active ? ' active' : '');
+          b.textContent = lbl; b.disabled = disabled;
+          if (!disabled) b.addEventListener('click', function() { currentPage = pg; renderPage(); });
+          return b;
+        }
+        btns.appendChild(makeBtn('‹', currentPage - 1, false, currentPage === 1));
+        var ws = Math.max(1, currentPage - 2), we = Math.min(totalPages, ws + 4); ws = Math.max(1, we - 4);
+        for (var p = ws; p <= we; p++) btns.appendChild(makeBtn(String(p), p, p === currentPage, false));
+        btns.appendChild(makeBtn('›', currentPage + 1, false, currentPage === totalPages));
+      }
+
+      window.setPerPage = function(v) { perPage = parseInt(v, 10) || 25; currentPage = 1; renderPage(); };
+      window.applyFilters = function() { currentPage = 1; renderPage(); };
+
+      // ── Sorting ───────────────────────────────────────────────────────────
+      var sortHeaders = Array.prototype.slice.call(document.querySelectorAll('#compare-thead .sortable'));
+      function doSort(col, type, order) {
+        var tbody = document.getElementById('compare-tbody');
+        if (!tbody) return;
+        var rows = Array.prototype.slice.call(tbody.querySelectorAll('.compare-row'));
+        rows.sort(function(a, b) {
+          var va = a.dataset[col] || '', vb = b.dataset[col] || '';
+          if (type === 'num') { var na = parseFloat(va) || 0, nb = parseFloat(vb) || 0; return order === 'asc' ? na - nb : nb - na; }
+          if (order === 'asc') return va < vb ? -1 : va > vb ? 1 : 0;
+          return va < vb ? 1 : va > vb ? -1 : 0;
+        });
+        rows.forEach(function(r) { tbody.appendChild(r); });
+        currentPage = 1; renderPage();
+      }
+      sortHeaders.forEach(function(th) {
+        th.addEventListener('click', function(e) {
+          if (e.target.classList.contains('col-resize-handle')) return;
+          var col = th.dataset.sortCol, type = th.dataset.sortType || 'str';
+          if (sortCol === col) { sortOrder = sortOrder === 'asc' ? 'desc' : 'asc'; } else { sortCol = col; sortOrder = 'asc'; }
+          sortHeaders.forEach(function(t) { var si = t.querySelector('.sort-icon'); if (si) si.textContent = '↕'; t.classList.remove('sort-asc', 'sort-desc'); });
+          th.classList.add('sort-' + sortOrder);
+          var si = th.querySelector('.sort-icon'); if (si) si.textContent = sortOrder === 'asc' ? '↑' : '↓';
+          doSort(col, type, sortOrder);
+        });
+      });
+
+      // ── Column resize ─────────────────────────────────────────────────────
+      (function() {
+        var table = document.getElementById('compare-table');
+        if (!table) return;
+        var cols = Array.prototype.slice.call(table.querySelectorAll('col'));
+        var ths = Array.prototype.slice.call(table.querySelectorAll('#compare-thead th'));
+        ths.forEach(function(th, i) {
+          var handle = th.querySelector('.col-resize-handle');
+          if (!handle || !cols[i]) return;
+          var startX, startW;
+          handle.addEventListener('mousedown', function(e) {
+            e.stopPropagation(); e.preventDefault();
+            startX = e.clientX; startW = cols[i].offsetWidth || th.offsetWidth;
+            handle.classList.add('dragging');
+            function onMove(e) { cols[i].style.width = Math.max(40, startW + e.clientX - startX) + 'px'; }
+            function onUp() { handle.classList.remove('dragging'); document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); }
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+          });
+        });
+      })();
+
+      // ── Reset view ────────────────────────────────────────────────────────
+      window.resetView = function() {
+        var pf = document.getElementById('project-filter'); if (pf) pf.value = '';
+        var bf = document.getElementById('branch-filter'); if (bf) bf.value = '';
+        sortCol = null; sortOrder = 'asc';
+        sortHeaders.forEach(function(t) { var si = t.querySelector('.sort-icon'); if (si) si.textContent = '↕'; t.classList.remove('sort-asc', 'sort-desc'); });
+        var tbody = document.getElementById('compare-tbody');
+        if (tbody) {
+          var rows = Array.prototype.slice.call(tbody.querySelectorAll('.compare-row'));
+          rows.sort(function(a, b) { return parseInt(a.dataset.origIdx || 0) - parseInt(b.dataset.origIdx || 0); });
+          rows.forEach(function(r) { tbody.appendChild(r); });
+        }
+        var pps = document.getElementById('per-page-sel'); if (pps) { pps.value = '25'; perPage = 25; }
+        var table = document.getElementById('compare-table');
+        if (table) Array.prototype.slice.call(table.querySelectorAll('col')).forEach(function(c) { c.style.width = ''; });
+        currentPage = 1; renderPage();
+      };
+
+      renderPage();
+
+      (function randomizeWatermarks() {
+        var wms = Array.prototype.slice.call(document.querySelectorAll('.background-watermarks img'));
+        if (!wms.length) return;
+        var placed = [];
+        function tooClose(t,l){for(var i=0;i<placed.length;i++){if(Math.abs(placed[i][0]-t)<16&&Math.abs(placed[i][1]-l)<12)return true;}return false;}
+        function pick(lb){for(var a=0;a<50;a++){var t=Math.random()*88+2,l=lb?Math.random()*24+1:Math.random()*24+74;if(!tooClose(t,l)){placed.push([t,l]);return[t,l];}}var t=Math.random()*88+2,l=lb?Math.random()*24+1:Math.random()*24+74;placed.push([t,l]);return[t,l];}
+        var half=Math.floor(wms.length/2);
+        wms.forEach(function(img,i){var pos=pick(i<half),sz=Math.floor(Math.random()*80+110),rot=(Math.random()*360).toFixed(1),op=(Math.random()*0.07+0.10).toFixed(2);img.style.cssText='width:'+sz+'px;top:'+pos[0].toFixed(1)+'%;left:'+pos[1].toFixed(1)+'%;transform:rotate('+rot+'deg);opacity:'+op+';';});
+      })();
+    })();
+
+    var selected = [];
+    function updateCompareBtn() {
+      var btn = document.getElementById('compare-btn');
+      if (!btn) return;
+      btn.disabled = selected.length !== 2;
+      btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg> Compare (' + selected.length + '/2 selected)';
+    }
+
+    function toggleRow(row, runId) {
+      var idx = selected.indexOf(runId);
+      if (idx >= 0) {
+        selected.splice(idx, 1);
+        row.classList.remove('selected');
+        var b = document.getElementById('badge-' + runId);
+        if (b) b.textContent = '';
+      } else {
+        if (selected.length >= 2) return;
+        selected.push(runId);
+        row.classList.add('selected');
+        var b = document.getElementById('badge-' + runId);
+        if (b) b.textContent = selected.length;
+      }
+      selected.forEach(function(id, i) {
+        var b = document.getElementById('badge-' + id);
+        if (b) b.textContent = i + 1;
+      });
+      updateCompareBtn();
+    }
+
+    function doCompare() {
+      if (selected.length !== 2) return;
+      window.location.href = '/compare?a=' + encodeURIComponent(selected[0]) + '&b=' + encodeURIComponent(selected[1]);
+    }
+  </script>
+</body>
+</html>
+"##,
+    ext = "html"
+)]
+struct CompareSelectTemplate {
     entries: Vec<HistoryEntryRow>,
     total_scans: usize,
 }
@@ -4778,7 +6230,8 @@ struct HistoryTemplate {
       </div>
       <div class="nav-right">
         <a class="nav-pill" href="/history">History</a>
-        <a class="nav-pill" href="/">New scan</a>
+        <a class="nav-pill" href="/scan">New scan</a>
+        <a class="nav-pill" href="/">Home</a>
         <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
           <svg class="icon-moon" viewBox="0 0 24 24"><path d="M20 15.5A8.5 8.5 0 1 1 12.5 4 6.7 6.7 0 0 0 20 15.5Z"></path></svg>
           <svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"></circle><path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.9 5.1l-1.6 1.6M6.7 17.3l-1.6 1.6M18.9 18.9l-1.6-1.6M6.7 6.7 5.1 5.1"></path></svg>

@@ -43,6 +43,8 @@ pub struct DiscoveryConfig {
     pub follow_symlinks: bool,
     pub max_file_size_bytes: u64,
     pub parallelism_limit: Option<usize>,
+    /// When true, detect .gitmodules and produce a per-submodule summary alongside the overall run.
+    pub submodule_breakdown: bool,
 }
 
 impl Default for DiscoveryConfig {
@@ -57,6 +59,7 @@ impl Default for DiscoveryConfig {
             follow_symlinks: false,
             max_file_size_bytes: 2 * 1024 * 1024,
             parallelism_limit: None,
+            submodule_breakdown: true,
         }
     }
 }

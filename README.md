@@ -8,12 +8,15 @@
 
 One shared analysis core with multiple delivery surfaces:
 
-- **CLI** — `oxidesloc analyze / report / serve`
+- **CLI** — `oxidesloc analyze / report / serve` with a full flag set
+- **Quick Scan** — one-click scan from the web UI with zero configuration
 - **Localhost web UI** — guided 4-step flow with light/dark theme, auto browser-open
 - **Rich HTML reports** — per-file breakdown, language summaries, warning analysis
 - **PDF export** — non-blocking background generation via locally installed Chromium
 - **Policy-aware counting** — mixed code/comment lines, Python docstrings
+- **Git submodule support** — auto-detect `.gitmodules` and produce per-submodule breakdowns
 - **CI/CD ready** — Jenkinsfile, GitHub Actions, and GitLab CI pipelines included
+- **Confluence integration** — push HTML reports or summary tables via REST API
 
 ---
 
@@ -81,6 +84,17 @@ cargo build --release -p oxidesloc
 ./target/release/oxidesloc --help
 ```
 
+All 328 crate dependencies are vendored in `vendor/` and `.cargo/config.toml` is pre-configured to use them — `cargo build` requires no network access after cloning.
+
+### Option 4 — Air-gapped / offline systems
+
+For environments with no internet access, all runtime and build-time dependencies are bundled in this repository:
+
+- **Rust crates** — `vendor/` directory, used automatically by Cargo
+- **Chart.js** — compiled into the binary; the web UI never contacts any CDN
+
+See [`docs/airgap.md`](./docs/airgap.md) for step-by-step offline installation instructions.
+
 ---
 
 ## Usage
@@ -113,6 +127,12 @@ oxidesloc analyze ./my-repo \
   --report-title "Q2 Code Review" \
   --html-out report.html
 
+# Scan a super-repository — detect git submodules and report each separately
+oxidesloc analyze ./mono-repo \
+  --submodule-breakdown \
+  --json-out result.json \
+  --html-out report.html
+
 # Re-render a report from a saved JSON (change format without re-scanning)
 oxidesloc report result.json --html-out report.html --pdf-out report.pdf
 
@@ -134,6 +154,7 @@ oxidesloc serve
 | `--pdf-out` | path | *(none)* | Write PDF report to file |
 | `--per-file` | *(flag)* | off | Include per-file breakdown in terminal output |
 | `--plain` | *(flag)* | off | Plain terminal output (no color) |
+| `--submodule-breakdown` | *(flag)* | off | Detect `.gitmodules` and emit per-submodule stats |
 | `--config` | path | `sloc.toml` | Load settings from TOML config file |
 
 ### Web UI
@@ -143,14 +164,18 @@ oxidesloc serve
 # → http://127.0.0.1:4317  (opens automatically)
 ```
 
-The web UI is a guided 4-step flow:
+The web UI is a guided 4-step flow with an optional one-click fast path:
 
 | Step | What it configures |
 |---|---|
-| **1 — Select project** | Target folder, include/exclude glob patterns, live scope preview |
+| **1 — Select project** | Target folder, include/exclude glob patterns, git submodule breakdown, live scope preview |
 | **2 — Counting rules** | Mixed-line policy, Python docstring handling, generated/minified/vendor/lockfile/binary file behavior |
 | **3 — Outputs and reports** | Scan preset, artifact preset, output directory, report title |
 | **4 — Review and run** | Summary of all settings, one-click scan |
+
+### Quick Scan
+
+The sidebar includes a **Quick Scan** button that submits the form immediately from Step 1 using all default settings. Use it when you do not need to customize counting rules or output options — just browse to your folder and click Quick Scan.
 
 Everything available in the web UI maps directly to a CLI flag — see [Web UI → CLI translation](#web-ui--cli-translation).
 
@@ -212,9 +237,44 @@ In Docker, Chromium is bundled in the image — no extra setup needed.
 
 ---
 
+## Git submodule support
+
+Projects that use **git submodules** (a "super-repository" with dozens of nested sub-projects inside) can be analyzed with per-submodule isolation so each sub-project's SLOC totals are reported separately.
+
+### How it works
+
+1. oxide-sloc reads the `.gitmodules` file in the project root.
+2. Each listed submodule path is used to tag every source file with its parent submodule.
+3. The report includes an extra **Submodule breakdown** table showing per-submodule file counts, code lines, comment lines, and physical lines.
+4. The overall project totals still include all files — the submodule table is additive detail, not a replacement.
+
+### CLI usage
+
+```bash
+oxidesloc analyze ./mono-repo \
+  --submodule-breakdown \
+  --json-out out/result.json \
+  --html-out out/report.html
+```
+
+### Web UI
+
+Enable the **Detect and separate git submodules** checkbox in Step 1 before running the scan. The result page will include a collapsible Submodule breakdown section.
+
+### TOML config
+
+```toml
+[discovery]
+submodule_breakdown = true
+```
+
+---
+
 ## CI/CD
 
 oxide-sloc ships ready-to-use pipeline files for Jenkins, GitHub Actions, and GitLab CI. No plugins or integrations are required — the `oxidesloc` binary is the only dependency beyond a standard Rust toolchain.
+
+For detailed setup guides including Confluence publishing, see [`docs/ci-integrations.md`](./docs/ci-integrations.md).
 
 ### Web UI → CLI translation
 
@@ -225,6 +285,8 @@ Every web UI option maps 1:1 to a CLI flag, making it straightforward to reprodu
 | Step 1: select project folder | `oxidesloc analyze ./my-repo` |
 | Step 1: include pattern | `--include-glob "src/**"` |
 | Step 1: exclude pattern | `--exclude-glob "vendor/**"` |
+| Step 1: submodule breakdown | `--submodule-breakdown` |
+| Quick Scan button | `oxidesloc analyze ./my-repo --plain` |
 | Step 2: mixed-line policy | `--mixed-line-policy code-only` |
 | Step 2: Python docstrings as code | `--python-docstrings-as-code` |
 | Step 3: JSON output | `--json-out result.json` |
@@ -299,7 +361,9 @@ Install Rust → Format → Lint → Unit tests → Build
 | Variable | Purpose |
 |---|---|
 | `RUST_LOG` | Tracing verbosity (`warn`, `info`, `debug`) |
-| `SLOC_BROWSER` | Override Chromium path for PDF export |
+| `SLOC_BROWSER` | Override Chromium path for PDF export (also checked: `BROWSER`) |
+| `SLOC_API_KEY` | Enable API key auth — every request must carry `X-API-Key: <value>` |
+| `SLOC_REGISTRY_PATH` | Override the scan-history registry location (default: `out/web/registry.json`) |
 | `SKIP_WEB_CHECK` | Set to any non-empty value to skip the web UI health check stage |
 
 ### GitLab CI
@@ -367,7 +431,12 @@ Configured in `rustfmt.toml`: `edition = "2021"`, `max_width = 100`.
 │   ├── sloc-core/        # File discovery, decoding, aggregation, JSON model
 │   ├── sloc-languages/   # Language detection and lexical analyzers
 │   ├── sloc-report/      # HTML rendering and PDF export
-│   └── sloc-web/         # Localhost web UI (Axum)
+│   └── sloc-web/
+│       ├── static/       # Bundled static assets (Chart.js — no CDN needed)
+│       └── src/          # Localhost web UI (Axum)
+├── vendor/               # All 328 Rust crate sources — enables offline builds
+├── .cargo/
+│   └── config.toml       # Tells Cargo to use vendor/ instead of crates.io
 ├── ci/
 │   ├── sloc-ci-default.toml    # CI config preset — balanced defaults
 │   ├── sloc-ci-strict.toml     # CI config preset — fail on binaries
@@ -377,6 +446,8 @@ Configured in `rustfmt.toml`: `edition = "2021"`, `max_width = 100`.
 │       ├── ci.yml        # PR / push checks + smoke tests
 │       └── release.yml   # Cross-platform binary releases
 ├── docs/
+│   ├── airgap.md             # Air-gapped / offline installation guide
+│   ├── ci-integrations.md    # Jenkins, GitHub Actions, GitLab CI, Confluence
 │   ├── licensing.md
 │   └── licensing-commercial.md
 ├── samples/

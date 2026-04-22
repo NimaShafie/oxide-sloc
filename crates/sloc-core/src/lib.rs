@@ -5,7 +5,7 @@ pub use history::{RegistryEntry, ScanRegistry, ScanSummarySnapshot};
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -44,7 +44,7 @@ pub struct EffectiveCounts {
 pub struct ToolMetadata {
     pub name: String,
     pub version: String,
-    pub run_id: Uuid,
+    pub run_id: String,
     pub timestamp_utc: DateTime<Utc>,
 }
 
@@ -93,6 +93,21 @@ pub struct FileRecord {
     pub minified: bool,
     pub vendor: bool,
     pub parse_mode: Option<ParseMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub submodule: Option<String>,
+}
+
+/// Per-submodule aggregated stats produced when `submodule_breakdown` is enabled.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubmoduleSummary {
+    pub name: String,
+    pub relative_path: String,
+    pub files_analyzed: u64,
+    pub total_physical_lines: u64,
+    pub code_lines: u64,
+    pub comment_lines: u64,
+    pub blank_lines: u64,
+    pub language_summaries: Vec<LanguageSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,6 +121,9 @@ pub struct AnalysisRun {
     pub per_file_records: Vec<FileRecord>,
     pub skipped_file_records: Vec<FileRecord>,
     pub warnings: Vec<String>,
+    /// Non-empty only when `discovery.submodule_breakdown` is enabled.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub submodule_summaries: Vec<SubmoduleSummary>,
 }
 
 pub fn analyze(config: &AppConfig, runtime_mode: &str) -> Result<AnalysisRun> {
@@ -184,6 +202,31 @@ pub fn analyze(config: &AppConfig, runtime_mode: &str) -> Result<AnalysisRun> {
     analyzed.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
     skipped.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
 
+    // Submodule detection: label each file with its submodule and build per-submodule summaries.
+    let submodule_summaries = if config.discovery.submodule_breakdown {
+        let root = config.discovery.root_paths[0]
+            .canonicalize()
+            .unwrap_or_else(|_| config.discovery.root_paths[0].clone());
+        let submodules = detect_submodules(&root);
+        if !submodules.is_empty() {
+            for file in &mut analyzed {
+                for (name, sub_path) in &submodules {
+                    let prefix = sub_path.to_string_lossy().replace('\\', "/");
+                    let rel = &file.relative_path;
+                    if rel == &prefix || rel.starts_with(&format!("{prefix}/")) {
+                        file.submodule = Some(name.clone());
+                        break;
+                    }
+                }
+            }
+            build_submodule_summaries(&analyzed, &submodules)
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
     let summary = build_summary(&analyzed, &skipped);
     let language_summaries = build_language_summaries(&analyzed);
 
@@ -191,7 +234,16 @@ pub fn analyze(config: &AppConfig, runtime_mode: &str) -> Result<AnalysisRun> {
         tool: ToolMetadata {
             name: "sloc".into(),
             version: env!("CARGO_PKG_VERSION").into(),
-            run_id: Uuid::new_v4(),
+            run_id: {
+                let now = Utc::now();
+                let prefix = now.format("%Y%m%d%H%M").to_string();
+                let raw = Uuid::new_v4().to_string().replace('-', "");
+                // Mix in seconds so runs within the same minute differ
+                let sec = now.format("%S").to_string();
+                let mixed = format!("{}{}", sec, &raw);
+                let suffix = &mixed[..8];
+                format!("{}-{}", prefix, suffix)
+            },
             timestamp_utc: Utc::now(),
         },
         environment: EnvironmentMetadata {
@@ -211,6 +263,7 @@ pub fn analyze(config: &AppConfig, runtime_mode: &str) -> Result<AnalysisRun> {
         per_file_records: analyzed,
         skipped_file_records: skipped,
         warnings,
+        submodule_summaries,
     })
 }
 
@@ -467,6 +520,7 @@ fn analyze_candidate_file(
         minified,
         vendor,
         parse_mode: Some(analysis.parse_mode),
+        submodule: None,
     }))
 }
 
@@ -568,6 +622,7 @@ fn skipped_record(
         minified: false,
         vendor: false,
         parse_mode: None,
+        submodule: None,
     }
 }
 
@@ -580,6 +635,107 @@ fn relative_path_string(path: &Path, root: &Path) -> String {
 
 fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+/// Parse `.gitmodules` in `root` and return `(name, relative_path)` for each submodule found.
+pub fn detect_submodules(root: &Path) -> Vec<(String, PathBuf)> {
+    let gitmodules = root.join(".gitmodules");
+    if !gitmodules.is_file() {
+        return Vec::new();
+    }
+    let content = match fs::read_to_string(&gitmodules) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut result = Vec::new();
+    let mut current_name: Option<String> = None;
+    let mut current_path: Option<PathBuf> = None;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("[submodule \"") && trimmed.ends_with("\"]") {
+            if let (Some(name), Some(path)) = (current_name.take(), current_path.take()) {
+                result.push((name, path));
+            }
+            let name = trimmed["[submodule \"".len()..trimmed.len() - 2].to_string();
+            current_name = Some(name);
+        } else if let Some(rest) = trimmed.strip_prefix("path") {
+            if let Some(eq_pos) = rest.find('=') {
+                let path_str = rest[eq_pos + 1..].trim();
+                current_path = Some(PathBuf::from(path_str));
+            }
+        }
+    }
+    if let (Some(name), Some(path)) = (current_name, current_path) {
+        result.push((name, path));
+    }
+
+    result
+}
+
+fn build_submodule_summaries(
+    analyzed: &[FileRecord],
+    submodules: &[(String, PathBuf)],
+) -> Vec<SubmoduleSummary> {
+    submodules
+        .iter()
+        .map(|(name, path)| {
+            let files: Vec<&FileRecord> = analyzed
+                .iter()
+                .filter(|f| f.submodule.as_deref() == Some(name.as_str()))
+                .collect();
+
+            let files_analyzed = files.len() as u64;
+            let total_physical_lines = files
+                .iter()
+                .map(|f| f.raw_line_categories.total_physical_lines)
+                .sum();
+            let code_lines = files.iter().map(|f| f.effective_counts.code_lines).sum();
+            let comment_lines = files.iter().map(|f| f.effective_counts.comment_lines).sum();
+            let blank_lines = files.iter().map(|f| f.effective_counts.blank_lines).sum();
+            let language_summaries = build_language_summaries_from_slice(&files);
+
+            SubmoduleSummary {
+                name: name.clone(),
+                relative_path: path.to_string_lossy().replace('\\', "/"),
+                files_analyzed,
+                total_physical_lines,
+                code_lines,
+                comment_lines,
+                blank_lines,
+                language_summaries,
+            }
+        })
+        .filter(|s| s.files_analyzed > 0)
+        .collect()
+}
+
+fn build_language_summaries_from_slice(files: &[&FileRecord]) -> Vec<LanguageSummary> {
+    let mut map: BTreeMap<String, LanguageSummary> = BTreeMap::new();
+    for file in files {
+        if let Some(lang) = file.language {
+            let entry = map
+                .entry(lang.display_name().to_string())
+                .or_insert_with(|| LanguageSummary {
+                    language: lang,
+                    files: 0,
+                    total_physical_lines: 0,
+                    code_lines: 0,
+                    comment_lines: 0,
+                    blank_lines: 0,
+                    mixed_lines_separate: 0,
+                });
+            entry.files += 1;
+            let r = &file.raw_line_categories;
+            entry.total_physical_lines += r.total_physical_lines;
+            entry.code_lines += file.effective_counts.code_lines;
+            entry.comment_lines += file.effective_counts.comment_lines;
+            entry.blank_lines += file.effective_counts.blank_lines;
+            entry.mixed_lines_separate += file.effective_counts.mixed_lines_separate;
+        }
+    }
+    map.into_values().collect()
 }
 
 fn file_name_eq(path: &Path, expected: &str) -> bool {

@@ -26,6 +26,12 @@ pub struct RegistryEntry {
     pub json_path: Option<PathBuf>,
     pub html_path: Option<PathBuf>,
     pub summary: ScanSummarySnapshot,
+    /// Git branch active at scan time, if the project is a git repo.
+    #[serde(default)]
+    pub git_branch: Option<String>,
+    /// Short git commit SHA active at scan time.
+    #[serde(default)]
+    pub git_commit: Option<String>,
 }
 
 /// Persistent on-disk index of all past scans for this workspace.

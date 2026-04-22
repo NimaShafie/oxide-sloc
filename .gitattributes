@@ -1,7 +1,7 @@
 # Normalize all text files to LF on commit (no CRLF in the repo)
 * text=auto eol=lf
 
-# Explicitly mark binary files
+# Explicitly mark known binary file types globally
 *.png binary
 *.jpg binary
 *.jpeg binary
@@ -14,16 +14,20 @@
 *.wasm binary
 *.o binary
 *.a binary
+*.lib binary
 *.fst binary
 *.dfa binary
 *.der binary
 
-# Vendor text sources — cargo checksums are computed on LF bytes.
-# Do NOT add a catch-all vendor/** text rule — it overrides the binary
-# declarations above and corrupts object/archive/FST files during checkout.
-vendor/**/*.rs   text eol=lf
-vendor/**/*.toml text eol=lf
-vendor/**/*.json text eol=lf
+# Vendor sources must never be normalized by git — cargo checksum verification
+# compares the exact bytes on disk to the SHA-256 in .cargo-checksum.json.
+# If git rewrites CRLF→LF (or vice-versa) in any vendor file, the checksum
+# will not match and cargo will refuse to build.  Use -text to disable all
+# line-ending processing for every file under vendor/.
+vendor/** -text
 
-# Static assets bundled into the binary
-crates/sloc-web/static/*.js  text eol=lf
+# Our own source and static assets: normalize to LF
+crates/**/*.rs   text eol=lf
+crates/**/*.toml text eol=lf
+crates/**/*.json text eol=lf
+crates/sloc-web/static/*.js text eol=lf

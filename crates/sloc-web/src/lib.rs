@@ -87,6 +87,7 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         .route("/runs/:run_id/:artifact", get(artifact_handler))
         .route("/api/metrics/latest", get(api_metrics_latest_handler))
         .route("/api/metrics/:run_id", get(api_metrics_run_handler))
+        .route("/api/project-history", get(project_history_handler))
         .route("/embed/summary", get(embed_handler))
         .layer(middleware::from_fn(api_key_middleware));
 
@@ -335,6 +336,39 @@ async fn analyze_handler(
     config.discovery.include_globs = split_patterns(form.include_globs.as_deref());
     config.discovery.exclude_globs = split_patterns(form.exclude_globs.as_deref());
 
+    // Auto-exclude the output directory so scan artifacts never appear in counts.
+    // Resolve the output path early (before analysis) to determine the folder name.
+    let project_root_for_exclude = resolve_input_path(&form.path);
+    let raw_out = form.output_dir.as_deref().unwrap_or("").trim();
+    let resolved_out_early = if raw_out.is_empty() {
+        project_root_for_exclude.join("sloc")
+    } else if Path::new(raw_out).is_absolute() {
+        PathBuf::from(raw_out)
+    } else {
+        workspace_root().join(raw_out)
+    };
+    // If the resolved output root lives inside the project root, exclude its top-level name.
+    if let Ok(rel) = resolved_out_early.strip_prefix(&project_root_for_exclude) {
+        if let Some(first) = rel.iter().next().and_then(|c| c.to_str()) {
+            let dir = first.to_string();
+            if !config.discovery.excluded_directories.contains(&dir) {
+                config.discovery.excluded_directories.push(dir);
+            }
+        }
+    }
+    // Always exclude the canonical "sloc" folder name regardless of where output lands.
+    if !config
+        .discovery
+        .excluded_directories
+        .iter()
+        .any(|d| d == "sloc")
+    {
+        config
+            .discovery
+            .excluded_directories
+            .push("sloc".to_string());
+    }
+
     let analysis_result =
         tokio::task::spawn_blocking(move || -> Result<(sloc_core::AnalysisRun, String)> {
             let run = analyze(&config, "serve")?;
@@ -370,6 +404,21 @@ async fn analyze_handler(
             .into_iter()
             .next()
             .cloned()
+    };
+
+    // Detect git branch and commit for the project path.
+    let (git_branch, git_commit) = detect_git_info(&resolve_input_path(&form.path));
+
+    // Compute line-level delta vs the previous scan if JSON is available.
+    let scan_delta = prev_entry.as_ref().and_then(|prev| {
+        prev.json_path
+            .as_ref()
+            .and_then(|p| read_json(p).ok())
+            .map(|prev_run| compute_delta(&prev_run, &run))
+    });
+    let prev_scan_count: usize = {
+        let reg = state.registry.lock().await;
+        reg.entries_for_roots(&run.input_roots).len()
     };
 
     let output_root = match resolve_output_root(form.output_dir.as_deref()) {
@@ -440,6 +489,8 @@ async fn analyze_handler(
                 comment_lines: run.summary_totals.comment_lines,
                 blank_lines: run.summary_totals.blank_lines,
             },
+            git_branch: git_branch.clone(),
+            git_commit: git_commit.clone(),
         };
         let mut reg = state.registry.lock().await;
         reg.add_entry(entry);
@@ -531,6 +582,42 @@ async fn analyze_handler(
             .as_ref()
             .map(|e| e.timestamp_utc.format("%Y-%m-%d %H:%M UTC").to_string()),
         prev_run_code_lines: prev_entry.as_ref().map(|e| e.summary.code_lines),
+        // delta metrics derived from the comparison against the previous scan
+        delta_lines_added: scan_delta.as_ref().map(|d| {
+            d.file_deltas
+                .iter()
+                .map(|f| match f.status {
+                    sloc_core::FileChangeStatus::Added => f.current_code,
+                    sloc_core::FileChangeStatus::Modified => f.code_delta.max(0),
+                    _ => 0,
+                })
+                .sum()
+        }),
+        delta_lines_removed: scan_delta.as_ref().map(|d| {
+            d.file_deltas
+                .iter()
+                .map(|f| match f.status {
+                    sloc_core::FileChangeStatus::Removed => f.baseline_code,
+                    sloc_core::FileChangeStatus::Modified => (-f.code_delta).max(0),
+                    _ => 0,
+                })
+                .sum()
+        }),
+        delta_files_added: scan_delta.as_ref().map(|d| d.files_added),
+        delta_files_removed: scan_delta.as_ref().map(|d| d.files_removed),
+        delta_files_modified: scan_delta.as_ref().map(|d| d.files_modified),
+        delta_files_unchanged: scan_delta.as_ref().map(|d| d.files_unchanged),
+        delta_unmodified_lines: scan_delta.as_ref().map(|d| {
+            d.file_deltas
+                .iter()
+                .filter(|f| f.status == sloc_core::FileChangeStatus::Unchanged)
+                .map(|f| f.current_code as u64)
+                .sum()
+        }),
+        git_branch: git_branch.clone(),
+        git_commit: git_commit.clone(),
+        current_scan_number: prev_scan_count + 1,
+        prev_scan_count,
     };
 
     Html(
@@ -1102,6 +1189,56 @@ fn build_metrics_response(entry: &RegistryEntry) -> Response {
     .into_response()
 }
 
+// ── Project history API ───────────────────────────────────────────────────────
+// Protected. Called by the wizard JS when the project path changes, so the UI
+// can show a "scanned N times before" badge without a full page reload.
+//
+// GET /api/project-history?path=<project_root>
+
+#[derive(Deserialize)]
+struct ProjectHistoryQuery {
+    path: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ProjectHistoryResponse {
+    scan_count: usize,
+    last_scan_id: Option<String>,
+    last_scan_timestamp: Option<String>,
+    last_scan_code_lines: Option<u64>,
+    last_git_branch: Option<String>,
+    last_git_commit: Option<String>,
+}
+
+async fn project_history_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ProjectHistoryQuery>,
+) -> Response {
+    let path = query.path.unwrap_or_default();
+    let resolved = resolve_input_path(&path);
+    let root_str = resolved.to_string_lossy().into_owned();
+
+    let reg = state.registry.lock().await;
+    let entries: Vec<_> = reg
+        .entries
+        .iter()
+        .filter(|e| e.input_roots.iter().any(|r| r == &root_str))
+        .collect();
+
+    let scan_count = entries.len();
+    let last = entries.first();
+
+    Json(ProjectHistoryResponse {
+        scan_count,
+        last_scan_id: last.map(|e| e.run_id.clone()),
+        last_scan_timestamp: last.map(|e| e.timestamp_utc.format("%Y-%m-%d %H:%M UTC").to_string()),
+        last_scan_code_lines: last.map(|e| e.summary.code_lines),
+        last_git_branch: last.and_then(|e| e.git_branch.clone()),
+        last_git_commit: last.and_then(|e| e.git_commit.clone()),
+    })
+    .into_response()
+}
+
 // ── Embeddable widget ─────────────────────────────────────────────────────────
 // Protected. Returns a self-contained HTML page suitable for iframing inside
 // Jenkins build summaries, Confluence iframe macros, or Jira panels.
@@ -1344,6 +1481,23 @@ fn split_patterns(raw: Option<&str>) -> Vec<String> {
         .filter(|part| !part.is_empty())
         .map(ToOwned::to_owned)
         .collect()
+}
+
+fn detect_git_info(project_path: &Path) -> (Option<String>, Option<String>) {
+    let run_git = |args: &[&str]| -> Option<String> {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(project_path)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let branch = run_git(&["branch", "--show-current"]);
+    let commit = run_git(&["rev-parse", "--short", "HEAD"]);
+    (branch, commit)
 }
 
 fn sanitize_project_label(raw: &str) -> String {
@@ -2051,11 +2205,15 @@ struct LanguageSummaryRow {
     .subnav { display:flex; align-items:center; gap:8px; margin-bottom: 14px; color: var(--muted-2); font-size: 13px; }
     .subnav strong { color: var(--text); }
     .summary-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }
-    .workbench-strip { display:flex; align-items:center; gap: 20px; padding: 12px 18px; margin-bottom: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); flex-wrap: wrap; }
-    .ws-stat { display:flex; flex-direction:column; gap: 2px; }
+    .workbench-strip { display:flex; align-items:center; justify-content:space-between; gap:0; padding: 12px 20px; margin-bottom: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); flex-wrap: wrap; }
+    .ws-stat { display:flex; flex-direction:column; gap: 2px; flex:1 1 auto; min-width:80px; }
     .ws-label { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-2); }
     .ws-value { font-size: 14px; font-weight: 700; color: var(--text); }
-    .ws-divider { width: 1px; height: 30px; background: var(--line); flex: 0 0 auto; }
+    .ws-divider { width: 1px; height: 30px; background: var(--line); flex: 0 0 auto; margin: 0 12px; }
+    .ws-nav-links { flex-direction:row; align-items:center; gap:6px; flex:0 0 auto; min-width:unset; }
+    .ws-nav-link { font-size:13px; font-weight:700; color:var(--oxide); text-decoration:none; }
+    .ws-nav-link:hover { text-decoration:underline; }
+    .ws-nav-sep { color:var(--muted); }
     .summary-card, .card, .step-nav, .explainer-card, .review-card, .workspace-card, .artifact-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, transform 0.18s ease; }
     .summary-card:hover, .workspace-card:hover, .explainer-card:hover, .artifact-card:hover, .review-card:hover { box-shadow: var(--shadow-strong); border-color: var(--line-strong); transform: translateY(-2px); }
     .card:hover, .step-nav:hover { box-shadow: var(--shadow-strong); border-color: var(--line-strong); }
@@ -2085,7 +2243,7 @@ struct LanguageSummaryRow {
     .wizard-progress-label { font-size: 12px; font-weight: 800; color: var(--muted-2); text-transform: uppercase; letter-spacing: 0.08em; }
     .wizard-progress-value { font-size: 13px; font-weight: 900; color: var(--text); }
     .wizard-progress-track { width: 100%; height: 10px; border-radius: 999px; background: var(--surface-3); border: 1px solid var(--line); overflow: hidden; }
-    .wizard-progress-fill { height: 100%; width: 25%; border-radius: 999px; background: linear-gradient(90deg, var(--oxide), var(--accent)); transition: width 0.22s ease; }
+    .wizard-progress-fill { height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg, var(--oxide), var(--accent)); transition: width 0.22s ease; }
     .card-title { margin:0; font-size: 22px; font-weight: 850; letter-spacing: -0.03em; }
     .card-subtitle { margin: 10px 0 0; color: var(--muted); font-size: 16px; line-height: 1.65; max-width: 920px; }
     .card-body { padding: 22px; }
@@ -2105,6 +2263,9 @@ struct LanguageSummaryRow {
     input[type="text"]:focus, textarea:focus, select:focus { outline:none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.13); transform: translateY(-1px); }
     textarea { min-height: 128px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .hint { margin-top: 8px; color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .path-history-badge { margin-top: 8px; padding: 8px 12px; border-radius: 8px; font-size: 13px; line-height: 1.5; }
+    .path-history-badge.found { background: var(--info-bg, #eef3ff); color: var(--info-text, #4467d8); border: 1px solid rgba(100,130,220,0.25); }
+    .path-history-badge.new   { background: var(--success-bg, #e8f5ed); color: var(--success-text, #1a8f47); border: 1px solid rgba(30,143,71,0.2); }
     .input-group { display:grid; grid-template-columns: 1fr auto auto auto; gap: 8px; align-items:center; }
     .input-group.compact { grid-template-columns: 1fr auto auto; }
     .full-output-row { display:grid; grid-template-columns: 1fr; gap: 16px; }
@@ -2331,9 +2492,19 @@ struct LanguageSummaryRow {
       <div class="ws-divider"></div>
       <div class="ws-stat"><span class="ws-label">Mode</span><span class="ws-value">Localhost workbench</span></div>
       <div class="ws-divider"></div>
-      <div class="ws-stat"><span class="ws-label">Active project</span><span class="ws-value" id="live-report-title">samples/basic</span></div>
+      <div class="ws-stat"><span class="ws-label">Active project</span><span class="ws-value" id="live-report-title">—</span></div>
       <div class="ws-divider"></div>
-      <div class="ws-stat"><span class="ws-label">Output</span><span class="ws-value" id="ws-output-root">out/web</span></div>
+      <div class="ws-stat"><span class="ws-label">Previous scans</span><span class="ws-value" id="ws-scan-count">—</span></div>
+      <div class="ws-divider"></div>
+      <div class="ws-stat"><span class="ws-label">Last scan</span><span class="ws-value" id="ws-last-scan">—</span></div>
+      <div class="ws-divider"></div>
+      <div class="ws-stat"><span class="ws-label">Output</span><span class="ws-value" id="ws-output-root">project/sloc</span></div>
+      <div class="ws-divider"></div>
+      <div class="ws-stat ws-nav-links">
+        <a class="ws-nav-link" href="/history">History</a>
+        <span class="ws-nav-sep">·</span>
+        <a class="ws-nav-link" href="/compare" id="ws-compare-link">Compare</a>
+      </div>
     </div>
 
     <div class="layout">
@@ -2377,7 +2548,7 @@ struct LanguageSummaryRow {
             <div class="wizard-progress" aria-label="Scan setup progress">
               <div class="wizard-progress-top">
                 <span class="wizard-progress-label">Setup progress</span>
-                <span class="wizard-progress-value" id="wizard-progress-value">25%</span>
+                <span class="wizard-progress-value" id="wizard-progress-value">0%</span>
               </div>
               <div class="wizard-progress-track">
                 <div class="wizard-progress-fill" id="wizard-progress-fill"></div>
@@ -2400,6 +2571,7 @@ struct LanguageSummaryRow {
                     <button type="button" class="mini-button" id="use-sample-path">Use sample</button>
                   </div>
                   <div class="hint">Browse opens the native folder picker through the Rust backend, so you do not need to type local paths manually.</div>
+                  <div id="path-history-badge" class="path-history-badge" style="display:none"></div>
                 </div>
 
                 <div id="preview-panel">
@@ -2613,7 +2785,7 @@ struct LanguageSummaryRow {
                   <div class="field">
                     <label for="output_dir">Output directory</label>
                     <div class="input-group compact">
-                      <input id="output_dir" name="output_dir" type="text" value="out/web" placeholder="out/web" />
+                      <input id="output_dir" name="output_dir" type="text" value="" placeholder="auto: project/sloc" />
                       <button type="button" class="mini-button oxide" id="browse-output-dir">Browse</button>
                       <button type="button" class="mini-button" id="use-default-output">Use default</button>
                     </div>
@@ -2864,10 +3036,11 @@ struct LanguageSummaryRow {
       }
 
       function updateScrollProgress() {
-        var base = (currentStep - 1) * 25;
-        var scrollable = document.documentElement.scrollHeight - window.innerHeight;
-        var frac = scrollable > 0 ? Math.min(1, window.scrollY / scrollable) : 0;
-        var percent = Math.round(base + frac * 25);
+        // Progress is purely step-based (0 / 33 / 67 / 100 %).
+        // Scroll-fraction was removed because it caused the bar to appear
+        // to reset to 0% on the first scroll after the 25% CSS initial value.
+        var stepPct = [0, 0, 33, 67, 100];
+        var percent = stepPct[Math.min(currentStep, 4)] || 0;
         if (wizardProgressFill) wizardProgressFill.style.width = percent + "%";
         if (wizardProgressValue) wizardProgressValue.textContent = percent + "%";
       }
@@ -2875,8 +3048,6 @@ struct LanguageSummaryRow {
       function updateWizardProgress() {
         updateScrollProgress();
       }
-
-      window.addEventListener("scroll", updateScrollProgress, { passive: true });
 
       function setStep(step) {
         currentStep = step;
@@ -3449,7 +3620,8 @@ struct LanguageSummaryRow {
 
       if (useDefaultOutput) {
         useDefaultOutput.addEventListener("click", function () {
-          outputDirInput.value = "out/web";
+          delete outputDirInput.dataset.userEdited;
+          autoSetOutputDir(pathInput ? pathInput.value : "");
           updateReview();
         });
       }
@@ -3459,11 +3631,81 @@ struct LanguageSummaryRow {
 
       if (refreshPreviewInline) refreshPreviewInline.addEventListener("click", loadPreview);
 
+      // ── Project history & output dir auto-set ──────────────────────────
+      var wsOutputRoot   = document.getElementById("ws-output-root");
+      var wsScanCount    = document.getElementById("ws-scan-count");
+      var wsLastScan     = document.getElementById("ws-last-scan");
+      var historyBadge   = document.getElementById("path-history-badge");
+      var historyTimer   = null;
+
+      function syncStripOutputRoot() {
+        var val = outputDirInput ? outputDirInput.value : "";
+        if (wsOutputRoot) wsOutputRoot.textContent = val || "project/sloc";
+      }
+
+      function autoSetOutputDir(projectPath) {
+        if (!outputDirInput || outputDirInput.dataset.userEdited) return;
+        if (!projectPath || !projectPath.trim()) return;
+        var cleaned = projectPath.trim().replace(/[\\\/]+$/, "");
+        outputDirInput.value = cleaned + "/sloc";
+        syncStripOutputRoot();
+        updateReview();
+      }
+
+      function fetchProjectHistory(projectPath) {
+        if (!projectPath || !projectPath.trim()) {
+          if (wsScanCount) wsScanCount.textContent = "—";
+          if (wsLastScan)  wsLastScan.textContent  = "—";
+          if (historyBadge) historyBadge.style.display = "none";
+          return;
+        }
+        fetch("/api/project-history?path=" + encodeURIComponent(projectPath.trim()))
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (data) {
+            if (!data) return;
+            if (wsScanCount) wsScanCount.textContent = data.scan_count > 0
+              ? data.scan_count + " scan" + (data.scan_count === 1 ? "" : "s")
+              : "never";
+            if (wsLastScan) wsLastScan.textContent = data.last_scan_timestamp
+              ? data.last_scan_timestamp.replace(" UTC","")
+              : "—";
+            if (historyBadge) {
+              if (data.scan_count > 0) {
+                var branch = data.last_git_branch ? " on " + data.last_git_branch : "";
+                historyBadge.textContent = data.scan_count + " previous scan" +
+                  (data.scan_count === 1 ? "" : "s") + " found" + branch + ". " +
+                  "Last: " + (data.last_scan_timestamp || "—") +
+                  " — " + (data.last_scan_code_lines ? Number(data.last_scan_code_lines).toLocaleString() : "?") + " code lines.";
+                historyBadge.className = "path-history-badge found";
+              } else {
+                historyBadge.textContent = "No previous scans found for this path — this will be the first.";
+                historyBadge.className = "path-history-badge new";
+              }
+              historyBadge.style.display = "";
+            }
+          })
+          .catch(function () {});
+      }
+
+      function onPathChange() {
+        var val = pathInput ? pathInput.value : "";
+        updateReportTitleFromPath();
+        autoSetOutputDir(val);
+        clearTimeout(historyTimer);
+        historyTimer = setTimeout(function () { fetchProjectHistory(val); }, 400);
+        if (previewTimer) clearTimeout(previewTimer);
+        previewTimer = setTimeout(loadPreview, 280);
+      }
+
       if (pathInput) {
-        pathInput.addEventListener("input", function () {
-          updateReportTitleFromPath();
-          if (previewTimer) clearTimeout(previewTimer);
-          previewTimer = setTimeout(loadPreview, 280);
+        pathInput.addEventListener("input", onPathChange);
+      }
+
+      if (outputDirInput) {
+        outputDirInput.addEventListener("input", function () {
+          outputDirInput.dataset.userEdited = "1";
+          syncStripOutputRoot();
+          updateReview();
         });
       }
 
@@ -3475,18 +3717,6 @@ struct LanguageSummaryRow {
           previewTimer = setTimeout(loadPreview, 280);
         });
       });
-
-      var wsOutputRoot = document.getElementById("ws-output-root");
-      function syncStripOutputRoot() {
-        if (wsOutputRoot) wsOutputRoot.textContent = outputDirInput.value || "out/web";
-      }
-
-      if (outputDirInput) {
-        outputDirInput.addEventListener("input", function () {
-          syncStripOutputRoot();
-          updateReview();
-        });
-      }
 
       ["generated_file_detection", "minified_file_detection", "vendor_directory_detection", "include_lockfiles", "binary_file_behavior"].forEach(function (id) {
         var node = document.getElementById(id);
@@ -3522,13 +3752,14 @@ struct LanguageSummaryRow {
       }
 
       loadSavedTheme();
-      updateReportTitleFromPath();
       updateMixedPolicyUI();
       updatePythonDocstringUI();
       applyScanPreset();
       updatePresetDescriptions();
       applyArtifactPreset();
       updateReview();
+      updateScrollProgress(); // initialise bar to 0% (step 1)
+      onPathChange();         // seed output dir, history badge, and preview from initial path
       loadPreview();
 
       (function randomizeWatermarks() {
@@ -3676,6 +3907,16 @@ struct IndexTemplate {}
     .compare-banner { margin-top: 18px; background: var(--info-bg, #eef3ff); border: 1px solid rgba(100,130,220,0.25); border-radius: 14px; padding: 14px 18px; }
     .compare-banner-body { display:flex; align-items:center; gap: 18px; flex-wrap:wrap; }
     .compare-banner-meta { display:flex; flex-direction:column; gap:2px; min-width:0; }
+    .delta-chip { font-size:12px; font-weight:700; padding:2px 8px; border-radius:999px; }
+    .delta-chip.pos { background:#e6f4ea; color:#1e7e34; }
+    .delta-chip.neg { background:#fde8e8; color:#b91c1c; }
+    .delta-cards { display:flex; flex-wrap:wrap; gap:10px; margin-top:14px; }
+    .delta-card { background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:10px 16px; min-width:110px; text-align:center; }
+    .delta-card-val { font-size:20px; font-weight:800; }
+    .delta-card-val.pos { color:#1e7e34; }
+    .delta-card-val.neg { color:#b91c1c; }
+    .delta-card-val.mod { color:#b35428; }
+    .delta-card-lbl { font-size:11px; color:var(--muted); margin-top:3px; }
     .compare-label { font-size:11px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:var(--info-text, #4467d8); }
     .compare-ts { font-size:13px; color:var(--muted); }
     .compare-banner-stats { display:flex; align-items:center; gap:10px; font-size:14px; flex:1 1 auto; flex-wrap:wrap; }
@@ -3782,6 +4023,7 @@ struct IndexTemplate {}
           <div class="compare-banner-meta">
             <span class="compare-label">Previous scan</span>
             <span class="compare-ts">{{ prev_ts }}</span>
+            {% if prev_scan_count > 1 %}<span class="compare-ts">{{ prev_scan_count }} scans total</span>{% endif %}
           </div>
           <div class="compare-banner-stats">
             {% if let Some(prev_code) = prev_run_code_lines %}
@@ -3789,8 +4031,45 @@ struct IndexTemplate {}
               <span class="compare-arrow">→</span>
               <span>Code now: <strong>{{ code_lines }}</strong></span>
             {% endif %}
+            {% if let Some(added) = delta_lines_added %}
+              <span class="delta-chip pos">+{{ added }} added</span>
+            {% endif %}
+            {% if let Some(removed) = delta_lines_removed %}
+              <span class="delta-chip neg">&minus;{{ removed }} removed</span>
+            {% endif %}
           </div>
-          <a class="button" href="/compare?a={{ prev_id }}&b={{ run_id }}" style="white-space:nowrap;">View delta →</a>
+          <a class="button" href="/compare?a={{ prev_id }}&b={{ run_id }}" style="white-space:nowrap;">Full diff →</a>
+        </div>
+      </div>
+
+      <div class="delta-cards">
+        <div class="delta-card">
+          <div class="delta-card-val pos">{% if let Some(v) = delta_lines_added %}+{{ v }}{% else %}—{% endif %}</div>
+          <div class="delta-card-lbl">lines added</div>
+        </div>
+        <div class="delta-card">
+          <div class="delta-card-val neg">{% if let Some(v) = delta_lines_removed %}&minus;{{ v }}{% else %}—{% endif %}</div>
+          <div class="delta-card-lbl">lines removed</div>
+        </div>
+        <div class="delta-card">
+          <div class="delta-card-val">{% if let Some(v) = delta_unmodified_lines %}{{ v }}{% else %}—{% endif %}</div>
+          <div class="delta-card-lbl">unmodified lines</div>
+        </div>
+        <div class="delta-card">
+          <div class="delta-card-val mod">{% if let Some(v) = delta_files_modified %}{{ v }}{% else %}—{% endif %}</div>
+          <div class="delta-card-lbl">files modified</div>
+        </div>
+        <div class="delta-card">
+          <div class="delta-card-val pos">{% if let Some(v) = delta_files_added %}{{ v }}{% else %}—{% endif %}</div>
+          <div class="delta-card-lbl">files added</div>
+        </div>
+        <div class="delta-card">
+          <div class="delta-card-val neg">{% if let Some(v) = delta_files_removed %}{{ v }}{% else %}—{% endif %}</div>
+          <div class="delta-card-lbl">files removed</div>
+        </div>
+        <div class="delta-card">
+          <div class="delta-card-val">{% if let Some(v) = delta_files_unchanged %}{{ v }}{% else %}—{% endif %}</div>
+          <div class="delta-card-lbl">files unchanged</div>
         </div>
       </div>
       {% endif %}{% endif %}
@@ -3863,12 +4142,15 @@ struct IndexTemplate {}
 
       <div class="path-list">
         <div class="path-item"><strong>Project path</strong><code>{{ project_path }}</code></div>
+        {% if let Some(branch) = git_branch %}
+        <div class="path-item"><strong>Git branch</strong><code>{{ branch }}{% if let Some(sha) = git_commit %} @ {{ sha }}{% endif %}</code></div>
+        {% endif %}
         <div class="path-item" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
           <div><strong>Output folder</strong><code>{{ output_dir }}</code></div>
           <button type="button" class="open-path-btn open-folder-button" data-folder="{{ output_dir }}" style="min-height:36px;font-size:13px;">Open in explorer</button>
         </div>
         <div class="path-item" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-          <div><strong>Run ID</strong><code>{{ run_id }}</code></div>
+          <div><strong>Run ID</strong><code>{{ run_id }}</code> &nbsp;<span style="font-size:12px;color:var(--muted)">scan #{{ current_scan_number }} for this project</span></div>
           <button type="button" class="open-path-btn open-folder-button" data-folder="{{ output_dir }}" style="min-height:36px;font-size:13px;">Open run folder</button>
         </div>
       </div>
@@ -4029,6 +4311,20 @@ struct ResultTemplate {
     prev_run_id: Option<String>,
     prev_run_timestamp: Option<String>,
     prev_run_code_lines: Option<u64>,
+    // delta vs previous scan
+    delta_lines_added: Option<i64>,
+    delta_lines_removed: Option<i64>,
+    delta_files_added: Option<usize>,
+    delta_files_removed: Option<usize>,
+    delta_files_modified: Option<usize>,
+    delta_files_unchanged: Option<usize>,
+    delta_unmodified_lines: Option<u64>,
+    // git context
+    git_branch: Option<String>,
+    git_commit: Option<String>,
+    // history
+    prev_scan_count: usize,
+    current_scan_number: usize,
 }
 
 #[derive(Template)]

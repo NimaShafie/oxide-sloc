@@ -53,6 +53,8 @@ pub struct EnvironmentMetadata {
     pub operating_system: String,
     pub architecture: String,
     pub runtime_mode: String,
+    pub initiator_username: String,
+    pub initiator_hostname: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -124,6 +126,19 @@ pub struct AnalysisRun {
     /// Non-empty only when `discovery.submodule_breakdown` is enabled.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub submodule_summaries: Vec<SubmoduleSummary>,
+}
+
+fn get_current_username() -> String {
+    std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+fn get_hostname() -> String {
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
+        .unwrap_or_else(|_| "unknown".to_string())
 }
 
 pub fn analyze(config: &AppConfig, runtime_mode: &str) -> Result<AnalysisRun> {
@@ -250,6 +265,8 @@ pub fn analyze(config: &AppConfig, runtime_mode: &str) -> Result<AnalysisRun> {
             operating_system: std::env::consts::OS.into(),
             architecture: std::env::consts::ARCH.into(),
             runtime_mode: runtime_mode.into(),
+            initiator_username: get_current_username(),
+            initiator_hostname: get_hostname(),
         },
         effective_configuration: config.clone(),
         input_roots: config

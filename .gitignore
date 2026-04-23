@@ -19,12 +19,21 @@ Thumbs.db
 
 # Local test output (not for commit)
 out/
+out.7z
 tmp-sloc/
 
 # Loose report artefacts from local runs
 result.json
 result.html
 result.pdf
+
+# Coverage / profiling (cargo-llvm-cov, grcov, cargo-flamegraph)
+*.profraw
+*.profdata
+lcov.info
+flamegraph.svg
+perf.data
+perf.data.old
 
 # Pre-built binary archives (released via GitHub Releases, not tracked in git)
 /dist/

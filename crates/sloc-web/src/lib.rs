@@ -24,8 +24,8 @@ use sloc_config::{AppConfig, BinaryFileBehavior, MixedLinePolicy};
 static CHART_JS: &[u8] = include_bytes!("../static/chart.umd.min.js");
 
 use sloc_core::{
-    analyze, compute_delta, read_json, FileChangeStatus, RegistryEntry, ScanRegistry,
-    ScanSummarySnapshot,
+    analyze, compute_delta, read_json, AnalysisRun, FileChangeStatus, RegistryEntry, ScanRegistry,
+    ScanSummarySnapshot, SummaryTotals,
 };
 use sloc_report::{render_html, write_pdf_from_html};
 
@@ -48,7 +48,57 @@ struct RunArtifacts {
     report_title: String,
 }
 
+/// Injects a standard hardening header set on every response.
+async fn security_headers_middleware(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    // Prevent embedding in frames on other origins.
+    headers.insert(
+        header::X_FRAME_OPTIONS,
+        axum::http::HeaderValue::from_static("DENY"),
+    );
+    // Block MIME-type sniffing.
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        axum::http::HeaderValue::from_static("nosniff"),
+    );
+    // Do not send Referer header to other origins.
+    headers.insert(
+        header::REFERRER_POLICY,
+        axum::http::HeaderValue::from_static("no-referrer"),
+    );
+    // Strict CSP: all resources must be same-origin; inline styles/scripts allowed because
+    // all templates are fully inline (no external CDN calls).
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        axum::http::HeaderValue::from_static(
+            "default-src 'self'; \
+             script-src 'self' 'unsafe-inline'; \
+             style-src 'self' 'unsafe-inline'; \
+             img-src 'self' data:; \
+             font-src 'self'; \
+             object-src 'none'; \
+             base-uri 'self'; \
+             form-action 'self';",
+        ),
+    );
+    response
+}
+
+/// Constant-time byte-slice equality — prevents timing side-channels when comparing secrets.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 /// Rejects requests when `SLOC_API_KEY` is set and the `X-API-Key` header does not match.
+/// The comparison is constant-time to prevent timing-based key extraction.
 /// When the env var is absent the middleware is a no-op (localhost default mode).
 async fn api_key_middleware(request: Request, next: Next) -> Response {
     if let Ok(expected) = std::env::var("SLOC_API_KEY") {
@@ -57,7 +107,7 @@ async fn api_key_middleware(request: Request, next: Next) -> Response {
             .get("X-API-Key")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        if provided != expected {
+        if !ct_eq(provided.as_bytes(), expected.as_bytes()) {
             return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
         }
     }
@@ -71,7 +121,9 @@ pub async fn serve(config: AppConfig) -> Result<()> {
     let registry_path = std::env::var("SLOC_REGISTRY_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| output_root.join("registry.json"));
-    let registry = ScanRegistry::load(&registry_path);
+    let mut registry = ScanRegistry::load(&registry_path);
+    registry.prune_stale();
+    let _ = registry.save(&registry_path);
 
     let state = AppState {
         base_config: config,
@@ -88,6 +140,8 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         .route("/preview", get(preview_handler))
         .route("/pick-directory", get(pick_directory_handler))
         .route("/open-path", get(open_path_handler))
+        .route("/pick-file", get(pick_file_handler))
+        .route("/locate-report", post(locate_report_handler))
         .route("/history", get(history_handler))
         .route("/compare-select", get(compare_select_handler))
         .route("/compare", get(compare_handler))
@@ -107,6 +161,8 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         .route("/static/chart.js", get(chart_js_handler))
         // Limit form/body size to 10 MB — analysis paths are short strings, no uploads expected
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
+        // Apply security response headers to every route.
+        .layer(middleware::from_fn(security_headers_middleware))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind_address)
@@ -153,7 +209,9 @@ async fn splash() -> impl IntoResponse {
 }
 
 async fn index() -> impl IntoResponse {
-    let template = IndexTemplate {};
+    let template = IndexTemplate {
+        version: env!("CARGO_PKG_VERSION"),
+    };
 
     Html(
         template
@@ -246,6 +304,110 @@ async fn pick_directory_handler(Query(query): Query<PickDirectoryQuery>) -> impl
     })
 }
 
+async fn pick_file_handler() -> impl IntoResponse {
+    let picked = rfd::FileDialog::new()
+        .set_title("Select HTML report")
+        .add_filter("HTML report", &["html"])
+        .pick_file();
+    Json(PickDirectoryResponse {
+        selected_path: picked.as_ref().map(|p| display_path(p)),
+        cancelled: picked.is_none(),
+    })
+}
+
+#[derive(Deserialize)]
+struct LocateReportForm {
+    file_path: String,
+}
+
+async fn locate_report_handler(
+    State(state): State<AppState>,
+    Form(form): Form<LocateReportForm>,
+) -> impl IntoResponse {
+    let html_path = PathBuf::from(&form.file_path);
+    let parent = match html_path.parent() {
+        Some(p) if html_path.exists() => p.to_path_buf(),
+        _ => {
+            let html = ErrorTemplate {
+                message: format!(
+                    "Report file not found or path is invalid:\n  {}",
+                    form.file_path
+                ),
+                last_report_url: Some("/history".to_string()),
+            }
+            .render()
+            .unwrap_or_else(|_| "<pre>Invalid path.</pre>".to_string());
+            return Html(html).into_response();
+        }
+    };
+    let json_candidate = parent.join("result.json");
+    let mut reg = state.registry.lock().await;
+    // Find an existing entry whose output directory matches the selected file's parent.
+    let entry_idx = reg.entries.iter().position(|e| {
+        let json_match = e
+            .json_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(|p| p == parent)
+            .unwrap_or(false);
+        let html_match = e
+            .html_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(|p| p == parent)
+            .unwrap_or(false);
+        json_match || html_match
+    });
+    if let Some(idx) = entry_idx {
+        reg.entries[idx].html_path = Some(html_path);
+        let _ = reg.save(&state.registry_path);
+        return axum::response::Redirect::to("/history?linked=1").into_response();
+    }
+    // No match — attempt to build an entry from an adjacent result.json.
+    if json_candidate.exists() {
+        if let Ok(run) = read_json(&json_candidate) {
+            let project_label = run
+                .input_roots
+                .first()
+                .map(|r| sanitize_project_label(r))
+                .unwrap_or_else(|| "Unknown Project".to_string());
+            let entry = RegistryEntry {
+                run_id: run.tool.run_id.clone(),
+                timestamp_utc: run.tool.timestamp_utc,
+                project_label,
+                input_roots: run.input_roots.clone(),
+                json_path: Some(json_candidate),
+                html_path: Some(html_path),
+                pdf_path: None,
+                summary: ScanSummarySnapshot {
+                    files_analyzed: run.summary_totals.files_analyzed,
+                    files_skipped: run.summary_totals.files_skipped,
+                    total_physical_lines: run.summary_totals.total_physical_lines,
+                    code_lines: run.summary_totals.code_lines,
+                    comment_lines: run.summary_totals.comment_lines,
+                    blank_lines: run.summary_totals.blank_lines,
+                },
+                git_branch: None,
+                git_commit: None,
+            };
+            reg.add_entry(entry);
+            let _ = reg.save(&state.registry_path);
+            return axum::response::Redirect::to("/history?linked=1").into_response();
+        }
+    }
+    let html = ErrorTemplate {
+        message: format!(
+            "Could not link this report.\n\nNo matching scan record was found, and no \
+             'result.json' was found in the same folder.\n\nFile: {}",
+            html_path.display()
+        ),
+        last_report_url: Some("/history".to_string()),
+    }
+    .render()
+    .unwrap_or_else(|_| "<pre>Link failed.</pre>".to_string());
+    Html(html).into_response()
+}
+
 #[derive(Debug, Deserialize)]
 struct OpenPathQuery {
     path: Option<String>,
@@ -257,11 +419,24 @@ async fn open_path_handler(Query(query): Query<OpenPathQuery>) -> impl IntoRespo
         _ => return (StatusCode::BAD_REQUEST, "missing path").into_response(),
     };
 
-    let path = std::path::PathBuf::from(raw);
-    let target = if path.is_file() {
-        path.parent().map(std::path::PathBuf::from).unwrap_or(path)
+    // Canonicalize before use: rejects non-existent paths, resolves symlinks and
+    // `..` components so no traversal is possible regardless of the caller's input.
+    let canonical = match fs::canonicalize(raw) {
+        Ok(p) => p,
+        Err(_) => return (StatusCode::BAD_REQUEST, "path not found").into_response(),
+    };
+
+    // Must be a directory (or a file whose parent directory we open).
+    let target = if canonical.is_file() {
+        match canonical.parent() {
+            Some(p) => p.to_path_buf(),
+            None => return (StatusCode::BAD_REQUEST, "path has no parent").into_response(),
+        }
+    } else if canonical.is_dir() {
+        canonical
     } else {
-        path
+        // Block special devices, pipes, sockets, etc.
+        return (StatusCode::BAD_REQUEST, "path is not a file or directory").into_response();
     };
 
     #[cfg(target_os = "windows")]
@@ -428,16 +603,17 @@ async fn analyze_handler(
     let run_id = run.tool.run_id.to_string();
 
     // Capture the most-recent previous scan for this project before registering the current one.
+    // Only consider entries whose json file still exists on disk.
     let prev_entry: Option<RegistryEntry> = {
         let reg = state.registry.lock().await;
         reg.entries_for_roots(&run.input_roots)
             .into_iter()
-            .next()
+            .find(|e| e.json_path.as_ref().is_some_and(|p| p.exists()))
             .cloned()
     };
 
-    // Detect git branch and commit for the project path.
-    let (git_branch, git_commit) = detect_git_info(&resolve_input_path(&form.path));
+    // Detect git branch, commit, and last commit author for the project path.
+    let (git_branch, git_commit, git_author) = detect_git_info(&resolve_input_path(&form.path));
 
     // Compute line-level delta vs the previous scan if JSON is available.
     let scan_delta = prev_entry.as_ref().and_then(|prev| {
@@ -448,7 +624,10 @@ async fn analyze_handler(
     });
     let prev_scan_count: usize = {
         let reg = state.registry.lock().await;
-        reg.entries_for_roots(&run.input_roots).len()
+        reg.entries_for_roots(&run.input_roots)
+            .iter()
+            .filter(|e| e.json_path.as_ref().is_some_and(|p| p.exists()))
+            .count()
     };
 
     let output_root = match resolve_output_root(form.output_dir.as_deref()) {
@@ -513,6 +692,7 @@ async fn analyze_handler(
             input_roots: run.input_roots.clone(),
             json_path: artifacts.json_path.clone(),
             html_path: artifacts.html_path.clone(),
+            pdf_path: artifacts.pdf_path.clone(),
             summary: ScanSummarySnapshot {
                 files_analyzed: run.summary_totals.files_analyzed,
                 files_skipped: run.summary_totals.files_skipped,
@@ -706,19 +886,43 @@ async fn analyze_handler(
         }),
         git_branch: git_branch.clone(),
         git_commit: git_commit.clone(),
+        git_author: git_author.clone(),
         current_scan_number: prev_scan_count + 1,
         prev_scan_count,
         submodule_rows: run
             .submodule_summaries
             .iter()
-            .map(|s| SubmoduleRow {
-                name: s.name.clone(),
-                relative_path: s.relative_path.clone(),
-                files_analyzed: s.files_analyzed,
-                code_lines: s.code_lines,
-                comment_lines: s.comment_lines,
-                blank_lines: s.blank_lines,
-                total_physical_lines: s.total_physical_lines,
+            .map(|s| {
+                let safe = sanitize_project_label(&s.name);
+                let artifact_key = format!("sub_{}", safe);
+                let html_url = if run.effective_configuration.discovery.submodule_breakdown
+                    && form.generate_html.is_some()
+                {
+                    let parent_path = run.input_roots.first().map(|s| s.as_str()).unwrap_or("");
+                    let sub_run = build_sub_run(&run, s, parent_path);
+                    if let Ok(sub_html) = render_html(&sub_run) {
+                        let path = run_dir.join(format!("{}.html", artifact_key));
+                        if fs::write(&path, sub_html.as_bytes()).is_ok() {
+                            Some(format!("/runs/{}/{}", run_id, artifact_key))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                SubmoduleRow {
+                    name: s.name.clone(),
+                    relative_path: s.relative_path.clone(),
+                    files_analyzed: s.files_analyzed,
+                    code_lines: s.code_lines,
+                    comment_lines: s.comment_lines,
+                    blank_lines: s.blank_lines,
+                    total_physical_lines: s.total_physical_lines,
+                    html_url,
+                }
             })
             .collect(),
     };
@@ -748,18 +952,32 @@ async fn artifact_handler(
         None => {
             let reg = state.registry.lock().await;
             match reg.find_by_run_id(&run_id) {
-                Some(entry) => RunArtifacts {
-                    output_dir: entry
+                Some(entry) => {
+                    let output_dir = entry
                         .html_path
                         .as_ref()
                         .or(entry.json_path.as_ref())
+                        .or(entry.pdf_path.as_ref())
                         .and_then(|p| p.parent().map(PathBuf::from))
-                        .unwrap_or_default(),
-                    html_path: entry.html_path.clone(),
-                    pdf_path: None,
-                    json_path: entry.json_path.clone(),
-                    report_title: entry.project_label.clone(),
-                },
+                        .unwrap_or_default();
+                    // Recover pdf_path: use the persisted one, or look for report.pdf
+                    // adjacent to html/json if only the old entries lack it.
+                    let pdf_path = entry.pdf_path.clone().or_else(|| {
+                        let candidate = output_dir.join("report.pdf");
+                        if candidate.exists() {
+                            Some(candidate)
+                        } else {
+                            None
+                        }
+                    });
+                    RunArtifacts {
+                        output_dir,
+                        html_path: entry.html_path.clone(),
+                        pdf_path,
+                        json_path: entry.json_path.clone(),
+                        report_title: entry.project_label.clone(),
+                    }
+                }
                 None => {
                     let error_html = ErrorTemplate {
                         message: format!(
@@ -807,12 +1025,36 @@ async fn artifact_handler(
                         Html(content).into_response()
                     }
                 }
-                Err(_) => StatusCode::NOT_FOUND.into_response(),
+                Err(err) => {
+                    let msg = format!(
+                        "HTML report could not be read from the expected path:\n  {}\n\n\
+                         Error: {err}\n\n\
+                         If you moved or renamed the output folder, the stored path is now stale. \
+                         Use 'Open HTML folder' from the results page to browse the output directory.",
+                        path.display()
+                    );
+                    let html = ErrorTemplate {
+                        message: msg,
+                        last_report_url: None,
+                    }
+                    .render()
+                    .unwrap_or_else(|_| "<pre>File not found.</pre>".to_string());
+                    (StatusCode::NOT_FOUND, Html(html)).into_response()
+                }
             }
         }
         "pdf" => {
             let Some(path) = artifact_set.pdf_path else {
-                return StatusCode::NOT_FOUND.into_response();
+                let msg = "PDF report was not generated for this run, or was not recorded in \
+                           the scan registry. Re-run the analysis with PDF output enabled."
+                    .to_string();
+                let html = ErrorTemplate {
+                    message: msg,
+                    last_report_url: None,
+                }
+                .render()
+                .unwrap_or_else(|_| "<pre>PDF not available.</pre>".to_string());
+                return (StatusCode::NOT_FOUND, Html(html)).into_response();
             };
 
             match fs::read(&path) {
@@ -850,12 +1092,36 @@ async fn artifact_handler(
                         ([(header::CONTENT_TYPE, "application/pdf")], bytes).into_response()
                     }
                 }
-                Err(_) => StatusCode::NOT_FOUND.into_response(),
+                Err(err) => {
+                    let msg = format!(
+                        "PDF report could not be read from the expected path:\n  {}\n\n\
+                         Error: {err}\n\n\
+                         If you moved or renamed the output folder, the stored path is now stale. \
+                         Use 'Open PDF folder' from the results page to browse the output directory.",
+                        path.display()
+                    );
+                    let html = ErrorTemplate {
+                        message: msg,
+                        last_report_url: None,
+                    }
+                    .render()
+                    .unwrap_or_else(|_| "<pre>File not found.</pre>".to_string());
+                    (StatusCode::NOT_FOUND, Html(html)).into_response()
+                }
             }
         }
         "json" => {
             let Some(path) = artifact_set.json_path else {
-                return StatusCode::NOT_FOUND.into_response();
+                let msg = "JSON result was not generated for this run, or was not recorded in \
+                           the scan registry. Re-run the analysis with JSON output enabled."
+                    .to_string();
+                let html = ErrorTemplate {
+                    message: msg,
+                    last_report_url: None,
+                }
+                .render()
+                .unwrap_or_else(|_| "<pre>JSON not available.</pre>".to_string());
+                return (StatusCode::NOT_FOUND, Html(html)).into_response();
             };
 
             match fs::read(&path) {
@@ -880,7 +1146,43 @@ async fn artifact_handler(
                             .into_response()
                     }
                 }
-                Err(_) => StatusCode::NOT_FOUND.into_response(),
+                Err(err) => {
+                    let msg = format!(
+                        "JSON result could not be read from the expected path:\n  {}\n\n\
+                         Error: {err}\n\n\
+                         If you moved or renamed the output folder, the stored path is now stale. \
+                         Use 'Open JSON folder' from the results page to browse the output directory.",
+                        path.display()
+                    );
+                    let html = ErrorTemplate {
+                        message: msg,
+                        last_report_url: None,
+                    }
+                    .render()
+                    .unwrap_or_else(|_| "<pre>File not found.</pre>".to_string());
+                    (StatusCode::NOT_FOUND, Html(html)).into_response()
+                }
+            }
+        }
+        _ if artifact.starts_with("sub_") => {
+            let filename = format!("{}.html", artifact);
+            let path = artifact_set.output_dir.join(&filename);
+            match fs::read_to_string(&path) {
+                Ok(content) => Html(content).into_response(),
+                Err(_) => {
+                    let html = ErrorTemplate {
+                        message: format!(
+                            "Sub-report '{}' was not found in the run directory.\n\
+                             Re-run the analysis with 'Detect and separate git submodules' \
+                             and HTML output enabled.",
+                            artifact
+                        ),
+                        last_report_url: None,
+                    }
+                    .render()
+                    .unwrap_or_else(|_| "<pre>Sub-report not found.</pre>".to_string());
+                    (StatusCode::NOT_FOUND, Html(html)).into_response()
+                }
             }
         }
         _ => StatusCode::NOT_FOUND.into_response(),
@@ -901,7 +1203,9 @@ struct HistoryEntryRow {
     comment_lines: u64,
     blank_lines: u64,
     git_branch: String,
+    git_commit: String,
     has_html: bool,
+    has_json: bool,
 }
 
 fn fmt_pst(dt: chrono::DateTime<chrono::Utc>) -> String {
@@ -930,20 +1234,33 @@ fn make_history_rows(reg: &ScanRegistry) -> Vec<HistoryEntryRow> {
             comment_lines: e.summary.comment_lines,
             blank_lines: e.summary.blank_lines,
             git_branch: e.git_branch.clone().unwrap_or_default(),
+            git_commit: e.git_commit.clone().unwrap_or_default(),
             has_html: e.html_path.as_ref().map(|p| p.exists()).unwrap_or(false),
+            has_json: e.json_path.as_ref().map(|p| p.exists()).unwrap_or(false),
         })
         .collect()
 }
 
-async fn history_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let entries = {
+#[derive(Deserialize, Default)]
+struct HistoryQuery {
+    linked: Option<String>,
+}
+
+async fn history_handler(
+    State(state): State<AppState>,
+    Query(query): Query<HistoryQuery>,
+) -> impl IntoResponse {
+    let mut entries = {
         let reg = state.registry.lock().await;
         make_history_rows(&reg)
     };
+    entries.retain(|e| e.has_html);
     let total_scans = entries.len();
+    let linked = query.linked.as_deref() == Some("1");
     let template = HistoryTemplate {
         entries,
         total_scans,
+        linked,
     };
     Html(
         template
@@ -954,10 +1271,11 @@ async fn history_handler(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 async fn compare_select_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let entries = {
+    let mut entries = {
         let reg = state.registry.lock().await;
         make_history_rows(&reg)
     };
+    entries.retain(|e| e.has_json);
     let total_scans = entries.len();
     let template = CompareSelectTemplate {
         entries,
@@ -1079,21 +1397,35 @@ async fn compare_handler(
     let baseline_run = match read_json(base_json) {
         Ok(r) => r,
         Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Baseline load failed: {e}"),
-            )
-                .into_response()
+            let html = ErrorTemplate {
+                message: format!(
+                    "Could not load baseline scan data.\n\nPath: {}\n\nError: {e}\n\n\
+                     The scan output folder may have been moved, renamed, or deleted. \
+                     Re-running the analysis for this project will create fresh comparison data.",
+                    base_json.display()
+                ),
+                last_report_url: Some("/compare-select".to_string()),
+            }
+            .render()
+            .unwrap_or_else(|_| "<pre>Baseline load failed.</pre>".to_string());
+            return (StatusCode::NOT_FOUND, Html(html)).into_response();
         }
     };
     let current_run = match read_json(curr_json) {
         Ok(r) => r,
         Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Current load failed: {e}"),
-            )
-                .into_response()
+            let html = ErrorTemplate {
+                message: format!(
+                    "Could not load current scan data.\n\nPath: {}\n\nError: {e}\n\n\
+                     The scan output folder may have been moved, renamed, or deleted. \
+                     Re-running the analysis for this project will create fresh comparison data.",
+                    curr_json.display()
+                ),
+                last_report_url: Some("/compare-select".to_string()),
+            }
+            .render()
+            .unwrap_or_else(|_| "<pre>Current load failed.</pre>".to_string());
+            return (StatusCode::NOT_FOUND, Html(html)).into_response();
         }
     };
 
@@ -1690,7 +2022,40 @@ fn split_patterns(raw: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-fn detect_git_info(project_path: &Path) -> (Option<String>, Option<String>) {
+fn build_sub_run(parent: &AnalysisRun, sub: &sloc_core::SubmoduleSummary, parent_path: &str) -> AnalysisRun {
+    let sub_files: Vec<_> = parent
+        .per_file_records
+        .iter()
+        .filter(|r| r.submodule.as_deref() == Some(sub.name.as_str()))
+        .cloned()
+        .collect();
+    let mut config = parent.effective_configuration.clone();
+    config.reporting.report_title =
+        format!("{} — {}", config.reporting.report_title, sub.name);
+    AnalysisRun {
+        tool: parent.tool.clone(),
+        environment: parent.environment.clone(),
+        effective_configuration: config,
+        input_roots: vec![format!("{}/{}", parent_path, sub.relative_path)],
+        summary_totals: SummaryTotals {
+            files_considered: sub.files_analyzed,
+            files_analyzed: sub.files_analyzed,
+            files_skipped: 0,
+            total_physical_lines: sub.total_physical_lines,
+            code_lines: sub.code_lines,
+            comment_lines: sub.comment_lines,
+            blank_lines: sub.blank_lines,
+            mixed_lines_separate: 0,
+        },
+        totals_by_language: sub.language_summaries.clone(),
+        per_file_records: sub_files,
+        skipped_file_records: vec![],
+        warnings: vec![],
+        submodule_summaries: vec![],
+    }
+}
+
+fn detect_git_info(project_path: &Path) -> (Option<String>, Option<String>, Option<String>) {
     let run_git = |args: &[&str]| -> Option<String> {
         std::process::Command::new("git")
             .args(args)
@@ -1704,7 +2069,8 @@ fn detect_git_info(project_path: &Path) -> (Option<String>, Option<String>) {
     };
     let branch = run_git(&["branch", "--show-current"]);
     let commit = run_git(&["rev-parse", "--short", "HEAD"]);
-    (branch, commit)
+    let author = run_git(&["log", "--format=%an", "-1"]);
+    (branch, commit, author)
 }
 
 fn sanitize_project_label(raw: &str) -> String {
@@ -2321,6 +2687,7 @@ struct SubmoduleRow {
     comment_lines: u64,
     blank_lines: u64,
     total_physical_lines: u64,
+    html_url: Option<String>,
 }
 
 #[derive(Template)]
@@ -2393,7 +2760,7 @@ struct SubmoduleRow {
     .background-watermarks { position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
     .background-watermarks img { position: absolute; opacity: 0.18; filter: blur(0.3px); user-select: none; max-width: none; }
     .top-nav { position: sticky; top: 0; z-index: 30; background: linear-gradient(180deg, var(--nav), var(--nav-2)); border-bottom: 1px solid rgba(255,255,255,0.12); box-shadow: 0 4px 14px rgba(0,0,0,0.18); }
-    .top-nav-inner { max-width: 1720px; margin: 0 auto; padding: 4px 24px; min-height: 56px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 460px) auto; align-items: center; gap: 18px; }
+    .top-nav-inner { max-width: 1720px; margin: 0 auto; padding: 4px 24px; min-height: 56px; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 18px; }
     .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
     .brand-logo { width: 52px; height: 52px; object-fit: contain; flex: 0 0 auto; filter: drop-shadow(0 4px 10px rgba(0,0,0,0.22)); }
     .brand-copy { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
@@ -2414,9 +2781,16 @@ struct SubmoduleRow {
     body.dark-theme .theme-toggle .icon-sun { display:block; }
     body.dark-theme .theme-toggle .icon-moon { display:none; }
     .status-dot { width: 8px; height: 8px; border-radius: 999px; background: #26d768; box-shadow: 0 0 0 4px rgba(38,215,104,0.14); }
+    .nav-tab { display:inline-flex; align-items:center; gap: 7px; min-height: 36px; padding: 0 16px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.22); color: #fff; background: rgba(255,255,255,0.12); font-size: 13px; font-weight: 700; text-decoration: none; transition: background 0.15s ease, transform 0.15s ease; white-space: nowrap; }
+    .nav-tab:hover { background: rgba(255,255,255,0.22); transform: translateY(-1px); }
+    .nav-tab svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2.2; }
     .page { max-width: 1720px; margin: 0 auto; padding: 18px 24px 40px; }
     .subnav { display:flex; align-items:center; gap:8px; margin-bottom: 14px; color: var(--muted-2); font-size: 13px; }
     .subnav strong { color: var(--text); }
+    .subnav-meta-right { margin-left: auto; display:flex; align-items:center; gap: 8px; font-size: 12px; color: var(--text); font-weight: 600; }
+    .subnav-meta-right code { font-family: ui-monospace, monospace; font-size: 11px; background: rgba(184,93,51,0.10); border: 1px solid rgba(184,93,51,0.22); color: var(--oxide-2); padding: 2px 8px; border-radius: 6px; font-weight: 800; }
+    .subnav-ui-label { font-weight: 700; color: var(--oxide-2); }
+    .subnav-sep { opacity: 0.45; }
     .summary-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }
     .workbench-strip { display:flex; align-items:stretch; gap:16px; margin-bottom: 18px; flex-wrap: wrap; overflow: visible; }
     .workbench-box { border: 1px solid var(--line-strong); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
@@ -2424,27 +2798,29 @@ struct SubmoduleRow {
     .wb-stats { flex: 5 1 0; display:flex; flex-direction:column; overflow: visible; min-width: 0; }
     .wb-stats-header { padding: 10px 24px 0; }
     .wb-stats-title { font-size: 9px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted-2); }
-    .ws-left { display:flex; align-items:center; gap:0; flex:1 1 auto; flex-wrap:wrap; padding: 10px 24px 12px; overflow: visible; }
-    .ws-stat { display:flex; flex-direction:column; gap: 2px; flex:0 0 auto; min-width:80px; }
+    .ws-left { display:flex; align-items:center; gap:12px; flex:1 1 auto; flex-wrap:wrap; padding: 14px 20px 18px; overflow: visible; }
+    .ws-stat { display:flex; flex-direction:column; gap: 6px; flex:0 0 auto; min-width:110px; padding: 12px 18px; border-radius: 10px; background: rgba(184,93,51,0.06); border: 1px solid rgba(184,93,51,0.15); }
+    body.dark-theme .ws-stat { background: rgba(211,122,76,0.08); border-color: rgba(211,122,76,0.20); }
     .ws-label { font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.10em; color: var(--muted-2); }
     .ws-value { font-size: 13px; font-weight: 700; color: var(--text); }
     .ws-badge { display:inline-flex; align-items:center; padding: 1px 8px; border-radius: 999px; background: rgba(184,93,51,0.10); border: 1px solid rgba(184,93,51,0.20); color: var(--oxide-2); font-size: 12px; font-weight: 800; position:relative; cursor:help; overflow: visible; }
     body.dark-theme .ws-badge { background: rgba(211,122,76,0.15); border-color: rgba(211,122,76,0.25); color: var(--oxide); }
     .ws-lang-tooltip { display:none; position:absolute; top:calc(100% + 8px); left:0; z-index:200; background:var(--surface); border:1px solid var(--line-strong); border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,0.14); padding:10px 14px; font-size:12px; font-weight:700; color:var(--text); white-space:nowrap; pointer-events:none; }
     .ws-badge:hover .ws-lang-tooltip { display:block; }
-    .ws-divider { width: 1px; height: 28px; background: var(--line); flex: 0 0 auto; margin: 0 18px; align-self:center; }
+    .ws-divider { display: none; }
     .ws-path-link { background:none; border:none; padding:0; font:inherit; font-size:13px; font-weight:700; color:var(--oxide-2); cursor:pointer; text-decoration:underline; text-decoration-style:dotted; }
     .ws-path-link:hover { color:var(--oxide); }
     body.dark-theme .ws-path-link { color:var(--oxide); }
-    .ws-history-group { display:flex; flex-direction:column; justify-content:center; padding: 12px 24px; flex: 2 1 0; min-width: 320px; }
-    .ws-history-label { font-size: 9px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted-2); margin-bottom: 6px; }
-    .ws-history-inner { display:flex; align-items:center; gap: 10px; }
-    .ws-mini-box { display:flex; flex-direction:column; gap: 2px; padding: 6px 12px; border-radius: 8px; background: rgba(184,93,51,0.06); border: 1px solid rgba(184,93,51,0.15); min-width: 100px; }
+    .ws-history-group { display:flex; flex-direction:column; justify-content:center; padding: 16px 28px; flex: 2 1 0; min-width: 360px; }
+    .ws-history-label { font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted-2); margin-bottom: 10px; }
+    .ws-history-inner { display:flex; align-items:center; gap: 18px; }
+    .ws-mini-box { display:flex; flex-direction:column; gap: 6px; padding: 12px 18px; border-radius: 10px; background: rgba(184,93,51,0.06); border: 1px solid rgba(184,93,51,0.15); min-width: 130px; }
     body.dark-theme .ws-mini-box { background: rgba(211,122,76,0.08); border-color: rgba(211,122,76,0.20); }
-    .ws-mini-label { font-size: 9px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.10em; color: var(--muted-2); }
-    .ws-mini-value { font-size: 13px; font-weight: 700; color: var(--text); }
+    .ws-mini-label { font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.10em; color: var(--muted-2); }
+    .ws-mini-value { font-size: 17px; font-weight: 800; color: var(--text); }
     .ws-mini-actions { display:flex; flex-direction:column; gap: 4px; margin-left: 4px; }
-    .ws-action-link { display:inline-flex; align-items:center; gap: 5px; padding: 5px 10px; border-radius: 7px; font-size: 11px; font-weight: 800; color: var(--oxide-2); text-decoration:none; border: 1px solid rgba(184,93,51,0.20); background: rgba(184,93,51,0.06); transition: background 0.15s ease, border-color 0.15s ease; white-space:nowrap; }
+    .ws-action-link { display:inline-flex; align-items:center; justify-content:center; gap: 7px; padding: 12px 22px; border-radius: 10px; font-size: 13px; font-weight: 800; color: var(--oxide-2); text-decoration:none; border: 1px solid rgba(184,93,51,0.20); background: rgba(184,93,51,0.06); transition: background 0.15s ease, border-color 0.15s ease; white-space:nowrap; align-self:stretch; }
+    .ws-action-link svg { width: 15px; height: 15px; flex-shrink:0; }
     .ws-action-link:hover { background: rgba(184,93,51,0.14); border-color: rgba(184,93,51,0.35); text-decoration:none; }
     body.dark-theme .ws-action-link { color: var(--oxide); border-color: rgba(211,122,76,0.25); background: rgba(211,122,76,0.08); }
     .summary-card, .card, .step-nav, .explainer-card, .review-card, .workspace-card, .artifact-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, transform 0.18s ease; }
@@ -2480,7 +2856,7 @@ struct SubmoduleRow {
     .card-header { padding: 22px 22px 18px; border-bottom:1px solid var(--line); background: linear-gradient(180deg, rgba(255,255,255,0.30), transparent), var(--surface); position: sticky; top: 68px; z-index: 20; border-radius: var(--radius) var(--radius) 0 0; }
     body.dark-theme .card-header { background: linear-gradient(180deg, rgba(255,255,255,0.04), transparent), var(--surface); }
     .card-title-row { display:flex; justify-content:space-between; align-items:flex-start; gap:18px; }
-    .wizard-progress { min-width: 240px; max-width: 320px; width: 100%; }
+    .wizard-progress { min-width: 288px; max-width: 384px; width: 100%; }
     .wizard-progress-top { display:flex; justify-content:space-between; align-items:center; gap: 12px; margin-bottom: 8px; }
     .wizard-progress-label { font-size: 12px; font-weight: 800; color: var(--muted-2); text-transform: uppercase; letter-spacing: 0.08em; }
     .wizard-progress-value { font-size: 13px; font-weight: 900; color: var(--text); }
@@ -2714,15 +3090,13 @@ struct SubmoduleRow {
         </div>
       </div>
       <div class="nav-status">
+        <a class="nav-tab" href="/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>Home</a>
+        <a class="nav-tab" href="/history"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>History</a>
+        <div class="nav-pill"><span class="status-dot"></span>Server online</div>
         <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme" title="Toggle theme">
           <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 1 0 9.8 9.8z"></path></svg>
           <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="M4.9 4.9l1.4 1.4"></path><path d="M17.7 17.7l1.4 1.4"></path><path d="M4.9 19.1l1.4-1.4"></path><path d="M17.7 6.3l1.4-1.4"></path></svg>
         </button>
-        <a class="nav-pill" href="/">Home</a>
-        <a class="nav-pill" href="/history">History</a>
-        <div class="nav-pill"><span class="status-dot"></span>Server online</div>
-        <div class="nav-pill">Endpoint <code>127.0.0.1:4317</code></div>
-        <div class="nav-pill">Mode localhost UI</div>
       </div>
     </div>
   </div>
@@ -2741,6 +3115,7 @@ struct SubmoduleRow {
       <span>Workbench</span>
       <span>/</span>
       <strong id="breadcrumb-title">Guided scan setup</strong>
+      <span class="subnav-meta-right"><code>127.0.0.1:4317</code><span class="subnav-sep">&nbsp;·&nbsp;</span><span class="subnav-ui-label">localhost UI</span></span>
     </div>
 
     <div class="workbench-strip">
@@ -2783,8 +3158,8 @@ struct SubmoduleRow {
             <div class="ws-mini-label">Last Scan</div>
             <div class="ws-mini-value" id="ws-last-scan">—</div>
           </div>
-          <a class="ws-action-link" href="/history" style="margin-left:4px;">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>History
+          <a class="ws-action-link" href="/history">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>History
           </a>
         </div>
       </div>
@@ -3383,8 +3758,27 @@ struct SubmoduleRow {
       }
 
       function updateScrollProgress() {
-        var stepPct = [0, 25, 50, 75, 100];
-        var percent = stepPct[Math.min(currentStep, 4)] !== undefined ? stepPct[Math.min(currentStep, 4)] : 0;
+        // Step 1 starts at 0%, step 2 at 25%, step 3 at 50%, step 4 at 75%.
+        // Within each step, scroll position nudges the bar forward (max just below the next milestone).
+        var stepBase = [0, 0, 25, 50, 75]; // base % for steps 1–4 (index = step number)
+        var stepEnd  = [0, 24, 49, 74, 100]; // max % before clicking Next (step 4 can reach 100)
+        var step = Math.min(Math.max(currentStep, 1), 4);
+        var base = stepBase[step];
+        var end  = stepEnd[step];
+
+        var scrollFrac = 0;
+        var activePanel = document.querySelector(".wizard-step.active");
+        if (activePanel) {
+          var scrollTop = window.scrollY || window.pageYOffset || 0;
+          var panelTop = activePanel.getBoundingClientRect().top + scrollTop;
+          var panelH = activePanel.scrollHeight || activePanel.offsetHeight || 1;
+          var viewH = window.innerHeight || document.documentElement.clientHeight || 800;
+          var scrolled = scrollTop + viewH - panelTop;
+          scrollFrac = Math.min(1, Math.max(0, scrolled / (panelH + viewH * 0.4)));
+        }
+
+        var percent = Math.round(base + (end - base) * scrollFrac);
+        percent = Math.min(end, Math.max(base, percent));
         if (wizardProgressFill) wizardProgressFill.style.width = percent + "%";
         if (wizardProgressValue) wizardProgressValue.textContent = percent + "%";
       }
@@ -3585,7 +3979,7 @@ struct SubmoduleRow {
           if (readinessSummary) {
             var selectedArtifactsCount = selectedArtifacts.length;
             readinessSummary.innerHTML = ''
-              + '<li>Current step completion: ' + escapeHtml(String(Math.max(25, Math.min(100, currentStep * 25)))) + '%</li>'
+              + '<li>Current step completion: ' + escapeHtml(String(Math.max(0, Math.min(100, (currentStep - 1) * 25)))) + '%</li>'
               + '<li>Project path set: ' + (pathInput.value ? 'yes' : 'no') + '</li>'
               + '<li>Artifact count selected: ' + escapeHtml(String(selectedArtifactsCount)) + '</li>'
               + '<li>Ready to run: ' + ((pathInput.value && selectedArtifactsCount > 0) ? 'yes' : 'no') + '</li>';
@@ -4147,6 +4541,7 @@ struct SubmoduleRow {
       applyArtifactPreset();
       updateReview();
       updateScrollProgress(); // initialise bar to 0% (step 1)
+      window.addEventListener("scroll", updateScrollProgress, { passive: true });
       onPathChange();         // seed output dir, history badge, and preview from initial path
       loadPreview();
 
@@ -4185,7 +4580,7 @@ struct SubmoduleRow {
     })();
   </script>
   <footer class="site-footer">
-    oxide-sloc — local source line analysis workbench &nbsp;·&nbsp;
+    oxide-sloc v{{ version }} — local source line analysis workbench &nbsp;·&nbsp;
     Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
     &nbsp;·&nbsp; <a href="https://github.com/NimaShafie/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
@@ -4195,7 +4590,9 @@ struct SubmoduleRow {
 "##,
     ext = "html"
 )]
-struct IndexTemplate {}
+struct IndexTemplate {
+    version: &'static str,
+}
 
 // ── SplashTemplate ────────────────────────────────────────────────────────────
 
@@ -4224,10 +4621,14 @@ struct IndexTemplate {}
     *{box-sizing:border-box;} html,body{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);}
     .background-watermarks{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
     .background-watermarks img{position:absolute;opacity:0.16;filter:blur(0.3px);user-select:none;max-width:none;}
+    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
+    .code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+    @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}8%{opacity:var(--op);}88%{opacity:var(--op);}100%{opacity:0;transform:translateY(-120px) rotate(var(--rot));}}
     .top-nav{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,var(--nav),var(--nav-2));border-bottom:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 14px rgba(0,0,0,0.18);}
     .top-nav-inner{max-width:1720px;margin:0 auto;padding:4px 24px;min-height:56px;display:flex;align-items:center;gap:14px;}
     .brand{display:flex;align-items:center;gap:14px;} .brand-logo{width:42px;height:46px;object-fit:contain;flex:0 0 auto;filter:drop-shadow(0 4px 10px rgba(0,0,0,0.22));}
-    .brand-title{margin:0;color:#fff;font-size:17px;font-weight:800;} .brand-subtitle{color:rgba(255,255,255,0.85);font-size:12px;margin-top:2px;}
+    .brand-copy{display:flex;flex-direction:column;justify-content:center;min-width:0;}
+    .brand-title{margin:0;color:#fff;font-size:17px;font-weight:800;line-height:1.1;} .brand-subtitle{color:rgba(255,255,255,0.85);font-size:12px;margin-top:2px;line-height:1.2;}
     .nav-right{margin-left:auto;display:flex;align-items:center;gap:10px;}
     .nav-pill,.theme-toggle{display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:0 14px;border-radius:999px;border:1px solid rgba(255,255,255,0.18);color:#fff;background:rgba(255,255,255,0.08);font-size:12px;font-weight:700;text-decoration:none;}
     .theme-toggle{width:38px;justify-content:center;padding:0;cursor:pointer;transition:transform 0.15s ease;}
@@ -4237,17 +4638,20 @@ struct IndexTemplate {}
     .page{max-width:1100px;margin:0 auto;padding:48px 24px 60px;position:relative;z-index:1;}
     .hero{text-align:center;margin-bottom:52px;}
     .hero-logo{width:80px;height:88px;object-fit:contain;margin-bottom:20px;filter:drop-shadow(0 8px 22px rgba(184,93,51,0.30));animation:logoBob 3.6s ease-in-out infinite;}
-    @keyframes logoBob{0%,100%{transform:translateY(0);}50%{transform:translateY(-8px);}}
+    @keyframes logoBob{0%,100%{transform:translateY(0) scale(1);}40%{transform:translateY(-10px) scale(1.04);}60%{transform:translateY(-8px) scale(1.03);}}
     .hero-title{font-size:46px;font-weight:900;letter-spacing:-0.04em;margin:0 0 10px;
       background:linear-gradient(90deg,#b85d33 0%,#d37a4c 25%,#6f9bff 50%,#b85d33 75%,#d37a4c 100%);
       background-size:200% auto;-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
       animation:titleShimmer 4s linear infinite;}
     @keyframes titleShimmer{0%{background-position:0% center;}100%{background-position:200% center;}}
     body.dark-theme .hero-title{background:linear-gradient(90deg,#d37a4c 0%,#f0a070 25%,#9bb8ff 50%,#d37a4c 75%,#f0a070 100%);background-size:200% auto;-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;}
-    .hero-subtitle{font-size:18px;color:var(--muted);line-height:1.6;max-width:600px;margin:0 auto;}
+    .hero-subtitle{font-size:18px;color:var(--muted);line-height:1.6;max-width:600px;margin:0 auto;animation:fadeSlideUp 0.9s ease both;}
+    @keyframes fadeSlideUp{from{opacity:0;transform:translateY(18px);}to{opacity:1;transform:translateY(0);}}
     .action-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px;margin-bottom:40px;}
     @media(max-width:720px){.action-grid{grid-template-columns:1fr;}}
-    .action-card{display:flex;flex-direction:column;align-items:flex-start;padding:28px 26px 24px;border-radius:var(--radius);border:1px solid var(--line-strong);background:var(--surface);box-shadow:var(--shadow);text-decoration:none;color:var(--text);transition:transform 0.22s cubic-bezier(.34,1.56,.64,1),box-shadow 0.18s ease,border-color 0.18s ease;}
+    .action-card{display:flex;flex-direction:column;align-items:flex-start;padding:28px 26px 24px;border-radius:var(--radius);border:1px solid var(--line-strong);background:var(--surface);box-shadow:var(--shadow);text-decoration:none;color:var(--text);transition:transform 0.22s cubic-bezier(.34,1.56,.64,1),box-shadow 0.18s ease,border-color 0.18s ease;animation:cardRise 0.7s ease both;}
+    .action-card:nth-child(1){animation-delay:0.1s;} .action-card:nth-child(2){animation-delay:0.2s;} .action-card:nth-child(3){animation-delay:0.3s;}
+    @keyframes cardRise{from{opacity:0;transform:translateY(24px);}to{opacity:1;transform:translateY(0);}}
     .action-card:hover{transform:translateY(-6px) scale(1.012);box-shadow:var(--shadow-strong);border-color:var(--oxide-2);}
     .action-card-icon{width:52px;height:52px;border-radius:16px;display:flex;align-items:center;justify-content:center;margin-bottom:18px;flex:0 0 auto;transition:transform 0.22s cubic-bezier(.34,1.56,.64,1);}
     .action-card:hover .action-card-icon{transform:rotate(-8deg) scale(1.12);}
@@ -4290,11 +4694,12 @@ struct IndexTemplate {}
     <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
     <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
   </div>
+  <div class="code-particles" id="code-particles" aria-hidden="true"></div>
   <div class="top-nav">
     <div class="top-nav-inner">
       <div class="brand">
         <img class="brand-logo" src="/images/logo/small-logo.png" alt="OxideSLOC logo">
-        <div><p class="brand-title">OxideSLOC</p><p class="brand-subtitle">Source line analysis workbench</p></div>
+        <div class="brand-copy"><div class="brand-title">OxideSLOC</div><div class="brand-subtitle">Source line analysis workbench</div></div>
       </div>
       <div class="nav-right">
         <a class="nav-pill" href="/history">View Reports</a>
@@ -4417,6 +4822,37 @@ struct IndexTemplate {}
           img.style.cssText = 'width:' + size + 'px;top:' + pos[0].toFixed(1) + '%;left:' + pos[1].toFixed(1) + '%;transform:rotate(' + rot + 'deg);opacity:' + op + ';';
         });
       })();
+
+      (function spawnCodeParticles() {
+        var container = document.getElementById('code-particles');
+        if (!container) return;
+        var snippets = [
+          '1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312',
+          '// comment','pub fn run','use std::fs','Result<()>','let mut n = 0',
+          'git main','#[derive]','impl Scan','3,841 physical','files: 60',
+          '450 comments','cargo build','Ok(run)','Vec<String>','match lang',
+          'fn main() {','.rs .go .py','sloc_core','render_html','2,163 code'
+        ];
+        var count = 28;
+        for (var i = 0; i < count; i++) {
+          (function(idx) {
+            var el = document.createElement('span');
+            el.className = 'code-particle';
+            var text = snippets[idx % snippets.length];
+            el.textContent = text;
+            var left = Math.random() * 95 + 1;
+            var top = Math.random() * 90 + 5;
+            var dur = (Math.random() * 18 + 16).toFixed(1);
+            var delay = (Math.random() * 22).toFixed(1);
+            var rot = (Math.random() * 26 - 13).toFixed(1);
+            var op = (Math.random() * 0.055 + 0.025).toFixed(3);
+            el.style.cssText = 'left:' + left.toFixed(1) + '%;top:' + top.toFixed(1) + '%;'
+              + '--rot:' + rot + 'deg;--op:' + op + ';'
+              + 'animation-duration:' + dur + 's;animation-delay:-' + delay + 's;';
+            container.appendChild(el);
+          })(i);
+        }
+      })();
     })();
   </script>
 </body>
@@ -4493,8 +4929,8 @@ struct SplashTemplate {}
     .background-watermarks img { position: absolute; opacity: 0.18; filter: blur(0.3px); user-select: none; max-width: none; }
     .top-nav, .page { position: relative; z-index: 2; }
     .top-nav { position: sticky; top: 0; z-index: 30; background: linear-gradient(180deg, var(--nav), var(--nav-2)); border-bottom: 1px solid rgba(255,255,255,0.12); box-shadow: 0 4px 14px rgba(0,0,0,0.18); }
-    .top-nav-inner { max-width: 1720px; margin: 0 auto; padding: 4px 24px; min-height: 56px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 380px) auto; align-items: center; gap: 18px; }
-    .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
+    .top-nav-inner { max-width: 1720px; margin: 0 auto; padding: 4px 24px; min-height: 56px; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 18px; }
+    .brand { display: flex; align-items: center; gap: 14px; min-width: 0; text-decoration: none; }
     .brand-logo { width: 42px; height: 46px; object-fit: contain; flex: 0 0 auto; filter: drop-shadow(0 4px 10px rgba(0,0,0,0.22)); }
     .brand-mark { width: 42px; height: 42px; border-radius: 14px; background: radial-gradient(circle at 35% 35%, #f2a578, var(--oxide) 58%, var(--oxide-2)); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), 0 8px 18px rgba(0,0,0,0.22); flex: 0 0 auto; }
     .brand-copy { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
@@ -4504,7 +4940,7 @@ struct SplashTemplate {}
     .nav-project-pill { width: 100%; max-width: 260px; display:inline-flex; align-items:center; justify-content:center; gap: 10px; min-height: 38px; padding: 0 14px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.18); color: #fff; background: rgba(255,255,255,0.10); font-size: 12px; font-weight: 700; box-shadow: inset 0 1px 0 rgba(255,255,255,0.08); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .nav-project-label { color: rgba(255,255,255,0.78); text-transform: uppercase; letter-spacing: 0.08em; font-size: 11px; font-weight: 800; }
     .nav-project-value { min-width:0; overflow:hidden; text-overflow:ellipsis; }
-    .nav-status { display: flex; align-items: center; justify-content:flex-end; gap: 10px; flex-wrap: wrap; }
+    .nav-status { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
     .nav-pill, .theme-toggle { display: inline-flex; align-items: center; gap: 8px; min-height: 38px; padding: 0 14px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.18); color: #fff; background: rgba(255,255,255,0.08); font-size: 12px; font-weight: 700; box-shadow: inset 0 1px 0 rgba(255,255,255,0.08); }
     .theme-toggle { width: 38px; justify-content: center; padding: 0; cursor: pointer; transition: transform 0.15s ease, background 0.15s ease; }
     .theme-toggle:hover { transform: translateY(-1px); background: rgba(255,255,255,0.16); }
@@ -4546,13 +4982,16 @@ struct SplashTemplate {}
       display: inline-flex; align-items: center; justify-content: center; border-radius: 14px; border: 1px solid rgba(111, 144, 255, 0.30); padding: 11px 14px; text-decoration: none; color: white; background: linear-gradient(135deg, var(--accent), var(--accent-2)); font-weight: 800; font-size: 14px; box-shadow: 0 12px 24px rgba(73, 106, 255, 0.22); cursor: pointer;
     }
     .button.secondary, .copy-button.secondary { background: var(--surface-3); box-shadow: none; color: var(--text); border-color: var(--line-strong); }
-    .path-list { display: grid; gap: 10px; margin-top: 18px; }
+    .path-list { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 18px; }
     .path-item { padding: 14px; background: var(--surface-2); }
     .path-item strong { display: block; margin-bottom: 6px; }
+    .path-item-full { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
+    .path-meta { font-size: 12px; color: var(--muted); margin-top: 5px; }
     code { display: inline-block; max-width: 100%; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--surface-3); border: 1px solid var(--line); padding: 2px 6px; border-radius: 8px; color: var(--text); }
     .two-col { display: grid; grid-template-columns: 0.95fr 1.05fr; gap: 18px; align-items: start; }
-    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; table-layout: fixed; }
     th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); }
+    th:first-child, td:first-child { width: 28%; }
     th { color: var(--muted); font-weight: 700; }
     tr:last-child td { border-bottom: none; }
     .preview-shell { border-radius: 20px; overflow: hidden; border: 1px solid var(--line); background: var(--surface-2); }
@@ -4613,13 +5052,13 @@ struct SplashTemplate {}
   </div>
   <div class="top-nav">
     <div class="top-nav-inner">
-      <div class="brand">
+      <a class="brand" href="/">
         <img class="brand-logo" src="/images/logo/small-logo.png" alt="OxideSLOC logo" />
         <div class="brand-copy">
-          <div class="brand-title">OxideSLOC Local analysis workbench</div>
-          <div class="brand-subtitle">Run complete</div>
+          <div class="brand-title">OxideSLOC</div>
+          <div class="brand-subtitle">Local analysis workbench</div>
         </div>
-      </div>
+      </a>
       <div class="nav-project-slot">
         <div class="nav-project-pill"><span class="nav-project-label">Project</span><span class="nav-project-value">{{ report_title }}</span></div>
       </div>
@@ -4675,6 +5114,7 @@ struct SplashTemplate {}
         </div>
       </div>
 
+      {% if delta_lines_added.is_some() %}
       <div class="delta-cards">
         <div class="delta-card">
           <div class="delta-card-val pos">{% if let Some(v) = delta_lines_added %}+{{ v }}{% else %}—{% endif %}</div>
@@ -4705,6 +5145,12 @@ struct SplashTemplate {}
           <div class="delta-card-lbl">files unchanged</div>
         </div>
       </div>
+      {% else %}
+      <p style="margin-top:12px;color:var(--muted);font-size:13px;line-height:1.5;">
+        Line-level delta details are not available for this comparison — the previous scan's result file could not be read (the output folder may have been moved or the scan predates JSON saving).
+        Re-running the analysis will restore full delta tracking.
+      </p>
+      {% endif %}
       {% endif %}{% endif %}
 
       <div class="action-grid">
@@ -4860,17 +5306,29 @@ struct SplashTemplate {}
       </div>
 
       <div class="path-list">
-        <div class="path-item"><strong>Project path</strong><code>{{ project_path }}</code></div>
-        {% if let Some(branch) = git_branch %}
-        <div class="path-item"><strong>Git branch</strong><code>{{ branch }}{% if let Some(sha) = git_commit %} @ {{ sha }}{% endif %}</code></div>
-        {% endif %}
-        <div class="path-item" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-          <div><strong>Output folder</strong><code>{{ output_dir }}</code></div>
-          <button type="button" class="open-path-btn open-folder-button" data-folder="{{ output_dir }}" style="min-height:36px;font-size:13px;">Open in explorer</button>
+        <div class="path-item">
+          <strong>Project path</strong>
+          <code>{{ project_path }}</code>
         </div>
-        <div class="path-item" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-          <div><strong>Run ID</strong><code>{{ run_id }}</code> &nbsp;<span style="font-size:12px;color:var(--muted)">scan #{{ current_scan_number }} for this project</span></div>
-          <button type="button" class="open-path-btn open-folder-button" data-folder="{{ output_dir }}" style="min-height:36px;font-size:13px;">Open run folder</button>
+        <div class="path-item">
+          <strong>Git branch</strong>
+          {% if let Some(branch) = git_branch %}
+          <code>{{ branch }}{% if let Some(sha) = git_commit %} @ {{ sha }}{% endif %}</code>
+          {% if let Some(author) = git_author %}<div class="path-meta">Last commit by {{ author }}</div>{% endif %}
+          {% else %}
+          <code style="color:var(--muted)">—</code>
+          {% endif %}
+        </div>
+        <div class="path-item path-item-full">
+          <div style="min-width:0;">
+            <strong>Output folder &amp; Run ID</strong>
+            <code style="display:block;margin-top:6px;overflow-wrap:anywhere;">{{ output_dir }}</code>
+            <div style="margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <code style="font-size:12px;">{{ run_id }}</code>
+              <span style="font-size:12px;color:var(--muted);">scan #{{ current_scan_number }} for this project</span>
+            </div>
+          </div>
+          <button type="button" class="open-path-btn open-folder-button" data-folder="{{ output_dir }}" style="min-height:36px;font-size:13px;flex-shrink:0;">Open output folder</button>
         </div>
       </div>
     </section>
@@ -4881,7 +5339,6 @@ struct SplashTemplate {}
             <h2>Language breakdown</h2>
             <p class="muted">A quick summary of what this run actually counted across supported languages.</p>
           </div>
-          <div class="pill-row"><span class="soft-chip success">Saved artifact preview ready</span></div>
         </div>
         <table>
           <thead>
@@ -4930,6 +5387,7 @@ struct SplashTemplate {}
             <th>Code</th>
             <th>Comments</th>
             <th>Blank</th>
+            <th>Report</th>
           </tr>
         </thead>
         <tbody>
@@ -4942,6 +5400,7 @@ struct SplashTemplate {}
             <td>{{ row.code_lines }}</td>
             <td>{{ row.comment_lines }}</td>
             <td>{{ row.blank_lines }}</td>
+            <td>{% if let Some(url) = row.html_url %}<a class="button" href="{{ url }}" target="_blank" rel="noopener" style="font-size:12px;padding:6px 12px;min-height:0;">View</a>{% else %}<span style="color:var(--muted);font-size:12px;">—</span>{% endif %}</td>
           </tr>
           {% endfor %}
         </tbody>
@@ -5102,6 +5561,7 @@ struct ResultTemplate {
     // git context
     git_branch: Option<String>,
     git_commit: Option<String>,
+    git_author: Option<String>,
     // history
     prev_scan_count: usize,
     current_scan_number: usize,
@@ -5117,153 +5577,64 @@ struct ResultTemplate {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OxideSLOC error</title>
+  <title>OxideSLOC | Error</title>
+  <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
   <style>
     :root {
-      --bg: #f5efe8;
-      --surface: rgba(255,255,255,0.86);
-      --surface-2: #fbf7f2;
-      --line: #e6d0bf;
-      --line-strong: #dcb89f;
-      --text: #43342d;
-      --muted: #7b675b;
-      --nav: #b85d33;
-      --nav-2: #7a371b;
-      --accent: #6f9bff;
-      --accent-2: #4a78ee;
-      --shadow: 0 18px 42px rgba(77, 44, 20, 0.12);
+      --radius:18px; --bg:#f5efe8; --surface:rgba(255,255,255,0.86); --surface-2:#fbf7f2;
+      --line:#e6d0bf; --line-strong:#dcb89f; --text:#43342d; --muted:#7b675b; --muted-2:#a08878;
+      --nav:#b85d33; --nav-2:#7a371b; --accent:#6f9bff; --accent-2:#4a78ee;
+      --oxide:#d37a4c; --oxide-2:#b85d33; --shadow:0 18px 42px rgba(77,44,20,0.12);
     }
-
-    * { box-sizing: border-box; }
-    html, body {
-      margin: 0;
-      min-height: 100vh;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-    }
-
-    .top-nav {
-      position: sticky;
-      top: 0;
-      z-index: 30;
-      background: linear-gradient(180deg, var(--nav), var(--nav-2));
-      border-bottom: 1px solid rgba(255,255,255,0.12);
-      box-shadow: 0 4px 14px rgba(0,0,0,0.18);
-    }
-
-    .top-nav-inner {
-      max-width: 1400px;
-      margin: 0 auto;
-      padding: 10px 24px;
-      min-height: 64px;
-      display: flex;
-      align-items: center;
-      gap: 14px;
-    }
-
-    .brand-mark {
-      width: 42px;
-      height: 42px;
-      border-radius: 14px;
-      background: radial-gradient(circle at 35% 35%, #f2a578, #d37a4c 58%, #b35428);
-      box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), 0 8px 18px rgba(0,0,0,0.22);
-      flex: 0 0 auto;
-    }
-
-    .brand-copy {
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      min-width: 0;
-    }
-
-    .brand-title {
-      margin: 0;
-      color: #fff;
-      font-size: 17px;
-      font-weight: 800;
-      line-height: 1.1;
-    }
-
-    .brand-subtitle {
-      color: rgba(255,255,255,0.85);
-      font-size: 12px;
-      line-height: 1.2;
-      margin-top: 2px;
-    }
-
-    .page {
-      max-width: 1400px;
-      margin: 0 auto;
-      padding: 28px 24px 40px;
-    }
-
-    .panel {
-      background: var(--surface);
-      border: 1px solid var(--line);
-      border-radius: 24px;
-      box-shadow: var(--shadow);
-      padding: 28px;
-    }
-
-    h1 {
-      margin: 0 0 18px;
-      font-size: 28px;
-      font-weight: 850;
-      letter-spacing: -0.03em;
-      color: #b35428;
-    }
-
-    .error-box {
-      border-radius: 16px;
-      border: 1px solid var(--line);
-      background: #fff;
-      padding: 16px 18px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
-      line-height: 1.55;
-    }
-
-    .actions {
-      margin-top: 18px;
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-    }
-
-    a {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 42px;
-      padding: 0 16px;
-      border-radius: 14px;
-      border: 1px solid rgba(111, 144, 255, 0.30);
-      text-decoration: none;
-      color: white;
-      background: linear-gradient(135deg, var(--accent), var(--accent-2));
-      font-weight: 800;
-      font-size: 14px;
-      box-shadow: 0 12px 24px rgba(73, 106, 255, 0.22);
-    }
-
-    a.secondary {
-      background: rgba(0,0,0,0.06);
-      color: var(--text);
-      border: 1px solid var(--line-strong);
-      box-shadow: none;
-    }
+    body.dark-theme { --bg:#1b1511; --surface:#261c17; --surface-2:#2d221d; --line:#524238; --line-strong:#6b5548; --text:#f5ece6; --muted:#c7b7aa; --muted-2:#9c877a; }
+    *{box-sizing:border-box;} html,body{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);}
+    .background-watermarks{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
+    .background-watermarks img{position:absolute;opacity:0.15;filter:blur(0.3px);user-select:none;max-width:none;}
+    .top-nav{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,var(--nav),var(--nav-2));border-bottom:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 14px rgba(0,0,0,0.18);}
+    .top-nav-inner{max-width:1720px;margin:0 auto;padding:4px 24px;min-height:56px;display:flex;align-items:center;gap:14px;}
+    .brand{display:flex;align-items:center;gap:14px;text-decoration:none;} .brand-logo{width:42px;height:46px;object-fit:contain;flex:0 0 auto;filter:drop-shadow(0 4px 10px rgba(0,0,0,0.22));}
+    .brand-copy{display:flex;flex-direction:column;justify-content:center;min-width:0;}
+    .brand-title{margin:0;color:#fff;font-size:17px;font-weight:800;line-height:1.1;} .brand-subtitle{color:rgba(255,255,255,0.85);font-size:12px;margin-top:2px;line-height:1.2;}
+    .nav-right{margin-left:auto;display:flex;align-items:center;gap:10px;}
+    .nav-pill,.theme-toggle{display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:0 14px;border-radius:999px;border:1px solid rgba(255,255,255,0.18);color:#fff;background:rgba(255,255,255,0.08);font-size:12px;font-weight:700;text-decoration:none;transition:background .15s ease,transform .15s ease;}
+    .nav-pill:hover{background:rgba(255,255,255,0.18);transform:translateY(-1px);}
+    .theme-toggle{width:38px;justify-content:center;padding:0;cursor:pointer;}
+    .theme-toggle:hover{transform:translateY(-1px);background:rgba(255,255,255,0.16);}
+    .theme-toggle svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8;}
+    .theme-toggle .icon-sun{display:none;} body.dark-theme .theme-toggle .icon-sun{display:block;} body.dark-theme .theme-toggle .icon-moon{display:none;}
+    .page{max-width:1720px;margin:0 auto;padding:28px 24px 40px;position:relative;z-index:1;}
+    .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:28px;}
+    h1{margin:0 0 18px;font-size:28px;font-weight:850;letter-spacing:-0.03em;color:var(--oxide-2);}
+    .error-box{border-radius:16px;border:1px solid var(--line);background:var(--surface-2);padding:16px 18px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.55;font-size:13px;}
+    .actions{margin-top:18px;display:flex;gap:10px;flex-wrap:wrap;}
+    .btn-primary{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:0 18px;border-radius:14px;border:1px solid rgba(111,144,255,0.30);text-decoration:none;color:white;background:linear-gradient(135deg,var(--accent),var(--accent-2));font-weight:800;font-size:14px;box-shadow:0 10px 22px rgba(73,106,255,0.22);}
+    .btn-secondary{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:0 18px;border-radius:14px;border:1px solid var(--line-strong);text-decoration:none;color:var(--text);background:var(--surface-2);font-weight:700;font-size:14px;}
+    .btn-secondary:hover{background:var(--line);}
   </style>
 </head>
 <body>
+  <div class="background-watermarks" aria-hidden="true">
+    <img src="/images/logo/logo-text.png" alt="" style="width:320px;top:-40px;left:-60px;transform:rotate(-12deg);" />
+    <img src="/images/logo/logo-text.png" alt="" style="width:280px;top:120px;right:-50px;transform:rotate(8deg);" />
+    <img src="/images/logo/logo-text.png" alt="" style="width:260px;bottom:60px;left:30px;transform:rotate(15deg);" />
+    <img src="/images/logo/logo-text.png" alt="" style="width:300px;bottom:-20px;right:80px;transform:rotate(-6deg);" />
+  </div>
   <div class="top-nav">
     <div class="top-nav-inner">
-      <div class="brand-mark"></div>
-      <div class="brand-copy">
-        <div class="brand-title">OxideSLOC Local analysis workbench</div>
-        <div class="brand-subtitle">Run failed</div>
+      <a class="brand" href="/">
+        <img class="brand-logo" src="/images/logo/small-logo.png" alt="OxideSLOC logo" />
+        <div class="brand-copy">
+          <div class="brand-title">OxideSLOC</div>
+          <div class="brand-subtitle">Local analysis workbench</div>
+        </div>
+      </a>
+      <div class="nav-right">
+        <a class="nav-pill" href="/scan">New scan</a>
+        <a class="nav-pill" href="/history">View reports</a>
+        <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+          <svg class="icon-moon" viewBox="0 0 24 24"><path d="M20 15.5A8.5 8.5 0 1 1 12.5 4 6.7 6.7 0 0 0 20 15.5Z"></path></svg>
+          <svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"></circle><path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.9 5.1l-1.6 1.6M6.7 17.3l-1.6 1.6M18.9 18.9l-1.6-1.6M6.7 6.7 5.1 5.1"></path></svg>
+        </button>
       </div>
     </div>
   </div>
@@ -5273,14 +5644,17 @@ struct ResultTemplate {
       <h1>Analysis failed</h1>
       <div class="error-box">{{ message }}</div>
       <div class="actions">
-        <a href="/scan">Back to setup</a>
+        <a class="btn-primary" href="/scan">Back to setup</a>
         {% if let Some(report_url) = last_report_url %}
-        <a class="secondary" href="{{ report_url }}">View last report</a>
+        <a class="btn-secondary" href="{{ report_url }}">View last report</a>
         {% endif %}
-        <a class="secondary" href="/history">Scan history</a>
+        <a class="btn-secondary" href="/history">Scan history</a>
       </div>
     </div>
   </div>
+  <script>
+    (function(){var k="oxide-theme",b=document.body,s=localStorage.getItem(k);if(s==="dark")b.classList.add("dark-theme");document.getElementById("theme-toggle").addEventListener("click",function(){var d=b.classList.toggle("dark-theme");localStorage.setItem(k,d?"dark":"light");});})();
+  </script>
 </body>
 </html>
 "##,
@@ -5319,7 +5693,8 @@ struct ErrorTemplate {
     .top-nav{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,var(--nav),var(--nav-2));border-bottom:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 14px rgba(0,0,0,0.18);}
     .top-nav-inner{max-width:1720px;margin:0 auto;padding:4px 24px;min-height:56px;display:flex;align-items:center;gap:14px;}
     .brand{display:flex;align-items:center;gap:14px;text-decoration:none;} .brand-logo{width:42px;height:46px;object-fit:contain;flex:0 0 auto;filter:drop-shadow(0 4px 10px rgba(0,0,0,0.22));}
-    .brand-title{margin:0;color:#fff;font-size:17px;font-weight:800;} .brand-subtitle{color:rgba(255,255,255,0.85);font-size:12px;margin-top:2px;}
+    .brand-copy{display:flex;flex-direction:column;justify-content:center;min-width:0;}
+    .brand-title{margin:0;color:#fff;font-size:17px;font-weight:800;line-height:1.1;} .brand-subtitle{color:rgba(255,255,255,0.85);font-size:12px;margin-top:2px;line-height:1.2;}
     .nav-right{margin-left:auto;display:flex;align-items:center;gap:10px;}
     .nav-pill,.theme-toggle{display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:0 14px;border-radius:999px;border:1px solid rgba(255,255,255,0.18);color:#fff;background:rgba(255,255,255,0.08);font-size:12px;font-weight:700;text-decoration:none;transition:background .15s ease,transform .15s ease;}
     .nav-pill:hover{background:rgba(255,255,255,0.18);transform:translateY(-1px);}
@@ -5382,6 +5757,10 @@ struct ErrorTemplate {
     .site-footer{text-align:center;padding:18px 24px;font-size:13px;color:var(--muted);position:relative;z-index:1;}
     .site-footer a{color:var(--muted);}
     @media(max-width:700px){td,th{padding:7px 8px;}.run-id-chip,.git-chip{display:none;}}
+    .locate-bar{display:flex;align-items:center;gap:10px;margin-bottom:14px;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px 14px;flex-wrap:wrap;}
+    .locate-label{font-size:13px;color:var(--muted);flex:1;min-width:180px;}
+    .toast-success{display:flex;align-items:center;gap:10px;background:#e8f5ed;border:1px solid #a3d9b1;border-radius:10px;padding:10px 16px;margin-bottom:14px;font-size:13px;color:#1a5c35;font-weight:600;}
+    body.dark-theme .toast-success{background:rgba(26,143,71,0.12);border-color:rgba(163,217,177,0.3);color:#6fcf97;}
   </style>
 </head>
 <body>
@@ -5396,7 +5775,7 @@ struct ErrorTemplate {
     <div class="top-nav-inner">
       <a class="brand" href="/">
         <img class="brand-logo" src="/images/logo/small-logo.png" alt="OxideSLOC logo">
-        <div><p class="brand-title">OxideSLOC</p><p class="brand-subtitle">View reports</p></div>
+        <div class="brand-copy"><div class="brand-title">OxideSLOC</div><div class="brand-subtitle">View reports</div></div>
       </a>
       <div class="nav-right">
         <a class="nav-pill" href="/compare-select">Compare Scans</a>
@@ -5410,6 +5789,12 @@ struct ErrorTemplate {
   </div>
 
   <div class="page">
+    {% if linked %}
+    <div class="toast-success">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"></polyline></svg>
+      Report linked successfully — it now appears in the list below.
+    </div>
+    {% endif %}
     {% if total_scans > 0 %}
     <div class="summary-strip">
       <div class="stat-chip"><div class="stat-chip-tip">Total scan runs recorded in this workspace</div><div class="stat-chip-val">{{ total_scans }}</div><div class="stat-chip-label">Total scans</div></div>
@@ -5423,7 +5808,7 @@ struct ErrorTemplate {
       <div class="panel-header">
         <div>
           <h1>View Reports</h1>
-          <p class="panel-meta">{{ total_scans }} scan record(s) in this workspace. Click any row to open its report.</p>
+          <p class="panel-meta">{{ total_scans }} report(s) available. Click any row to open it.</p>
         </div>
         <a class="btn-back" href="/">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="15 18 9 12 15 6"></polyline></svg>
@@ -5431,10 +5816,18 @@ struct ErrorTemplate {
         </a>
       </div>
 
+      <div class="locate-bar">
+        <span class="locate-label">Have a saved report on disk? Browse to link it here.</span>
+        <button type="button" class="btn" onclick="browseReport()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+          Browse for Report…
+        </button>
+      </div>
+
       {% if entries.is_empty() %}
       <div class="empty-state">
-        <strong>No reports yet</strong>
-        Run your first analysis from the <a href="/scan">scan page</a>.
+        <strong>No reports with viewable HTML yet</strong>
+        Run a new analysis from the <a href="/scan">scan page</a>, or use the browse button above to link an existing report.
       </div>
       {% else %}
       <div class="filter-bar">
@@ -5480,7 +5873,7 @@ struct ErrorTemplate {
           </thead>
           <tbody id="history-tbody">
             {% for entry in entries %}
-            <tr class="history-row" data-run="{{ entry.run_id }}" data-has-html="{{ entry.has_html }}"
+            <tr class="history-row" data-run="{{ entry.run_id }}"
                 data-timestamp="{{ entry.timestamp }}"
                 data-project="{{ entry.project_label }}"
                 data-code="{{ entry.code_lines }}" data-files="{{ entry.files_analyzed }}"
@@ -5488,8 +5881,8 @@ struct ErrorTemplate {
                 data-comments="{{ entry.comment_lines }}"
                 data-blank="{{ entry.blank_lines }}"
                 data-branch="{{ entry.git_branch }}"
-                style="cursor:{% if entry.has_html %}pointer{% else %}default{% endif %};"
-                onclick="rowClick('{{ entry.run_id }}', {{ entry.has_html }})">
+                style="cursor:pointer;"
+                onclick="window.open('/runs/{{ entry.run_id }}/html', '_blank')">
               <td>{{ entry.timestamp }}</td>
               <td title="{{ entry.project_path }}">{{ entry.project_label }}</td>
               <td><span class="run-id-chip">{{ entry.run_id_short }}</span></td>
@@ -5500,11 +5893,7 @@ struct ErrorTemplate {
               <td>{% if !entry.git_branch.is_empty() %}<span class="git-chip">{{ entry.git_branch }}</span>{% else %}<span class="metric-secondary">&#8212;</span>{% endif %}</td>
               <td>
                 <div class="actions-cell">
-                {% if entry.has_html %}
                 <a class="btn primary" href="/runs/{{ entry.run_id }}/html" target="_blank" rel="noopener" onclick="event.stopPropagation()">View</a>
-                {% else %}
-                <span class="no-report" title="HTML report not generated for this scan — re-run with HTML output enabled">Not generated</span>
-                {% endif %}
                 </div>
               </td>
             </tr>
@@ -5693,6 +6082,26 @@ struct ErrorTemplate {
     function rowClick(runId, hasHtml) {
       if (hasHtml) window.open('/runs/' + runId + '/html', '_blank');
     }
+
+    function browseReport() {
+      fetch('/pick-file?kind=report')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (!data.cancelled && data.selected_path) {
+            var form = document.createElement('form');
+            form.method = 'POST';
+            form.action = '/locate-report';
+            var input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'file_path';
+            input.value = data.selected_path;
+            form.appendChild(input);
+            document.body.appendChild(form);
+            form.submit();
+          }
+        })
+        .catch(function(e) { alert('Could not open file picker: ' + e); });
+    }
   </script>
 </body>
 </html>
@@ -5702,6 +6111,7 @@ struct ErrorTemplate {
 struct HistoryTemplate {
     entries: Vec<HistoryEntryRow>,
     total_scans: usize,
+    linked: bool,
 }
 
 // ── CompareSelectTemplate ──────────────────────────────────────────────────────
@@ -5731,7 +6141,8 @@ struct HistoryTemplate {
     .top-nav{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,var(--nav),var(--nav-2));border-bottom:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 14px rgba(0,0,0,0.18);}
     .top-nav-inner{max-width:1720px;margin:0 auto;padding:4px 24px;min-height:56px;display:flex;align-items:center;gap:14px;}
     .brand{display:flex;align-items:center;gap:14px;text-decoration:none;} .brand-logo{width:42px;height:46px;object-fit:contain;flex:0 0 auto;filter:drop-shadow(0 4px 10px rgba(0,0,0,0.22));}
-    .brand-title{margin:0;color:#fff;font-size:17px;font-weight:800;} .brand-subtitle{color:rgba(255,255,255,0.85);font-size:12px;margin-top:2px;}
+    .brand-copy{display:flex;flex-direction:column;justify-content:center;min-width:0;}
+    .brand-title{margin:0;color:#fff;font-size:17px;font-weight:800;line-height:1.1;} .brand-subtitle{color:rgba(255,255,255,0.85);font-size:12px;margin-top:2px;line-height:1.2;}
     .nav-right{margin-left:auto;display:flex;align-items:center;gap:10px;}
     .nav-pill,.theme-toggle{display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:0 14px;border-radius:999px;border:1px solid rgba(255,255,255,0.18);color:#fff;background:rgba(255,255,255,0.08);font-size:12px;font-weight:700;text-decoration:none;transition:background .15s ease,transform .15s ease;}
     .nav-pill:hover{background:rgba(255,255,255,0.18);transform:translateY(-1px);}
@@ -5867,24 +6278,26 @@ struct HistoryTemplate {
         <table id="compare-table">
           <colgroup>
             <col style="width:44px">
-            <col style="width:175px">
-            <col style="width:200px">
-            <col style="width:130px">
-            <col style="width:90px">
-            <col style="width:105px">
-            <col style="width:100px">
+            <col style="width:165px">
+            <col style="width:180px">
             <col style="width:110px">
+            <col style="width:100px">
+            <col style="width:80px">
+            <col style="width:100px">
+            <col style="width:90px">
+            <col style="width:100px">
           </colgroup>
           <thead>
             <tr id="compare-thead">
               <th style="text-align:center;padding-left:8px;padding-right:8px;"><div class="col-resize-handle"></div></th>
               <th class="sortable" data-sort-col="timestamp" data-sort-type="str">Timestamp<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
               <th class="sortable" data-sort-col="project" data-sort-type="str">Project<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
-              <th>Run ID<div class="col-resize-handle"></div></th>
+              <th title="Internal scan ID generated by OxideSLOC">Run ID<div class="col-resize-handle"></div></th>
               <th class="sortable" data-sort-col="files" data-sort-type="num">Files<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
-              <th class="sortable" data-sort-col="code" data-sort-type="num">Code lines<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+              <th class="sortable" data-sort-col="code" data-sort-type="num">Code<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
               <th class="sortable" data-sort-col="comments" data-sort-type="num">Comments<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
               <th class="sortable" data-sort-col="branch" data-sort-type="str">Branch<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+              <th class="sortable" data-sort-col="commit" data-sort-type="str">Commit<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
             </tr>
           </thead>
           <tbody id="compare-tbody">
@@ -5896,15 +6309,17 @@ struct HistoryTemplate {
                 data-code="{{ entry.code_lines }}"
                 data-comments="{{ entry.comment_lines }}"
                 data-branch="{{ entry.git_branch }}"
+                data-commit="{{ entry.git_commit }}"
                 onclick="toggleRow(this, '{{ entry.run_id }}')">
               <td style="text-align:center;padding-left:8px;padding-right:8px;"><span class="sel-badge" id="badge-{{ entry.run_id }}"></span></td>
               <td>{{ entry.timestamp }}</td>
               <td title="{{ entry.project_path }}">{{ entry.project_label }}</td>
-              <td><span class="run-id-chip">{{ entry.run_id_short }}</span></td>
+              <td><span class="run-id-chip" title="OxideSLOC internal scan ID">{{ entry.run_id_short }}</span></td>
               <td><span class="metric-num">{{ entry.files_analyzed }}</span></td>
               <td><span class="metric-num">{{ entry.code_lines }}</span></td>
               <td><span class="metric-num">{{ entry.comment_lines }}</span></td>
               <td>{% if !entry.git_branch.is_empty() %}<span class="git-chip">{{ entry.git_branch }}</span>{% else %}<span style="color:var(--muted)">&#8212;</span>{% endif %}</td>
+              <td>{% if !entry.git_commit.is_empty() %}<span class="git-chip">{{ entry.git_commit }}</span>{% else %}<span style="color:var(--muted)">&#8212;</span>{% endif %}</td>
             </tr>
             {% endfor %}
           </tbody>
@@ -6151,7 +6566,7 @@ struct CompareSelectTemplate {
     *{box-sizing:border-box;} html,body{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);}
     .top-nav{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,var(--nav),var(--nav-2));border-bottom:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 14px rgba(0,0,0,0.18);}
     .top-nav-inner{max-width:1720px;margin:0 auto;padding:4px 24px;min-height:56px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
-    .brand{display:flex;align-items:center;gap:14px;} .brand-logo{width:42px;height:46px;object-fit:contain;flex:0 0 auto;filter:drop-shadow(0 4px 10px rgba(0,0,0,0.22));}
+    .brand{display:flex;align-items:center;gap:14px;text-decoration:none;} .brand-logo{width:42px;height:46px;object-fit:contain;flex:0 0 auto;filter:drop-shadow(0 4px 10px rgba(0,0,0,0.22));}
     .brand-title{margin:0;color:#fff;font-size:17px;font-weight:800;} .brand-subtitle{color:rgba(255,255,255,0.85);font-size:12px;margin-top:2px;}
     .nav-right{margin-left:auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
     .nav-pill,.theme-toggle{display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:0 14px;border-radius:999px;border:1px solid rgba(255,255,255,0.18);color:#fff;background:rgba(255,255,255,0.08);font-size:12px;font-weight:700;text-decoration:none;}
@@ -6224,10 +6639,10 @@ struct CompareSelectTemplate {
 <body>
   <div class="top-nav">
     <div class="top-nav-inner">
-      <div class="brand">
+      <a class="brand" href="/">
         <img class="brand-logo" src="/images/logo/small-logo.png" alt="OxideSLOC logo">
         <div><p class="brand-title">OxideSLOC</p><p class="brand-subtitle">Scan delta</p></div>
-      </div>
+      </a>
       <div class="nav-right">
         <a class="nav-pill" href="/history">History</a>
         <a class="nav-pill" href="/scan">New scan</a>

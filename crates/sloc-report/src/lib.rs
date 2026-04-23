@@ -5,6 +5,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use askama::Template;
+use chrono::{DateTime, FixedOffset, Utc};
 use sloc_core::{AnalysisRun, FileRecord};
 
 pub fn render_html(run: &AnalysisRun) -> Result<String> {
@@ -21,6 +22,12 @@ pub fn render_html(run: &AnalysisRun) -> Result<String> {
             run.effective_configuration.reporting.report_title
         ),
         generated_display: normalize_timestamp_utc(run.tool.timestamp_utc),
+        scan_performed_by: format!(
+            "{} / {}",
+            run.environment.initiator_username, run.environment.initiator_hostname
+        ),
+        scan_time_pst: to_pst_display(run.tool.timestamp_utc),
+        tool_version: run.tool.version.clone(),
         run,
         language_rows: run
             .totals_by_language
@@ -411,6 +418,14 @@ fn normalize_timestamp_utc(raw: impl ToString) -> String {
     }
 }
 
+fn to_pst_display(dt: DateTime<Utc>) -> String {
+    // PST = UTC−8 fixed offset (no DST adjustment)
+    let pst = FixedOffset::west_opt(8 * 3600).expect("valid PST offset");
+    dt.with_timezone(&pst)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string()
+}
+
 fn build_warning_console(warnings: &[String]) -> String {
     if warnings.is_empty() {
         return "No top-level warnings.".to_string();
@@ -697,20 +712,22 @@ struct WarningOpportunityRow {
     html, body { margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); }
     body { overflow-x: hidden; transition: background 0.18s ease, color 0.18s ease; }
     .top-nav { position: sticky; top: 0; z-index: 30; background: linear-gradient(180deg, var(--nav), var(--nav-2)); border-bottom: 1px solid rgba(255,255,255,0.12); box-shadow: 0 4px 14px rgba(0,0,0,0.18); }
-    .top-nav-inner { max-width: 1720px; margin: 0 auto; padding: 10px 24px; min-height: 64px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 420px) auto; align-items: center; gap: 18px; }
-    .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
-    .brand-mark { width: 42px; height: 42px; border-radius: 14px; background: radial-gradient(circle at 35% 35%, #f2a578, var(--oxide) 58%, var(--oxide-2)); background-image: url("data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20viewBox%3D%270%200%20240%20240%27%3E%0A%3Cdefs%3E%0A%20%20%3ClinearGradient%20id%3D%27g%27%20x1%3D%270%27%20y1%3D%270%27%20x2%3D%271%27%20y2%3D%271%27%3E%0A%20%20%20%20%3Cstop%20offset%3D%270%27%20stop-color%3D%27%23f2a578%27/%3E%0A%20%20%20%20%3Cstop%20offset%3D%270.55%27%20stop-color%3D%27%23d37a4c%27/%3E%0A%20%20%20%20%3Cstop%20offset%3D%271%27%20stop-color%3D%27%23b35428%27/%3E%0A%20%20%3C/linearGradient%3E%0A%3C/defs%3E%0A%3Crect%20x%3D%2724%27%20y%3D%2724%27%20width%3D%27192%27%20height%3D%27192%27%20rx%3D%2754%27%20fill%3D%27url%28%23g%29%27/%3E%0A%3Cpath%20d%3D%27M74%20150l30-42%2024%2031%2018-24%2024%2035%27%20fill%3D%27none%27%20stroke%3D%27white%27%20stroke-width%3D%2710%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%20opacity%3D%270.94%27/%3E%0A%3Ccircle%20cx%3D%27164%27%20cy%3D%2782%27%20r%3D%2712%27%20fill%3D%27white%27%20opacity%3D%270.94%27/%3E%0A%3C/svg%3E"); background-size: cover; background-repeat: no-repeat; background-position: center; box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), 0 8px 18px rgba(0,0,0,0.22); flex: 0 0 auto; }
+    .top-nav-inner { max-width: 1720px; margin: 0 auto; padding: 4px 24px; min-height: 56px; display: flex; align-items: center; position: relative; }
+    .brand { display: flex; align-items: center; gap: 14px; min-width: 0; text-decoration: none; flex: 0 0 auto; }
+    .brand-logo { width: 42px; height: 46px; object-fit: contain; flex: 0 0 auto; filter: drop-shadow(0 4px 10px rgba(0,0,0,0.22)); }
+    .background-watermarks { position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
+    .background-watermarks img { position: absolute; opacity: 0.15; filter: blur(0.3px); user-select: none; max-width: none; }
     .brand-copy { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
     .brand-title { margin: 0; color: #fff; font-size: 17px; font-weight: 800; line-height: 1.1; }
     .brand-subtitle { color: rgba(255,255,255,0.85); font-size: 12px; line-height: 1.2; margin-top: 2px; }
-    .nav-project-slot { display:flex; justify-content:center; min-width:0; }
+    .nav-project-slot { position: absolute; left: 50%; transform: translateX(-50%); pointer-events: none; }
     .nav-project-pill, .nav-pill, .theme-toggle, .header-button {
       display: inline-flex; align-items: center; gap: 8px; min-height: 38px; padding: 0 14px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.18); color: #fff; background: rgba(255,255,255,0.10); font-size: 12px; font-weight: 700; box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
     }
-    .nav-project-pill { width: 100%; max-width: 260px; justify-content: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .nav-project-pill { pointer-events: auto; max-width: 280px; justify-content: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .nav-project-label { color: rgba(255,255,255,0.78); text-transform: uppercase; letter-spacing: 0.08em; font-size: 11px; font-weight: 800; }
     .nav-project-value { min-width:0; overflow:hidden; text-overflow:ellipsis; }
-    .nav-status { display:flex; align-items:center; justify-content:flex-end; gap:10px; flex-wrap:wrap; }
+    .nav-status { display:flex; align-items:center; justify-content:flex-end; gap:10px; flex-wrap:wrap; margin-left: auto; }
     .theme-toggle, .header-button { cursor:pointer; background: rgba(255,255,255,0.08); }
     .theme-toggle { width: 38px; justify-content:center; padding:0; }
     .theme-toggle svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; }
@@ -721,9 +738,13 @@ struct WarningOpportunityRow {
     .summary-grid { display:grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap:14px; }
     .panel, .metric, .warning-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
     .panel { padding: 20px; }
-    .metric { padding: 18px; }
+    .metric { padding: 18px; position: relative; cursor: help; transition: transform 0.15s ease, box-shadow 0.15s ease; }
+    .metric:hover { transform: translateY(-3px); box-shadow: var(--shadow-strong); }
     .metric-label, .section-kicker { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-2); }
     .metric-value { margin-top: 10px; font-size: 17px; font-weight: 700; color: var(--text); }
+    .metric-tooltip { position: absolute; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 12px; border-radius: 10px; font-size: 12px; font-weight: 500; line-height: 1.45; white-space: normal; max-width: 220px; text-align: center; pointer-events: none; opacity: 0; transition: opacity 0.18s ease; z-index: 100; box-shadow: 0 4px 14px rgba(0,0,0,0.22); }
+    .metric-tooltip::after { content: ''; position: absolute; top: 100%; left: 50%; transform: translateX(-50%); border: 5px solid transparent; border-top-color: var(--text); }
+    .metric:hover .metric-tooltip { opacity: 1; }
     .hero { padding: 22px; margin-bottom: 18px; background: linear-gradient(180deg, rgba(255,255,255,0.34), transparent), var(--surface); }
     .hero-top { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; }
     .hero h1 { margin:0; font-size: 28px; letter-spacing: -0.04em; }
@@ -755,14 +776,14 @@ struct WarningOpportunityRow {
     pre { background: var(--surface-2); border: 1px solid var(--line); border-radius: 16px; padding: 16px; overflow: auto; font-size: 12px; color: var(--text); }
     .warn-list { margin: 0; padding-left: 18px; line-height: 1.6; }
     .sort-indicator { color: var(--muted-2); font-size: 11px; margin-left: 6px; }
-    .warning-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
-    .warning-card { padding: 18px; }
-    .warning-card h3 { margin: 0 0 10px; font-size: 16px; }
-    .warning-card .count { font-size: 30px; font-weight: 800; margin-bottom: 8px; }
+    .warning-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .warning-card { padding: 10px 12px; }
+    .warning-card h3 { margin: 0 0 4px; font-size: 12px; font-weight: 700; }
+    .warning-card .count { font-size: 16px; font-weight: 800; margin-bottom: 4px; }
     .tone-neutral .count { color: var(--text); }
     .tone-warn .count { color: var(--warn-text); }
     .tone-danger .count { color: var(--danger-text); }
-    .support-note { color: var(--muted); font-size: 14px; line-height: 1.6; }
+    .support-note { color: var(--muted); font-size: 11px; line-height: 1.45; }
     details { border: 1px solid var(--line); border-radius: 14px; background: var(--surface-2); }
     summary { cursor: pointer; padding: 14px 16px; font-weight: 700; }
     details > div { padding: 0 16px 16px; }
@@ -863,106 +884,29 @@ struct WarningOpportunityRow {
       position: relative;
       z-index: 1;
     }
-
-    .brand {
-      position: relative;
-    }
-
-    .brand img,
-    img[alt="OxideSLOC logo"],
-    img[alt="oxide-sloc logo"] {
-      opacity: 0 !important;
-    }
-
-    .brand::before {
-      content: "";
-      position: absolute;
-      left: 0;
-      top: 50%;
-      transform: translateY(-50%);
-      width: 42px;
-      height: 42px;
-      border-radius: 14px;
-      background-image: url("data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20viewBox%3D%270%200%20240%20240%27%3E%0A%3Cdefs%3E%0A%20%20%3ClinearGradient%20id%3D%27g%27%20x1%3D%270%27%20y1%3D%270%27%20x2%3D%271%27%20y2%3D%271%27%3E%0A%20%20%20%20%3Cstop%20offset%3D%270%27%20stop-color%3D%27%23f2a578%27/%3E%0A%20%20%20%20%3Cstop%20offset%3D%270.55%27%20stop-color%3D%27%23d37a4c%27/%3E%0A%20%20%20%20%3Cstop%20offset%3D%271%27%20stop-color%3D%27%23b35428%27/%3E%0A%20%20%3C/linearGradient%3E%0A%3C/defs%3E%0A%3Crect%20x%3D%2724%27%20y%3D%2724%27%20width%3D%27192%27%20height%3D%27192%27%20rx%3D%2754%27%20fill%3D%27url%28%23g%29%27/%3E%0A%3Cpath%20d%3D%27M74%20150l30-42%2024%2031%2018-24%2024%2035%27%20fill%3D%27none%27%20stroke%3D%27white%27%20stroke-width%3D%2710%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%20opacity%3D%270.94%27/%3E%0A%3Ccircle%20cx%3D%27164%27%20cy%3D%2782%27%20r%3D%2712%27%20fill%3D%27white%27%20opacity%3D%270.94%27/%3E%0A%3C/svg%3E");
-      background-size: cover;
-      background-repeat: no-repeat;
-      background-position: center;
-      box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), 0 8px 18px rgba(0,0,0,0.22);
-      pointer-events: none;
-    }
-
-    body::before {
-      content: "";
-      position: fixed;
-      right: 26px;
-      bottom: 26px;
-      width: 220px;
-      height: 220px;
-      background-image: url("data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20viewBox%3D%270%200%20240%20240%27%3E%0A%3Cdefs%3E%0A%20%20%3ClinearGradient%20id%3D%27g%27%20x1%3D%270%27%20y1%3D%270%27%20x2%3D%271%27%20y2%3D%271%27%3E%0A%20%20%20%20%3Cstop%20offset%3D%270%27%20stop-color%3D%27%23f2a578%27/%3E%0A%20%20%20%20%3Cstop%20offset%3D%270.55%27%20stop-color%3D%27%23d37a4c%27/%3E%0A%20%20%20%20%3Cstop%20offset%3D%271%27%20stop-color%3D%27%23b35428%27/%3E%0A%20%20%3C/linearGradient%3E%0A%3C/defs%3E%0A%3Crect%20x%3D%2724%27%20y%3D%2724%27%20width%3D%27192%27%20height%3D%27192%27%20rx%3D%2754%27%20fill%3D%27url%28%23g%29%27/%3E%0A%3Cpath%20d%3D%27M74%20150l30-42%2024%2031%2018-24%2024%2035%27%20fill%3D%27none%27%20stroke%3D%27white%27%20stroke-width%3D%2710%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%20opacity%3D%270.94%27/%3E%0A%3Ccircle%20cx%3D%27164%27%20cy%3D%2782%27%20r%3D%2712%27%20fill%3D%27white%27%20opacity%3D%270.94%27/%3E%0A%3C/svg%3E");
-      background-repeat: no-repeat;
-      background-position: center;
-      background-size: contain;
-      opacity: 0.07;
-      pointer-events: none;
-      z-index: 0;
-      filter: saturate(0.9);
-    }
-
-    body.dark-theme::before {
-      opacity: 0.11;
-    }
-
-    body::after {
-      content: "";
-      position: fixed;
-      left: 22px;
-      top: 22px;
-      width: 160px;
-      height: 160px;
-      background-image: url("data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20viewBox%3D%270%200%20240%20240%27%3E%3Cdefs%3E%3ClinearGradient%20id%3D%27g2%27%20x1%3D%270%27%20y1%3D%270%27%20x2%3D%271%27%20y2%3D%271%27%3E%3Cstop%20offset%3D%270%27%20stop-color%3D%27%23f2a578%27/%3E%3Cstop%20offset%3D%270.55%27%20stop-color%3D%27%23d37a4c%27/%3E%3Cstop%20offset%3D%271%27%20stop-color%3D%27%23b35428%27/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20x%3D%2724%27%20y%3D%2724%27%20width%3D%27192%27%20height%3D%27192%27%20rx%3D%2754%27%20fill%3D%27url%28%23g2%29%27/%3E%3Cpath%20d%3D%27M74%20150l30-42%2024%2031%2018-24%2024%2035%27%20fill%3D%27none%27%20stroke%3D%27white%27%20stroke-width%3D%2710%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%20opacity%3D%270.94%27/%3E%3Ccircle%20cx%3D%27164%27%20cy%3D%2782%27%20r%3D%2712%27%20fill%3D%27white%27%20opacity%3D%270.94%27/%3E%3C/svg%3E");
-      background-repeat: no-repeat;
-      background-position: center;
-      background-size: contain;
-      opacity: 0.06;
-      pointer-events: none;
-      z-index: 0;
-      filter: saturate(0.9);
-    }
-
-    @media print {
-      body::before {
-        opacity: 0.07;
-        right: 18px;
-        bottom: 18px;
-        width: 200px;
-        height: 200px;
-        position: fixed;
-      }
-      body::after {
-        opacity: 0.07;
-        left: 18px;
-        top: 50%;
-        transform: translateY(-50%) rotate(-12deg);
-        width: 160px;
-        height: 160px;
-        position: fixed;
-      }
-    }
+    .report-footer { margin-top: 32px; padding: 14px 24px; border-top: 1px solid var(--line); text-align: center; color: var(--muted); font-size: 12px; font-weight: 600; }
 
 </style>
 </head>
 <body>
+  <div class="background-watermarks" aria-hidden="true">
+    <img src="/images/logo/logo-text.png" alt="" style="width:420px;top:-30px;left:-80px;transform:rotate(-10deg);" />
+    <img src="/images/logo/logo-text.png" alt="" style="width:360px;top:200px;right:-60px;transform:rotate(7deg);" />
+    <img src="/images/logo/logo-text.png" alt="" style="width:380px;bottom:80px;left:60px;transform:rotate(14deg);" />
+    <img src="/images/logo/logo-text.png" alt="" style="width:340px;bottom:-30px;right:120px;transform:rotate(-5deg);" />
+    <img src="/images/logo/logo-text.png" alt="" style="width:300px;top:500px;left:40%;transform:rotate(3deg);" />
+  </div>
   <div class="top-nav">
     <div class="top-nav-inner">
-      <div class="brand">
-        <div class="brand-mark"></div>
+      <a class="brand" href="/">
+        <img class="brand-logo" src="/images/logo/small-logo.png" alt="OxideSLOC logo" />
         <div class="brand-copy">
           <div class="brand-title">OxideSLOC Local analysis workbench</div>
           <div class="brand-subtitle">Saved HTML report</div>
         </div>
-      </div>
+      </a>
       <div class="nav-project-slot">
-        <div class="nav-project-pill"><span class="nav-project-label">Report</span><span class="nav-project-value">{{ title }}</span></div>
+        <div class="nav-project-pill"><span class="nav-project-label">Report&nbsp;</span><span class="nav-project-value">{{ title }}</span></div>
       </div>
       <div class="nav-status">
         <span class="nav-pill">Saved artifact</span>
@@ -983,15 +927,12 @@ struct WarningOpportunityRow {
         <div>
           <div class="section-kicker">Saved report artifact</div>
           <h1>{{ title }}</h1>
-          <p class="subtitle">This self-contained report uses the current OxideSLOC workbench theme and keeps the saved HTML shareable without relying on external image routes.</p>
-        </div>
-        <div class="hero-actions pill-row">
-          <span class="pill info">Standalone HTML</span>
-          <span class="pill good">Sortable tables</span>
         </div>
       </div>
 
       <div class="meta">
+        <span class="meta-chip">Scan performed by {{ scan_performed_by }}</span>
+        <span class="meta-chip">Time Scanned: {{ scan_time_pst }} (PST)</span>
         <span class="meta-chip">Generated {{ generated_display }}</span>
         <span class="meta-chip">OS {{ run.environment.operating_system }} / {{ run.environment.architecture }}</span>
         <span class="meta-chip">Files analyzed {{ run.summary_totals.files_analyzed }}</span>
@@ -1000,18 +941,18 @@ struct WarningOpportunityRow {
       </div>
 
       <div class="summary-grid">
-        <div class="metric"><div class="metric-label">Physical lines</div><div class="metric-value">{{ run.summary_totals.total_physical_lines }}</div></div>
-        <div class="metric"><div class="metric-label">Code</div><div class="metric-value">{{ run.summary_totals.code_lines }}</div></div>
-        <div class="metric"><div class="metric-label">Comments</div><div class="metric-value">{{ run.summary_totals.comment_lines }}</div></div>
-        <div class="metric"><div class="metric-label">Blank</div><div class="metric-value">{{ run.summary_totals.blank_lines }}</div></div>
-        <div class="metric"><div class="metric-label">Mixed separate</div><div class="metric-value">{{ run.summary_totals.mixed_lines_separate }}</div></div>
+        <div class="metric"><div class="metric-tooltip">Total lines across all analyzed files, including code, comments, and blank lines.</div><div class="metric-label">Physical lines</div><div class="metric-value">{{ run.summary_totals.total_physical_lines }}</div></div>
+        <div class="metric"><div class="metric-tooltip">Lines containing executable source code, excluding comments and blanks.</div><div class="metric-label">Code</div><div class="metric-value">{{ run.summary_totals.code_lines }}</div></div>
+        <div class="metric"><div class="metric-tooltip">Lines consisting entirely of comments or inline documentation.</div><div class="metric-label">Comments</div><div class="metric-value">{{ run.summary_totals.comment_lines }}</div></div>
+        <div class="metric"><div class="metric-tooltip">Empty or whitespace-only lines used for readability and spacing.</div><div class="metric-label">Blank</div><div class="metric-value">{{ run.summary_totals.blank_lines }}</div></div>
+        <div class="metric"><div class="metric-tooltip">Lines that contain both code and a trailing comment, counted separately per the mixed-line policy.</div><div class="metric-label">Mixed separate</div><div class="metric-value">{{ run.summary_totals.mixed_lines_separate }}</div></div>
       </div>
     </section>
 
     <div class="report-stack">
       <section class="panel stack">
         <div>
-          <div class="toolbar"><div class="toolbar-left"><h2>Warnings and next improvements</h2></div><div class="pill-row"><span class="pill info">{{ warning_count }} total warnings</span></div></div>
+          <div class="toolbar"><div class="toolbar-left"><h3 style="margin:0;font-size:15px;font-weight:800;">Warnings and next improvements</h3></div><div class="pill-row"><span class="pill info" style="font-size:11px;min-height:26px;">{{ warning_count }} total warnings</span></div></div>
           {% if !has_run_warnings %}
             <div class="pill good">No top-level warnings.</div>
           {% else %}
@@ -1283,7 +1224,40 @@ struct WarningOpportunityRow {
         });
       });
     })();
+
+    (function randomizeWatermarks() {
+      var wms = Array.prototype.slice.call(document.querySelectorAll('.background-watermarks img'));
+      if (!wms.length) return;
+      var placed = [];
+      function tooClose(t, l) {
+        for (var i = 0; i < placed.length; i++) {
+          var dt = Math.abs(placed[i][0] - t);
+          var dl = Math.abs(placed[i][1] - l);
+          if (dt < 18 && dl < 18) return true;
+        }
+        return false;
+      }
+      function pick(leftBias) {
+        for (var attempt = 0; attempt < 40; attempt++) {
+          var t = Math.random() * 90;
+          var l = leftBias ? Math.random() * 50 : 40 + Math.random() * 55;
+          if (!tooClose(t, l)) { placed.push([t, l]); return [t, l]; }
+        }
+        var fb = [Math.random() * 90, Math.random() * 95];
+        placed.push(fb);
+        return fb;
+      }
+      var half = Math.floor(wms.length / 2);
+      wms.forEach(function (img, i) {
+        var pos = pick(i < half);
+        var sz = Math.floor(Math.random() * 80 + 110);
+        var rot = (Math.random() * 360).toFixed(1);
+        var op = (Math.random() * 0.07 + 0.10).toFixed(2);
+        img.style.cssText = 'width:' + sz + 'px;top:' + pos[0].toFixed(1) + '%;left:' + pos[1].toFixed(1) + '%;transform:rotate(' + rot + 'deg);opacity:' + op + ';';
+      });
+    })();
   </script>
+  <footer class="report-footer">oxide-sloc v{{ tool_version }}</footer>
 </body>
 </html>"#,
     ext = "html"
@@ -1292,6 +1266,9 @@ struct ReportTemplate<'a> {
     title: String,
     browser_title: String,
     generated_display: String,
+    scan_performed_by: String,
+    scan_time_pst: String,
+    tool_version: String,
     run: &'a AnalysisRun,
     language_rows: Vec<LanguageRow>,
     file_rows: Vec<FileRow>,

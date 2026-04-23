@@ -2119,6 +2119,7 @@ version = "0.1.1-alpha.1"
 dependencies = [
  "anyhow",
  "askama",
+ "chrono",
  "serde_json",
  "sloc-core",
 ]

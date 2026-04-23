@@ -25,6 +25,8 @@ pub struct RegistryEntry {
     pub input_roots: Vec<String>,
     pub json_path: Option<PathBuf>,
     pub html_path: Option<PathBuf>,
+    #[serde(default)]
+    pub pdf_path: Option<PathBuf>,
     pub summary: ScanSummarySnapshot,
     /// Git branch active at scan time, if the project is a git repo.
     #[serde(default)]
@@ -75,5 +77,11 @@ impl ScanRegistry {
 
     pub fn find_by_run_id(&self, run_id: &str) -> Option<&RegistryEntry> {
         self.entries.iter().find(|e| e.run_id == run_id)
+    }
+
+    /// Remove entries whose json_path no longer exists on disk.
+    pub fn prune_stale(&mut self) {
+        self.entries
+            .retain(|e| e.json_path.as_ref().map_or(true, |p| p.exists()));
     }
 }

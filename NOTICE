@@ -1,5 +1,22 @@
 oxide-sloc
-Copyright (C) 2026 Nima Shafie
+Copyright (C) 2026 Nima Shafie <nimzshafie@gmail.com>
 
-This product includes work developed for the oxide-sloc project and may include third-party dependencies distributed under their own licenses.
-See Cargo.lock and dependency license metadata where applicable.
+This software is the original work of Nima Shafie, developed independently
+on personal time using personal resources. All intellectual property rights
+in this software vest solely in the author.
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or (at your
+option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+Third-party dependencies are distributed under their own licenses.
+See Cargo.lock and each crate's license metadata for details.

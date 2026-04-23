@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Nima Shafie <nimzshafie@gmail.com>
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};

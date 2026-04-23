@@ -34,6 +34,12 @@ pub struct RegistryEntry {
     /// Short git commit SHA active at scan time.
     #[serde(default)]
     pub git_commit: Option<String>,
+    /// Author of the last git commit at scan time.
+    #[serde(default)]
+    pub git_author: Option<String>,
+    /// Comma-separated git tags pointing at HEAD at scan time.
+    #[serde(default)]
+    pub git_tags: Option<String>,
 }
 
 /// Persistent on-disk index of all past scans for this workspace.

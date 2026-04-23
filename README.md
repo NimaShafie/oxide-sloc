@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/NimaShafie/oxide-sloc/actions/workflows/ci.yml/badge.svg)](https://github.com/NimaShafie/oxide-sloc/actions/workflows/ci.yml)
 [![Release](https://github.com/NimaShafie/oxide-sloc/actions/workflows/release.yml/badge.svg)](https://github.com/NimaShafie/oxide-sloc/actions/workflows/release.yml)
+[![Docker](https://github.com/NimaShafie/oxide-sloc/actions/workflows/docker.yml/badge.svg)](https://github.com/NimaShafie/oxide-sloc/actions/workflows/docker.yml)
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](./LICENSE)
 
 **oxide-sloc** is a Rust-based source line analysis tool built for teams that want more than a simple line counter.
@@ -11,11 +12,19 @@ One shared analysis core with multiple delivery surfaces:
 - **CLI** — `oxidesloc analyze / report / serve` with a full flag set
 - **Quick Scan** — one-click scan from the web UI with zero configuration
 - **Localhost web UI** — guided 4-step flow with light/dark theme, auto browser-open
-- **Rich HTML reports** — per-file breakdown, language summaries, warning analysis
+- **Rich HTML reports** — per-file breakdown, language summaries, warning analysis, high-value support opportunities
 - **PDF export** — non-blocking background generation via locally installed Chromium
+- **Export to CSV / Excel** — download per-file data from any HTML report via nav bar buttons
+- **Scan history & delta tracking** — every run is saved; re-scan to see lines added/removed/unchanged
+- **Side-by-side diff view** — compare any two historical scans at the file level (`/compare`)
 - **Policy-aware counting** — mixed code/comment lines, Python docstrings
-- **Git submodule support** — auto-detect `.gitmodules` and produce per-submodule breakdowns
+- **Git submodule support** — auto-detect `.gitmodules` and produce per-submodule HTML sub-reports
+- **Metrics API** — JSON endpoints for CI/CD dashboards and custom tooling
+- **SVG badge endpoint** — embed live code-line counts in READMEs, Confluence pages, and Jira
+- **Embeddable summary widget** — drop an `<iframe>` into any internal wiki page
 - **CI/CD ready** — Jenkinsfile, GitHub Actions, and GitLab CI pipelines included
+- **Docker image** — auto-published to GHCR on every push to `main` and on every release tag
+- **Air-gap / offline** — all 328 crate dependencies vendored; Chart.js compiled in; no CDN calls ever
 - **Confluence integration** — push HTML reports or summary tables via REST API
 
 ---
@@ -191,6 +200,29 @@ CLI flags always override config file values. Run `oxidesloc --help` for the ful
 
 ---
 
+## Scan history and delta tracking
+
+Every scan run through the web UI is recorded in an on-disk registry (`out/web/registry.json` by default). Re-running a scan on the same project path automatically computes a line-level delta:
+
+- **Lines added** — new code lines since the previous scan
+- **Lines removed** — code lines that no longer exist
+- **Unmodified lines** — lines present in both scans
+- **Files modified / added / removed** — file-level change summary
+
+The result page displays the delta inline and offers a **Full diff →** link to the side-by-side compare view.
+
+### Compare view
+
+Navigate to `/history` to browse all past scans. Select any two runs and click **Compare** to open a file-by-file diff showing code delta per file. You can also reach the compare view from the result page via the **Full diff →** button shown whenever a previous scan exists for the same project.
+
+```
+/history                        → scan history browser
+/compare-select                 → select two runs to compare
+/compare?a=<run_id>&b=<run_id>  → side-by-side diff
+```
+
+---
+
 ## Currently supported languages
 
 | Language | Extensions |
@@ -237,6 +269,12 @@ In Docker, Chromium is bundled in the image — no extra setup needed.
 
 ---
 
+## Export to CSV and Excel
+
+Every HTML report includes **Export CSV** and **Export Excel** buttons in the top navigation bar, as well as in the "Per-file detail" table toolbar. Clicking either button downloads the per-file breakdown as a `.csv` or `.xls` file respectively — no server round-trip required, the export is generated entirely in the browser from the rendered table data.
+
+---
+
 ## Git submodule support
 
 Projects that use **git submodules** (a "super-repository" with dozens of nested sub-projects inside) can be analyzed with per-submodule isolation so each sub-project's SLOC totals are reported separately.
@@ -245,8 +283,9 @@ Projects that use **git submodules** (a "super-repository" with dozens of nested
 
 1. oxide-sloc reads the `.gitmodules` file in the project root.
 2. Each listed submodule path is used to tag every source file with its parent submodule.
-3. The report includes an extra **Submodule breakdown** table showing per-submodule file counts, code lines, comment lines, and physical lines.
-4. The overall project totals still include all files — the submodule table is additive detail, not a replacement.
+3. The result page includes an extra **Submodule breakdown** table showing per-submodule file counts, code lines, comment lines, and physical lines.
+4. Each submodule also gets its own linked HTML sub-report, saved alongside the main report.
+5. The overall project totals still include all files — the submodule table is additive detail, not a replacement.
 
 ### CLI usage
 
@@ -259,13 +298,59 @@ oxidesloc analyze ./mono-repo \
 
 ### Web UI
 
-Enable the **Detect and separate git submodules** checkbox in Step 1 before running the scan. The result page will include a collapsible Submodule breakdown section.
+Enable the **Detect and separate git submodules** checkbox in Step 1 before running the scan. The result page will include a Submodule breakdown section with links to each sub-report.
 
 ### TOML config
 
 ```toml
 [discovery]
 submodule_breakdown = true
+```
+
+---
+
+## Metrics API
+
+When the web UI server is running, a JSON metrics API is available for CI/CD dashboards and custom tooling.
+
+| Endpoint | Auth required | Description |
+|---|---|---|
+| `GET /api/metrics/latest` | Yes | Metrics for the most recent scan across all projects |
+| `GET /api/metrics/:run_id` | Yes | Metrics for a specific run by its UUID |
+| `GET /api/project-history?path=<dir>` | Yes | Scan history for a specific project root |
+| `GET /badge/:metric` | No | SVG badge (shields.io-style) |
+| `GET /embed/summary` | No | Embeddable HTML summary widget |
+| `GET /healthz` | No | Health check — always returns `200 OK` |
+
+### Metric values for `/badge/:metric`
+
+| Metric | Description |
+|---|---|
+| `code-lines` | Total code lines in the latest scan |
+| `files` | Total files analyzed |
+| `comment-lines` | Total comment lines |
+| `blank-lines` | Total blank lines |
+
+Optional query parameters: `label=<override>` and `color=<hex>`.
+
+```
+# Example badge URLs
+http://127.0.0.1:4317/badge/code-lines
+http://127.0.0.1:4317/badge/code-lines?label=Source+Lines&color=d37a4c
+```
+
+Embed in a README:
+
+```markdown
+![Code Lines](http://your-host:4317/badge/code-lines)
+```
+
+### Embed widget
+
+The `/embed/summary` endpoint returns a self-contained HTML snippet suitable for embedding in Confluence, Notion, or any tool that accepts `<iframe>` content:
+
+```html
+<iframe src="http://your-host:4317/embed/summary" width="100%" height="180" frameborder="0"></iframe>
 ```
 
 ---
@@ -315,12 +400,13 @@ oxidesloc analyze ./src --config ci/sloc-ci-strict.toml \
 
 ### GitHub Actions
 
-Two workflows ship in `.github/workflows/`:
+Three workflows ship in `.github/workflows/`:
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `ci.yml` | push to `main`, all PRs | fmt → clippy → build → unit tests → CLI smoke tests → web UI health check |
+| `ci.yml` | push to `main`, all PRs | fmt → clippy → build → unit tests → security audit → CLI smoke tests → web UI health check |
 | `release.yml` | push a `v*` tag | cross-compile for 4 platforms → publish GitHub Release with binaries |
+| `docker.yml` | push to `main`, push a `v*` tag | build and push Docker image to GHCR with `latest` + semver tags |
 
 The `ci.yml` smoke job runs every analysis variant (plain, per-file, all 4 policies, JSON+HTML, re-render from JSON) and verifies the web UI responds HTTP 200.
 
@@ -330,6 +416,8 @@ To cut a release:
 git tag v0.2.0
 git push origin v0.2.0
 ```
+
+Pushing a `v*` tag triggers both `release.yml` (binaries) and `docker.yml` (Docker image) automatically.
 
 ### Jenkins
 
@@ -410,7 +498,7 @@ make clean        # cargo clean
 
 ```bash
 cargo fmt --all
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo run -p oxidesloc -- serve
 ```
@@ -418,6 +506,15 @@ cargo run -p oxidesloc -- serve
 ### Formatting
 
 Configured in `rustfmt.toml`: `edition = "2021"`, `max_width = 100`.
+
+### CI gates (must pass before merging)
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build --workspace
+cargo test --workspace
+```
 
 ---
 
@@ -428,12 +525,12 @@ Configured in `rustfmt.toml`: `edition = "2021"`, `max_width = 100`.
 ├── crates/
 │   ├── sloc-cli/         # CLI entry point and commands
 │   ├── sloc-config/      # Config schema and TOML parsing
-│   ├── sloc-core/        # File discovery, decoding, aggregation, JSON model
+│   ├── sloc-core/        # File discovery, decoding, aggregation, JSON model, delta engine
 │   ├── sloc-languages/   # Language detection and lexical analyzers
-│   ├── sloc-report/      # HTML rendering and PDF export
+│   ├── sloc-report/      # HTML rendering (Askama), PDF export, CSV/Excel export
 │   └── sloc-web/
 │       ├── static/       # Bundled static assets (Chart.js — no CDN needed)
-│       └── src/          # Localhost web UI (Axum)
+│       └── src/          # Axum web server, scan registry, metrics API, badge endpoint
 ├── vendor/               # All 328 Rust crate sources — enables offline builds
 ├── .cargo/
 │   └── config.toml       # Tells Cargo to use vendor/ instead of crates.io
@@ -443,8 +540,9 @@ Configured in `rustfmt.toml`: `edition = "2021"`, `max_width = 100`.
 │   └── sloc-ci-full-scope.toml # CI config preset — audit everything
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml        # PR / push checks + smoke tests
-│       └── release.yml   # Cross-platform binary releases
+│       ├── ci.yml        # PR / push checks + smoke tests + security audit
+│       ├── release.yml   # Cross-platform binary releases
+│       └── docker.yml    # Build and push Docker image to GHCR
 ├── docs/
 │   ├── airgap.md             # Air-gapped / offline installation guide
 │   ├── ci-integrations.md    # Jenkins, GitHub Actions, GitLab CI, Confluence
@@ -492,7 +590,7 @@ bind_address = "0.0.0.0:4317"
 
 **Step 2 — enable API key authentication**
 
-Set `SLOC_API_KEY` in the server environment. When set, every request must carry a matching `X-API-Key` header. Requests without the correct key receive HTTP 401. The health check endpoint (`/healthz`) is exempt so load-balancer probes continue to work.
+Set `SLOC_API_KEY` in the server environment. When set, every request must carry a matching `X-API-Key` header. Requests without the correct key receive HTTP 401. The health check endpoint (`/healthz`) and the badge/embed endpoints are exempt so monitoring probes and external widgets continue to work.
 
 ```bash
 export SLOC_API_KEY="$(openssl rand -hex 32)"

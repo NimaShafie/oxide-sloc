@@ -126,6 +126,57 @@ pub struct AnalysisRun {
     /// Non-empty only when `discovery.submodule_breakdown` is enabled.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub submodule_summaries: Vec<SubmoduleSummary>,
+    /// Short git commit SHA (7 chars) at scan time, if the project is a git repo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_commit_short: Option<String>,
+    /// Full git commit SHA at scan time, if the project is a git repo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_commit_long: Option<String>,
+    /// Git branch active at scan time, if the project is a git repo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_branch: Option<String>,
+    /// Author of the last git commit at scan time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_commit_author: Option<String>,
+    /// Comma-separated git tags pointing at HEAD at scan time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_tags: Option<String>,
+}
+
+fn run_git_in(dir: &Path, args: &[&str]) -> Option<String> {
+    std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+#[derive(Default)]
+struct GitInfo {
+    commit_short: Option<String>,
+    commit_long: Option<String>,
+    branch: Option<String>,
+    author: Option<String>,
+    tags: Option<String>,
+}
+
+fn detect_git_for_run(project_path: &Path) -> GitInfo {
+    GitInfo {
+        commit_short: run_git_in(project_path, &["rev-parse", "--short", "HEAD"]),
+        commit_long: run_git_in(project_path, &["rev-parse", "HEAD"]),
+        branch: run_git_in(project_path, &["branch", "--show-current"]),
+        author: run_git_in(project_path, &["log", "--format=%an", "-1"]),
+        tags: run_git_in(project_path, &["tag", "--points-at", "HEAD"]).map(|t| {
+            t.lines()
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join(", ")
+        }),
+    }
 }
 
 fn get_current_username() -> String {
@@ -245,21 +296,36 @@ pub fn analyze(config: &AppConfig, runtime_mode: &str) -> Result<AnalysisRun> {
     let summary = build_summary(&analyzed, &skipped);
     let language_summaries = build_language_summaries(&analyzed);
 
+    // Detect git info from the first root to drive run_id and enrich the result.
+    let first_root = config
+        .discovery
+        .root_paths
+        .first()
+        .map(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()));
+    let git = first_root
+        .as_deref()
+        .map(detect_git_for_run)
+        .unwrap_or_default();
+
+    let now = Utc::now();
+    let run_id = {
+        let suffix = git
+            .commit_short
+            .as_deref()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                let raw = Uuid::new_v4().to_string().replace('-', "");
+                raw[..7].to_string()
+            });
+        format!("{}-{}", now.format("%Y%m%d-%H%M"), suffix)
+    };
+
     Ok(AnalysisRun {
         tool: ToolMetadata {
             name: "sloc".into(),
             version: env!("CARGO_PKG_VERSION").into(),
-            run_id: {
-                let now = Utc::now();
-                let prefix = now.format("%Y%m%d%H%M").to_string();
-                let raw = Uuid::new_v4().to_string().replace('-', "");
-                // Mix in seconds so runs within the same minute differ
-                let sec = now.format("%S").to_string();
-                let mixed = format!("{}{}", sec, &raw);
-                let suffix = &mixed[..8];
-                format!("{}-{}", prefix, suffix)
-            },
-            timestamp_utc: Utc::now(),
+            run_id,
+            timestamp_utc: now,
         },
         environment: EnvironmentMetadata {
             operating_system: std::env::consts::OS.into(),
@@ -281,6 +347,11 @@ pub fn analyze(config: &AppConfig, runtime_mode: &str) -> Result<AnalysisRun> {
         skipped_file_records: skipped,
         warnings,
         submodule_summaries,
+        git_commit_short: git.commit_short,
+        git_commit_long: git.commit_long,
+        git_branch: git.branch,
+        git_commit_author: git.author,
+        git_tags: git.tags,
     })
 }
 

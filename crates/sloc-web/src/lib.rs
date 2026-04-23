@@ -389,6 +389,8 @@ async fn locate_report_handler(
                 },
                 git_branch: None,
                 git_commit: None,
+                git_author: None,
+                git_tags: None,
             };
             reg.add_entry(entry);
             let _ = reg.save(&state.registry_path);
@@ -612,8 +614,11 @@ async fn analyze_handler(
             .cloned()
     };
 
-    // Detect git branch, commit, and last commit author for the project path.
-    let (git_branch, git_commit, git_author) = detect_git_info(&resolve_input_path(&form.path));
+    // Git info is now captured inside analyze() and stored on the run.
+    let git_branch = run.git_branch.clone();
+    let git_commit = run.git_commit_short.clone();
+    let git_author = run.git_commit_author.clone();
+    let git_tags = run.git_tags.clone();
 
     // Compute line-level delta vs the previous scan if JSON is available.
     let scan_delta = prev_entry.as_ref().and_then(|prev| {
@@ -703,6 +708,8 @@ async fn analyze_handler(
             },
             git_branch: git_branch.clone(),
             git_commit: git_commit.clone(),
+            git_author: git_author.clone(),
+            git_tags: git_tags.clone(),
         };
         let mut reg = state.registry.lock().await;
         reg.add_entry(entry);
@@ -1378,6 +1385,17 @@ async fn compare_handler(
         (entry_b, entry_a)
     };
 
+    // If query params were in the wrong order, redirect to canonical URL so the
+    // browser always shows the same URL for the same two scans regardless of how
+    // the user arrived here (Full diff button vs. Compare Scans selection).
+    if baseline_entry.run_id != run_id_a {
+        let canonical = format!(
+            "/compare?a={}&b={}",
+            baseline_entry.run_id, current_entry.run_id
+        );
+        return axum::response::Redirect::to(&canonical).into_response();
+    }
+
     let (Some(base_json), Some(curr_json)) = (
         baseline_entry.json_path.as_ref(),
         current_entry.json_path.as_ref(),
@@ -1461,6 +1479,8 @@ async fn compare_handler(
         .unwrap_or_default();
     let s = &comparison.summary;
     let template = CompareTemplate {
+        baseline_run_id: baseline_entry.run_id.clone(),
+        current_run_id: current_entry.run_id.clone(),
         baseline_run_id_short: baseline_entry
             .run_id
             .split('-')
@@ -1484,6 +1504,8 @@ async fn compare_handler(
         current_files: s.current_files,
         files_analyzed_delta_str: fmt_delta(s.files_analyzed_delta),
         files_analyzed_delta_class: delta_class(s.files_analyzed_delta).into(),
+        baseline_comments: s.baseline_comments,
+        current_comments: s.current_comments,
         comment_lines_delta_str: fmt_delta(s.comment_lines_delta),
         comment_lines_delta_class: delta_class(s.comment_lines_delta).into(),
         files_added: comparison.files_added,
@@ -1491,6 +1513,12 @@ async fn compare_handler(
         files_modified: comparison.files_modified,
         files_unchanged: comparison.files_unchanged,
         file_rows,
+        baseline_git_author: baseline_entry.git_author.clone(),
+        current_git_author: current_entry.git_author.clone(),
+        baseline_git_branch: baseline_entry.git_branch.clone().unwrap_or_default(),
+        current_git_branch: current_entry.git_branch.clone().unwrap_or_default(),
+        baseline_git_tags: baseline_entry.git_tags.clone(),
+        current_git_tags: current_entry.git_tags.clone(),
     };
 
     Html(
@@ -2055,25 +2083,12 @@ fn build_sub_run(
         skipped_file_records: vec![],
         warnings: vec![],
         submodule_summaries: vec![],
+        git_commit_short: parent.git_commit_short.clone(),
+        git_commit_long: parent.git_commit_long.clone(),
+        git_branch: parent.git_branch.clone(),
+        git_commit_author: parent.git_commit_author.clone(),
+        git_tags: parent.git_tags.clone(),
     }
-}
-
-fn detect_git_info(project_path: &Path) -> (Option<String>, Option<String>, Option<String>) {
-    let run_git = |args: &[&str]| -> Option<String> {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(project_path)
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-    };
-    let branch = run_git(&["branch", "--show-current"]);
-    let commit = run_git(&["rev-parse", "--short", "HEAD"]);
-    let author = run_git(&["log", "--format=%an", "-1"]);
-    (branch, commit, author)
 }
 
 fn sanitize_project_label(raw: &str) -> String {
@@ -3506,7 +3521,7 @@ struct SubmoduleRow {
                       <button type="button" class="mini-button oxide" id="browse-output-dir">Browse</button>
                       <button type="button" class="mini-button" id="use-default-output">Use default</button>
                     </div>
-                    <div class="hint">Run folders are created inside this directory.</div>
+                    <div class="hint">A unique timestamped subfolder is created automatically for each run — your existing files are never overwritten.</div>
                   </div>
                   <div class="output-field-aside">
                     <strong>Where reports land</strong>
@@ -4992,24 +5007,23 @@ struct SplashTemplate {}
     .hero { margin-bottom: 18px; background: linear-gradient(180deg, rgba(255,255,255,0.30), transparent), var(--surface); }
     .hero-top { display:flex; justify-content:space-between; align-items:flex-start; gap:18px; }
     .hero-title { margin:0; font-size: 26px; font-weight: 850; letter-spacing: -0.03em; }
-    .hero-subtitle { margin: 10px 0 0; color: var(--muted); font-size: 16px; line-height: 1.65; max-width: 920px; }
-    .hero-note { margin-top: 14px; color: var(--muted); font-size: 14px; line-height: 1.6; }
+    .hero-subtitle { margin: 10px 0 0; color: var(--muted); font-size: 16px; line-height: 1.65; }
     .compare-banner { margin-top: 18px; background: var(--info-bg, #eef3ff); border: 1px solid rgba(100,130,220,0.25); border-radius: 14px; padding: 14px 18px; }
-    .compare-banner-body { display:flex; align-items:center; gap: 18px; flex-wrap:wrap; }
-    .compare-banner-meta { display:flex; flex-direction:column; gap:2px; min-width:0; }
+    .compare-banner-body { display:flex; align-items:center; gap: 14px; flex-wrap:wrap; }
+    .compare-banner-meta { display:flex; flex-direction:column; gap:2px; min-width:0; flex: 0 0 auto; }
     .delta-chip { font-size:12px; font-weight:700; padding:2px 8px; border-radius:999px; }
     .delta-chip.pos { background:#e6f4ea; color:#1e7e34; }
     .delta-chip.neg { background:#fde8e8; color:#b91c1c; }
-    .delta-cards { display:flex; flex-wrap:wrap; gap:10px; margin-top:14px; }
-    .delta-card { background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:10px 16px; min-width:110px; text-align:center; }
-    .delta-card-val { font-size:20px; font-weight:800; }
+    .delta-cards-inline { display:flex; flex-wrap:wrap; gap:8px; flex:1 1 auto; align-items:center; }
+    .delta-card-inline { background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:6px 12px; text-align:center; min-width:80px; }
+    .delta-card-val { font-size:16px; font-weight:800; }
     .delta-card-val.pos { color:#1e7e34; }
     .delta-card-val.neg { color:#b91c1c; }
     .delta-card-val.mod { color:#b35428; }
-    .delta-card-lbl { font-size:11px; color:var(--muted); margin-top:3px; }
+    .delta-card-lbl { font-size:10px; color:var(--muted); margin-top:2px; }
     .compare-label { font-size:11px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:var(--info-text, #4467d8); }
     .compare-ts { font-size:13px; color:var(--muted); }
-    .compare-banner-stats { display:flex; align-items:center; gap:10px; font-size:14px; flex:1 1 auto; flex-wrap:wrap; }
+    .compare-banner-stats { display:flex; align-items:center; gap:10px; font-size:14px; flex-wrap:wrap; }
     .compare-arrow { color: var(--muted); }
     .action-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 18px; }
     .action-card { padding: 16px; border-radius: 16px; border: 1px solid var(--line); background: var(--surface-2); }
@@ -5019,7 +5033,7 @@ struct SplashTemplate {}
       display: inline-flex; align-items: center; justify-content: center; border-radius: 14px; border: 1px solid rgba(111, 144, 255, 0.30); padding: 11px 14px; text-decoration: none; color: white; background: linear-gradient(135deg, var(--accent), var(--accent-2)); font-weight: 800; font-size: 14px; box-shadow: 0 12px 24px rgba(73, 106, 255, 0.22); cursor: pointer;
     }
     .button.secondary, .copy-button.secondary { background: var(--surface-3); box-shadow: none; color: var(--text); border-color: var(--line-strong); }
-    .path-list { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 18px; }
+    .path-list { display: grid; grid-template-columns: 1fr 0.6fr 1.4fr; gap: 10px; margin-top: 18px; }
     .path-item { padding: 10px 14px; background: var(--surface-2); display: flex; flex-direction: column; justify-content: space-between; }
     .path-item-label { font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: 4px; }
     .path-item strong { display: block; margin-bottom: 6px; }
@@ -5127,11 +5141,11 @@ struct SplashTemplate {}
           <div class="soft-chip success">Run finished successfully</div>
           <h1 class="hero-title">{{ report_title }}</h1>
           <p class="hero-subtitle">Your HTML, PDF, and JSON artifacts are now saved. Use the quick actions below to view, download, or copy the saved paths for sharing outside the local workbench.</p>
-          <p class="hero-note">The embedded preview below now reflects the current saved-report theme instead of the older blue prototype layout.</p>
         </div>
         <div class="pill-row">
           <button type="button" class="copy-button secondary" data-copy-value="{{ output_dir }}">Copy output folder</button>
           <button type="button" class="copy-button secondary" data-copy-value="{{ run_id }}">Copy run ID</button>
+          <button type="button" class="open-path-btn open-folder-button" data-folder="{{ output_dir }}" style="font-size:13px;">Open output folder</button>
         </div>
       </div>
 
@@ -5142,61 +5156,55 @@ struct SplashTemplate {}
             <span class="compare-label">Previous scan</span>
             <span class="compare-ts">{{ prev_ts }}</span>
             {% if prev_scan_count > 1 %}<span class="compare-ts">{{ prev_scan_count }} scans total</span>{% endif %}
-          </div>
-          <div class="compare-banner-stats">
             {% if let Some(prev_code) = prev_run_code_lines %}
+            <div class="compare-banner-stats" style="margin-top:4px;">
               <span>Code before: <strong>{{ prev_code }}</strong></span>
               <span class="compare-arrow">→</span>
               <span>Code now: <strong>{{ code_lines }}</strong></span>
-            {% endif %}
-            {% if let Some(added) = delta_lines_added %}
-              <span class="delta-chip pos">+{{ added }} added</span>
-            {% endif %}
-            {% if let Some(removed) = delta_lines_removed %}
-              <span class="delta-chip neg">&minus;{{ removed }} removed</span>
+              {% if let Some(added) = delta_lines_added %}<span class="delta-chip pos">+{{ added }} added</span>{% endif %}
+              {% if let Some(removed) = delta_lines_removed %}<span class="delta-chip neg">&minus;{{ removed }} removed</span>{% endif %}
+            </div>
             {% endif %}
           </div>
-          <a class="button" href="/compare?a={{ prev_id }}&b={{ run_id }}" style="white-space:nowrap;">Full diff →</a>
+          {% if delta_lines_added.is_some() %}
+          <div class="delta-cards-inline">
+            <div class="delta-card-inline">
+              <div class="delta-card-val pos">{% if let Some(v) = delta_lines_added %}+{{ v }}{% else %}—{% endif %}</div>
+              <div class="delta-card-lbl">lines added</div>
+            </div>
+            <div class="delta-card-inline">
+              <div class="delta-card-val neg">{% if let Some(v) = delta_lines_removed %}&minus;{{ v }}{% else %}—{% endif %}</div>
+              <div class="delta-card-lbl">lines removed</div>
+            </div>
+            <div class="delta-card-inline">
+              <div class="delta-card-val">{% if let Some(v) = delta_unmodified_lines %}{{ v }}{% else %}—{% endif %}</div>
+              <div class="delta-card-lbl">unmodified lines</div>
+            </div>
+            <div class="delta-card-inline">
+              <div class="delta-card-val mod">{% if let Some(v) = delta_files_modified %}{{ v }}{% else %}—{% endif %}</div>
+              <div class="delta-card-lbl">files modified</div>
+            </div>
+            <div class="delta-card-inline">
+              <div class="delta-card-val pos">{% if let Some(v) = delta_files_added %}{{ v }}{% else %}—{% endif %}</div>
+              <div class="delta-card-lbl">files added</div>
+            </div>
+            <div class="delta-card-inline">
+              <div class="delta-card-val neg">{% if let Some(v) = delta_files_removed %}{{ v }}{% else %}—{% endif %}</div>
+              <div class="delta-card-lbl">files removed</div>
+            </div>
+            <div class="delta-card-inline">
+              <div class="delta-card-val">{% if let Some(v) = delta_files_unchanged %}{{ v }}{% else %}—{% endif %}</div>
+              <div class="delta-card-lbl">files unchanged</div>
+            </div>
+          </div>
+          {% else %}
+          <p style="font-size:12px;color:var(--muted);line-height:1.5;flex:1;">
+            Line-level delta not available — previous scan's result file could not be read. Re-running will restore full delta tracking.
+          </p>
+          {% endif %}
+          <a class="button" href="/compare?a={{ prev_id }}&b={{ run_id }}" style="white-space:nowrap;flex:0 0 auto;">Full diff →</a>
         </div>
       </div>
-
-      {% if delta_lines_added.is_some() %}
-      <div class="delta-cards">
-        <div class="delta-card">
-          <div class="delta-card-val pos">{% if let Some(v) = delta_lines_added %}+{{ v }}{% else %}—{% endif %}</div>
-          <div class="delta-card-lbl">lines added</div>
-        </div>
-        <div class="delta-card">
-          <div class="delta-card-val neg">{% if let Some(v) = delta_lines_removed %}&minus;{{ v }}{% else %}—{% endif %}</div>
-          <div class="delta-card-lbl">lines removed</div>
-        </div>
-        <div class="delta-card">
-          <div class="delta-card-val">{% if let Some(v) = delta_unmodified_lines %}{{ v }}{% else %}—{% endif %}</div>
-          <div class="delta-card-lbl">unmodified lines</div>
-        </div>
-        <div class="delta-card">
-          <div class="delta-card-val mod">{% if let Some(v) = delta_files_modified %}{{ v }}{% else %}—{% endif %}</div>
-          <div class="delta-card-lbl">files modified</div>
-        </div>
-        <div class="delta-card">
-          <div class="delta-card-val pos">{% if let Some(v) = delta_files_added %}{{ v }}{% else %}—{% endif %}</div>
-          <div class="delta-card-lbl">files added</div>
-        </div>
-        <div class="delta-card">
-          <div class="delta-card-val neg">{% if let Some(v) = delta_files_removed %}{{ v }}{% else %}—{% endif %}</div>
-          <div class="delta-card-lbl">files removed</div>
-        </div>
-        <div class="delta-card">
-          <div class="delta-card-val">{% if let Some(v) = delta_files_unchanged %}{{ v }}{% else %}—{% endif %}</div>
-          <div class="delta-card-lbl">files unchanged</div>
-        </div>
-      </div>
-      {% else %}
-      <p style="margin-top:12px;color:var(--muted);font-size:13px;line-height:1.5;">
-        Line-level delta details are not available for this comparison — the previous scan's result file could not be read (the output folder may have been moved or the scan predates JSON saving).
-        Re-running the analysis will restore full delta tracking.
-      </p>
-      {% endif %}
       {% endif %}{% endif %}
 
       <div class="action-grid">
@@ -5248,10 +5256,6 @@ struct SplashTemplate {}
           </div>
         </div>
       </div>
-      <div style="margin-top:10px;">
-        <button type="button" class="open-path-btn open-folder-button" data-folder="{{ output_dir }}" style="font-size:13px;">Open output folder</button>
-      </div>
-
       <div class="metrics-table-wrap">
         <table class="metrics-table">
           <thead>
@@ -5829,6 +5833,9 @@ struct ErrorTemplate {
     .btn.primary:hover{opacity:.9;}
     .btn-back{display:inline-flex;align-items:center;gap:7px;padding:7px 14px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;border:1px solid var(--line);background:var(--surface-2);color:var(--text);text-decoration:none;transition:background .12s ease;}
     .btn-back:hover{background:var(--line);}
+    .export-btn{display:inline-flex;align-items:center;gap:5px;padding:5px 11px;border-radius:7px;font-size:12px;font-weight:700;cursor:pointer;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);text-decoration:none;white-space:nowrap;transition:background .12s ease;}
+    .export-btn:hover{background:var(--line);}
+    .export-group{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
     .actions-cell{display:flex;gap:6px;flex-wrap:nowrap;align-items:center;}
     .no-report{color:var(--muted);font-size:11px;font-style:italic;}
     .empty-state{text-align:center;padding:48px 24px;color:var(--muted);}
@@ -5846,14 +5853,14 @@ struct ErrorTemplate {
     .stat-chip:hover{transform:translateY(-4px);box-shadow:0 12px 32px rgba(77,44,20,0.2);}
     .stat-chip-val{font-size:20px;font-weight:900;color:var(--oxide);}
     .stat-chip-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-top:4px;}
-    .stat-chip-tip{position:absolute;bottom:calc(100% + 10px);left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:7px 12px;border-radius:8px;font-size:11px;font-weight:500;line-height:1.4;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .2s ease;z-index:100;box-shadow:0 4px 14px rgba(0,0,0,0.2);}
-    .stat-chip-tip::after{content:'';position:absolute;top:100%;left:50%;transform:translateX(-50%);border:5px solid transparent;border-top-color:var(--text);}
+    .stat-chip-tip{position:absolute;top:calc(100% + 10px);left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:7px 12px;border-radius:8px;font-size:11px;font-weight:500;line-height:1.4;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .2s ease;z-index:200;box-shadow:0 4px 14px rgba(0,0,0,0.2);}
+    .stat-chip-tip::after{content:'';position:absolute;bottom:100%;left:50%;transform:translateX(-50%);border:5px solid transparent;border-bottom-color:var(--text);}
     .stat-chip:hover .stat-chip-tip{opacity:1;}
     .site-footer{text-align:center;padding:18px 24px;font-size:13px;color:var(--muted);position:relative;z-index:1;}
     .site-footer a{color:var(--muted);}
     @media(max-width:700px){td,th{padding:7px 8px;}.run-id-chip,.git-chip{display:none;}}
-    .locate-bar{display:flex;align-items:center;gap:10px;margin-bottom:14px;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px 14px;flex-wrap:wrap;}
-    .locate-label{font-size:13px;color:var(--muted);flex:1;min-width:180px;}
+    .locate-bar{display:inline-flex;align-items:center;gap:10px;margin-bottom:14px;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px 14px;flex-wrap:wrap;max-width:100%;}
+    .locate-label{font-size:13px;color:var(--muted);white-space:nowrap;}
     .toast-success{display:flex;align-items:center;gap:10px;background:#e8f5ed;border:1px solid #a3d9b1;border-radius:10px;padding:10px 16px;margin-bottom:14px;font-size:13px;color:#1a5c35;font-weight:600;}
     body.dark-theme .toast-success{background:rgba(26,143,71,0.12);border-color:rgba(163,217,177,0.3);color:#6fcf97;}
     .status-dot{width:8px;height:8px;border-radius:999px;background:#26d768;box-shadow:0 0 0 4px rgba(38,215,104,0.14);flex:0 0 auto;}
@@ -5916,10 +5923,22 @@ struct ErrorTemplate {
           <h1>View Reports</h1>
           <p class="panel-meta">{{ total_scans }} report(s) available. Click any row to open it.</p>
         </div>
-        <a class="btn-back" href="/">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="15 18 9 12 15 6"></polyline></svg>
-          Home
-        </a>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <div class="export-group">
+            <button type="button" class="export-btn" onclick="exportHistoryCsv()">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Export CSV
+            </button>
+            <button type="button" class="export-btn" onclick="exportHistoryXls()">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Export Excel
+            </button>
+          </div>
+          <a class="btn-back" href="/">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="15 18 9 12 15 6"></polyline></svg>
+            Home
+          </a>
+        </div>
       </div>
 
       <div class="locate-bar">
@@ -5941,28 +5960,19 @@ struct ErrorTemplate {
         <select class="filter-select" id="branch-filter" onchange="applyFilters()"><option value="">All branches</option></select>
         <button type="button" class="btn" onclick="resetView()">&#8635; Reset view</button>
       </div>
-      <div class="controls-bar">
-        <span class="per-page-label">Show</span>
-        <select class="per-page" id="per-page-sel" onchange="setPerPage(this.value)">
-          <option value="10">10 per page</option>
-          <option value="25" selected>25 per page</option>
-          <option value="50">50 per page</option>
-          <option value="100">100 per page</option>
-        </select>
-        <span class="per-page-label" id="page-range-label"></span>
-      </div>
       <div class="table-wrap">
         <table id="history-table">
           <colgroup>
-            <col style="width:175px">
-            <col style="width:200px">
-            <col style="width:130px">
-            <col style="width:105px">
-            <col style="width:105px">
+            <col style="width:165px">
+            <col style="width:180px">
+            <col style="width:120px">
+            <col style="width:95px">
+            <col style="width:100px">
+            <col style="width:95px">
+            <col style="width:80px">
+            <col style="width:100px">
             <col style="width:100px">
             <col style="width:90px">
-            <col style="width:110px">
-            <col style="width:95px">
           </colgroup>
           <thead>
             <tr id="history-thead">
@@ -5974,6 +5984,7 @@ struct ErrorTemplate {
               <th class="sortable" data-sort-col="comments" data-sort-type="num">Comments<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
               <th class="sortable" data-sort-col="blank" data-sort-type="num">Blank<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
               <th class="sortable" data-sort-col="branch" data-sort-type="str">Branch<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+              <th class="sortable" data-sort-col="commit" data-sort-type="str">Commit<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
               <th>Report<div class="col-resize-handle"></div></th>
             </tr>
           </thead>
@@ -5987,6 +5998,7 @@ struct ErrorTemplate {
                 data-comments="{{ entry.comment_lines }}"
                 data-blank="{{ entry.blank_lines }}"
                 data-branch="{{ entry.git_branch }}"
+                data-commit="{{ entry.git_commit }}"
                 style="cursor:pointer;"
                 onclick="window.open('/runs/{{ entry.run_id }}/html', '_blank')">
               <td>{{ entry.timestamp }}</td>
@@ -5997,6 +6009,7 @@ struct ErrorTemplate {
               <td><span class="metric-num">{{ entry.comment_lines }}</span></td>
               <td><span class="metric-num">{{ entry.blank_lines }}</span></td>
               <td>{% if !entry.git_branch.is_empty() %}<span class="git-chip">{{ entry.git_branch }}</span>{% else %}<span class="metric-secondary">&#8212;</span>{% endif %}</td>
+              <td>{% if !entry.git_commit.is_empty() %}<span class="git-chip" title="{{ entry.git_commit }}">{{ entry.git_commit }}</span>{% else %}<span class="metric-secondary">&#8212;</span>{% endif %}</td>
               <td>
                 <div class="actions-cell">
                 <a class="btn primary" href="/runs/{{ entry.run_id }}/html" target="_blank" rel="noopener" onclick="event.stopPropagation()">View</a>
@@ -6010,6 +6023,16 @@ struct ErrorTemplate {
       <div class="pagination">
         <span class="pagination-info" id="pagination-info"></span>
         <div class="pagination-btns" id="pagination-btns"></div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="per-page-label">Show</span>
+          <select class="per-page" id="per-page-sel" onchange="setPerPage(this.value)">
+            <option value="10">10 per page</option>
+            <option value="25" selected>25 per page</option>
+            <option value="50">50 per page</option>
+            <option value="100">100 per page</option>
+          </select>
+          <span class="per-page-label" id="page-range-label"></span>
+        </div>
       </div>
       {% endif %}
     </section>
@@ -6229,6 +6252,18 @@ struct ErrorTemplate {
         })
         .catch(function(e) { alert('Could not open file picker: ' + e); });
     }
+
+    // ── Export helpers ────────────────────────────────────────────────────────
+    function slocEscXml(v){return String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+    function slocEscCsv(v){var s=String(v);return(s.indexOf(',')>=0||s.indexOf('"')>=0||s.indexOf('\n')>=0)?'"'+s.replace(/"/g,'""')+'"':s;}
+    function slocDownload(data,name,mime){var b=new Blob([data],{type:mime});var u=URL.createObjectURL(b);var a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(u);},200);}
+    function slocCsv(fname,hdrs,rows){slocDownload([hdrs.map(slocEscCsv).join(',')].concat(rows.map(function(r){return r.map(slocEscCsv).join(',');})).join('\r\n'),fname,'text/csv;charset=utf-8;');}
+    function slocXls(fname,sheet,hdrs,rows){var x='<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="'+slocEscXml(sheet)+'"><Table><Row>'+hdrs.map(function(h){return '<Cell><Data ss:Type="String">'+slocEscXml(h)+'</Data></Cell>';}).join('')+'</Row>';rows.forEach(function(r){x+='<Row>'+r.map(function(c,i){var t=(i>0&&c!==''&&!isNaN(String(c).replace(/^[+\-]/,'')))?'Number':'String';return '<Cell><Data ss:Type="'+t+'">'+slocEscXml(c)+'</Data></Cell>';}).join('')+'</Row>';});x+='</Table></Worksheet></Workbook>';slocDownload(x,fname,'application/vnd.ms-excel');}
+
+    var _hh = ['Timestamp','Project','Run ID','Files Analyzed','Files Skipped','Code Lines','Comments','Blank','Branch','Commit'];
+    function getHistoryRows(){var r=[];document.querySelectorAll('#history-tbody .history-row').forEach(function(tr){r.push([tr.getAttribute('data-timestamp')||'',tr.getAttribute('data-project')||'',tr.getAttribute('data-run')||'',tr.getAttribute('data-files')||'',tr.getAttribute('data-skipped')||'',tr.getAttribute('data-code')||'',tr.getAttribute('data-comments')||'',tr.getAttribute('data-blank')||'',tr.getAttribute('data-branch')||'',tr.getAttribute('data-commit')||'']);});return r;}
+    window.exportHistoryCsv = function(){slocCsv('scan-history.csv',_hh,getHistoryRows());};
+    window.exportHistoryXls = function(){slocXls('scan-history.xls','Scan History',_hh,getHistoryRows());};
   </script>
 </body>
 </html>
@@ -6390,26 +6425,14 @@ struct HistoryTemplate {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
         Click any two rows to select them, then press <strong>&nbsp;Compare&nbsp;</strong> to view the scan delta.
       </div>
-      <div class="compare-bar">
-        <button class="btn primary" id="compare-btn" onclick="doCompare()" disabled>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
-          Compare (0/2 selected)
-        </button>
-      </div>
-      <div class="filter-bar">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
         <input class="filter-input" id="project-filter" type="text" placeholder="Filter by project…" oninput="applyFilters()">
         <select class="filter-select" id="branch-filter" onchange="applyFilters()"><option value="">All branches</option></select>
         <button type="button" class="btn" onclick="resetView()">&#8635; Reset view</button>
-      </div>
-      <div class="controls-bar">
-        <span class="per-page-label">Show</span>
-        <select class="per-page" id="per-page-sel" onchange="setPerPage(this.value)">
-          <option value="10">10 per page</option>
-          <option value="25" selected>25 per page</option>
-          <option value="50">50 per page</option>
-          <option value="100">100 per page</option>
-        </select>
-        <span class="per-page-label" id="page-range-label"></span>
+        <button class="btn primary" id="compare-btn" onclick="doCompare()" disabled style="margin-left:auto;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
+          Compare (0/2 selected)
+        </button>
       </div>
       <div class="table-wrap">
         <table id="compare-table">
@@ -6465,6 +6488,16 @@ struct HistoryTemplate {
       <div class="pagination">
         <span class="pagination-info" id="pagination-info"></span>
         <div class="pagination-btns" id="pagination-btns"></div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="per-page-label">Show</span>
+          <select class="per-page" id="per-page-sel" onchange="setPerPage(this.value)">
+            <option value="10">10 per page</option>
+            <option value="25" selected>25 per page</option>
+            <option value="50">50 per page</option>
+            <option value="100">100 per page</option>
+          </select>
+          <span class="per-page-label" id="page-range-label"></span>
+        </div>
       </div>
       {% endif %}
     </section>
@@ -6711,15 +6744,16 @@ struct CompareSelectTemplate {
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
   <style>
     :root {
-      --radius:18px; --bg:#f5efe8; --surface:rgba(255,255,255,0.82); --surface-2:#fbf7f2;
-      --line:#e6d0bf; --text:#43342d; --muted:#7b675b; --nav:#b85d33; --nav-2:#7a371b;
-      --accent:#6f9bff; --oxide:#d37a4c; --shadow:0 18px 42px rgba(77,44,20,0.12);
+      --radius:18px; --bg:#f5efe8; --surface:#fbf7f2; --surface-2:#f4ede4;
+      --line:#e6d0bf; --line-strong:#d8bfad; --text:#43342d; --muted:#7b675b; --muted-2:#a08777;
+      --nav:#b85d33; --nav-2:#7a371b;
+      --accent:#6f9bff; --oxide:#d37a4c; --oxide-2:#b35428; --shadow:0 18px 42px rgba(77,44,20,0.12);
       --pos:#1a8f47; --pos-bg:#e8f5ed; --neg:#b33b3b; --neg-bg:#fdeaea; --zero-bg:transparent;
       --added:#1a8f47; --removed:#b33b3b; --modified:#926000; --unchanged:#7b675b;
     }
     body.dark-theme {
-      --bg:#1b1511; --surface:#261c17; --surface-2:#2d221d; --line:#524238; --text:#f5ece6;
-      --muted:#c7b7aa; --pos:#8fe2a8; --pos-bg:#163927; --neg:#f5a3a3; --neg-bg:#3d1c1c;
+      --bg:#1b1511; --surface:#261c17; --surface-2:#2d221d; --line:#524238; --line-strong:#6c5649; --text:#f5ece6;
+      --muted:#c7b7aa; --muted-2:#aa9485; --pos:#8fe2a8; --pos-bg:#163927; --neg:#f5a3a3; --neg-bg:#3d1c1c;
     }
     *{box-sizing:border-box;} html,body{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);}
     .top-nav{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,var(--nav),var(--nav-2));border-bottom:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 14px rgba(0,0,0,0.18);}
@@ -6732,9 +6766,14 @@ struct CompareSelectTemplate {
     .theme-toggle:hover{transform:translateY(-1px);background:rgba(255,255,255,0.16);}
     .theme-toggle svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8;}
     .theme-toggle .icon-sun{display:none;} body.dark-theme .theme-toggle .icon-sun{display:block;} body.dark-theme .theme-toggle .icon-moon{display:none;}
-    .page{max-width:1720px;margin:0 auto;padding:18px 24px 40px;}
+    .page{max-width:1720px;margin:0 auto;padding:18px 24px 40px;position:relative;z-index:1;}
     .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:22px;margin-bottom:18px;}
-    .hero{background:linear-gradient(180deg,rgba(255,255,255,0.30),transparent),var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:22px;margin-bottom:18px;}
+    .hero{background:linear-gradient(180deg,rgba(255,255,255,0.20),transparent),var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:22px 28px 28px;margin-bottom:18px;}
+    .hero-header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:20px;flex-wrap:wrap;}
+    .hero-body{display:flex;align-items:center;gap:28px;flex-wrap:wrap;}
+    .hero-left{flex:0 0 auto;min-width:320px;}
+    .btn-back{display:inline-flex;align-items:center;gap:7px;padding:7px 14px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);text-decoration:none;transition:background .12s ease;white-space:nowrap;}
+    .btn-back:hover{background:var(--line);}
     h1{margin:0 0 6px;font-size:26px;font-weight:850;letter-spacing:-0.03em;}
     h2{margin:0 0 14px;font-size:18px;font-weight:750;}
     .muted{color:var(--muted);font-size:14px;}
@@ -6743,15 +6782,31 @@ struct CompareSelectTemplate {
     .vpill-label{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);}
     .vpill-id{font-family:ui-monospace,monospace;font-size:12px;color:var(--muted);}
     .vpill-arrow{font-size:20px;color:var(--muted);}
-    .delta-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:18px;}
-    .delta-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:18px 20px;}
-    .delta-card-label{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;}
-    .delta-card-from{font-size:13px;color:var(--muted);}
-    .delta-card-to{font-size:22px;font-weight:800;margin:4px 0;}
-    .delta-card-change{font-size:14px;font-weight:700;border-radius:6px;padding:2px 8px;display:inline-block;}
+    .delta-strip{display:grid;grid-template-columns:minmax(110px,0.75fr) minmax(110px,0.75fr) minmax(110px,0.75fr) minmax(180px,1.4fr);gap:12px;flex:1 1 auto;}
+    .delta-card{background:var(--surface-2);border:1px solid var(--line);border-radius:14px;padding:10px 12px;display:flex;flex-direction:column;justify-content:center;min-height:96px;position:relative;cursor:default;}
+    .delta-card.delta-card-wide{padding:12px 16px;}
+    .delta-card-label{font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--muted-2);margin-bottom:2px;}
+    .delta-card-from{font-size:11px;color:var(--muted);}
+    .delta-card-to{font-size:17px;font-weight:800;margin:1px 0;}
+    .dc-tip{display:none;position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);z-index:200;background:rgba(20,12,8,0.96);color:rgba(255,255,255,0.92);border-radius:10px;padding:10px 14px;font-size:11.5px;font-weight:500;line-height:1.55;width:230px;box-shadow:0 8px 24px rgba(0,0,0,0.32);pointer-events:none;border:1px solid rgba(255,255,255,0.10);text-transform:none;letter-spacing:0;}
+    .dc-tip::after{content:'';position:absolute;top:100%;left:50%;transform:translateX(-50%);border:6px solid transparent;border-top-color:rgba(20,12,8,0.96);}
+    .delta-card:hover .dc-tip{display:block;}
+    .export-btn{display:inline-flex;align-items:center;gap:5px;padding:5px 11px;border-radius:7px;font-size:12px;font-weight:700;cursor:pointer;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);text-decoration:none;white-space:nowrap;transition:background .12s ease;}
+    .export-btn:hover{background:var(--line);}
+    .export-group{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+    .delta-card-change{font-size:13px;font-weight:700;border-radius:6px;padding:1px 7px;display:inline-block;margin-top:2px;}
     .delta-card-change.pos{color:var(--pos);background:var(--pos-bg);}
     .delta-card-change.neg{color:var(--neg);background:var(--neg-bg);}
-    .delta-card-change.zero{color:var(--muted);}
+    .delta-card-change.zero{color:var(--muted);background:transparent;}
+    .file-changes-grid{display:flex;flex-direction:column;gap:5px;margin-top:6px;font-size:12px;}
+    .fc-row{display:flex;align-items:center;gap:8px;}
+    .fc-count{font-weight:800;font-size:16px;min-width:28px;}
+    .fc-label{color:var(--muted);}
+    .fc-modified .fc-count{color:#926000;}
+    .fc-added .fc-count{color:var(--pos);}
+    .fc-removed .fc-count{color:var(--neg);}
+    .fc-unchanged .fc-count{color:var(--muted);}
+    body.dark-theme .fc-modified .fc-count{color:#f0c060;}
     .change-summary{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;}
     .chip{padding:4px 12px;border-radius:999px;font-size:13px;font-weight:700;}
     .chip.modified{background:#fff2d8;color:#926000;}
@@ -6761,19 +6816,28 @@ struct CompareSelectTemplate {
     body.dark-theme .chip.modified{background:#3d2f0a;color:#f0c060;}
     body.dark-theme .chip.added{background:#163927;color:#8fe2a8;}
     body.dark-theme .chip.removed{background:#3d1c1c;color:#f5a3a3;}
-    .filter-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
+    .filter-tabs-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
+    .filter-tabs{display:flex;gap:8px;flex-wrap:wrap;flex:1;}
     .tab-btn{padding:6px 16px;border-radius:8px;border:1px solid var(--line);background:var(--surface-2);color:var(--text);font-size:13px;font-weight:600;cursor:pointer;transition:background .12s ease;}
     .tab-btn.active{background:var(--accent,#6f9bff);border-color:var(--accent,#6f9bff);color:#fff;}
     .tab-btn:hover:not(.active){background:var(--line);}
-    table{width:100%;border-collapse:collapse;font-size:13px;}
-    th{text-align:left;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);padding:8px 10px;border-bottom:2px solid var(--line);white-space:nowrap;}
-    td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:middle;}
+    .btn-reset{padding:6px 14px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-size:13px;font-weight:700;cursor:pointer;transition:background .12s ease;white-space:nowrap;}
+    .btn-reset:hover{background:var(--line);}
+    .table-wrap{width:100%;overflow-x:auto;}
+    table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed;}
+    th{text-align:left;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);padding:8px 10px;border-bottom:2px solid var(--line);white-space:nowrap;position:relative;user-select:none;}
+    th.sortable{cursor:pointer;} th.sortable:hover{color:var(--oxide);}
+    .sort-icon{margin-left:4px;font-size:10px;opacity:0.45;display:inline-block;vertical-align:middle;}
+    th.sort-asc .sort-icon,th.sort-desc .sort-icon{opacity:1;color:var(--oxide);}
+    .col-resize-handle{position:absolute;top:0;right:0;bottom:0;width:6px;cursor:col-resize;z-index:2;}
+    .col-resize-handle:hover,.col-resize-handle.dragging{background:rgba(211,122,76,0.3);}
+    td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:middle;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
     tr:last-child td{border-bottom:none;}
     tr.row-added td{background:rgba(26,143,71,0.06);}
     tr.row-removed td{background:rgba(179,59,59,0.06);opacity:.85;}
     tr.row-modified td{background:rgba(146,96,0,0.05);}
     tr.row-unchanged td{opacity:.6;}
-    .file-path{font-family:ui-monospace,monospace;font-size:12px;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .file-path{font-family:ui-monospace,monospace;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
     .status-badge{padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;text-transform:uppercase;}
     .status-badge.added{background:#e8f5ed;color:#1a8f47;}
     .status-badge.removed{background:#fdeaea;color:#b33b3b;}
@@ -6788,16 +6852,42 @@ struct CompareSelectTemplate {
     .delta-val.zero{color:var(--muted);}
     .from-to{display:flex;align-items:center;gap:4px;white-space:nowrap;color:var(--muted);font-size:12px;}
     .from-to strong{color:var(--text);}
-    .site-footer{text-align:center;padding:18px 24px;font-size:13px;color:var(--muted);}
+    .site-footer{text-align:center;padding:18px 24px;font-size:13px;color:var(--muted);position:relative;z-index:1;}
     .site-footer a{color:var(--muted);}
-    @media(max-width:900px){.delta-strip{grid-template-columns:repeat(2,1fr);} th.hide-sm,td.hide-sm{display:none;}}
-    @media(max-width:600px){.delta-strip{grid-template-columns:1fr;}}
+    @media(max-width:1100px){.delta-strip{grid-template-columns:repeat(2,1fr);} .hero{flex-direction:column;}}
+    @media(max-width:600px){.delta-strip{grid-template-columns:1fr;} th.hide-sm,td.hide-sm{display:none;}}
     .background-watermarks{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
     .background-watermarks img{position:absolute;opacity:0.16;filter:blur(0.3px);user-select:none;max-width:none;}
     .status-dot{width:8px;height:8px;border-radius:999px;background:#26d768;box-shadow:0 0 0 4px rgba(38,215,104,0.14);flex:0 0 auto;}
     .server-status-wrap{position:relative;display:inline-flex;}.server-online-pill{cursor:default;}.server-status-tip{display:none;position:absolute;top:calc(100% + 10px);right:0;z-index:100;background:rgba(20,12,8,0.97);color:rgba(255,255,255,0.92);border-radius:10px;padding:10px 14px;font-size:12px;font-weight:500;line-height:1.55;white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,0.32);pointer-events:none;border:1px solid rgba(255,255,255,0.10);}.server-status-tip::before{content:'';position:absolute;bottom:100%;right:18px;border:6px solid transparent;border-bottom-color:rgba(20,12,8,0.97);}.server-status-wrap:hover .server-status-tip,.server-status-wrap:focus-within .server-status-tip{display:block;}
     .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
     @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
+    .path-link{color:var(--oxide);text-decoration:underline;text-underline-offset:3px;cursor:pointer;}
+    .path-link:hover{color:var(--oxide-2);}
+    .vpill-meta{font-size:11px;color:var(--muted);margin-top:2px;font-style:italic;}
+    a.vpill-id{color:var(--accent);text-decoration:underline;text-underline-offset:2px;}
+    a.vpill-id:hover{color:var(--oxide);}
+    .delta-note{font-size:11px;color:var(--muted);font-style:italic;text-align:right;}
+    .pagination{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:18px;flex-wrap:wrap;}
+    .pagination-info{font-size:13px;color:var(--muted);}
+    .pagination-btns{display:flex;gap:6px;}
+    .pg-btn{min-width:34px;min-height:34px;display:inline-flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid var(--line);background:var(--surface-2);color:var(--text);font-size:13px;font-weight:700;cursor:pointer;transition:background .12s ease;}
+    .pg-btn:hover:not(:disabled){background:var(--line);}
+    .pg-btn.active{background:var(--oxide-2);border-color:var(--oxide-2);color:#fff;}
+    .pg-btn:disabled{opacity:.35;cursor:default;}
+    .per-page-label{font-size:13px;color:var(--muted);}
+    select.per-page{border:1px solid var(--line-strong);border-radius:8px;background:var(--surface-2);color:var(--text);padding:5px 10px;font-size:13px;cursor:pointer;}
+    .tab-btn.tab-all.active{background:var(--oxide-2);border-color:var(--oxide-2);color:#fff;}
+    .tab-btn.tab-modified{background:#fff2d8;color:#926000;border-color:#e6c96c;}
+    .tab-btn.tab-modified.active{background:#926000;border-color:#926000;color:#fff;}
+    .tab-btn.tab-added{background:#e8f5ed;color:#1a8f47;border-color:#a3d9b1;}
+    .tab-btn.tab-added.active{background:#1a8f47;border-color:#1a8f47;color:#fff;}
+    .tab-btn.tab-removed{background:#fdeaea;color:#b33b3b;border-color:#f5a3a3;}
+    .tab-btn.tab-removed.active{background:#b33b3b;border-color:#b33b3b;color:#fff;}
+    .tab-btn.tab-unchanged{color:var(--muted);}
+    body.dark-theme .tab-btn.tab-modified{background:#3d2f0a;color:#f0c060;border-color:#6b5020;}
+    body.dark-theme .tab-btn.tab-added{background:#163927;color:#8fe2a8;border-color:#2a6b4a;}
+    body.dark-theme .tab-btn.tab-removed{background:#3d1c1c;color:#f5a3a3;border-color:#7a3a3a;}
   </style>
 </head>
 <body>
@@ -6834,79 +6924,140 @@ struct CompareSelectTemplate {
 
   <div class="page">
     <section class="hero">
-      <h1>Scan Delta</h1>
-      <p class="muted" style="margin-bottom:10px;">Comparing two scans of <strong>{{ project_path }}</strong></p>
-      <div class="version-pills">
-        <div class="vpill">
-          <span class="vpill-label">Baseline</span>
-          <strong>{{ baseline_timestamp }}</strong>
-          <span class="vpill-id">{{ baseline_run_id_short }}</span>
+      <div class="hero-header">
+        <div>
+          <h1 style="margin:0 0 4px;">Scan Delta</h1>
+          <p class="muted" style="margin:0;">Comparing two scans of <a class="path-link" data-folder="{{ project_path }}" href="#" onclick="fetch('/open-path?path='+encodeURIComponent(this.dataset.folder));return false;"><strong>{{ project_path }}</strong></a></p>
         </div>
-        <span class="vpill-arrow">→</span>
-        <div class="vpill">
-          <span class="vpill-label">Current</span>
-          <strong>{{ current_timestamp }}</strong>
-          <span class="vpill-id">{{ current_run_id_short }}</span>
+        <a class="btn-back" href="/compare-select">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="15 18 9 12 15 6"></polyline></svg>
+          Compare Scans
+        </a>
+      </div>
+      <div class="hero-body">
+        <div class="hero-left">
+          <div class="version-pills">
+            <div class="vpill">
+              <span class="vpill-label">Baseline</span>
+              <strong>{{ baseline_timestamp }}</strong>
+              <a class="vpill-id" href="/runs/{{ baseline_run_id }}/html" target="_blank">{{ baseline_run_id_short }}</a>
+              {% if !baseline_git_branch.is_empty() %}<span class="vpill-meta">Branch: {{ baseline_git_branch }}</span>{% endif %}
+              {% if let Some(author) = baseline_git_author %}<span class="vpill-meta">Last commit by: {{ author }}</span>{% endif %}
+              {% if let Some(tags) = baseline_git_tags %}<span class="vpill-meta">Tags: {{ tags }}</span>{% endif %}
+            </div>
+            <span class="vpill-arrow">→</span>
+            <div class="vpill">
+              <span class="vpill-label">Current</span>
+              <strong>{{ current_timestamp }}</strong>
+              <a class="vpill-id" href="/runs/{{ current_run_id }}/html" target="_blank">{{ current_run_id_short }}</a>
+              {% if !current_git_branch.is_empty() %}<span class="vpill-meta">Branch: {{ current_git_branch }}</span>{% endif %}
+              {% if let Some(author) = current_git_author %}<span class="vpill-meta">Last commit by: {{ author }}</span>{% endif %}
+              {% if let Some(tags) = current_git_tags %}<span class="vpill-meta">Tags: {{ tags }}</span>{% endif %}
+            </div>
+          </div>
         </div>
+
+      <div class="delta-strip">
+        <div class="delta-card">
+          <div class="dc-tip">Total executable source code lines in the current scan. Excludes comments, blank lines, and mixed-policy lines. A positive delta means more code was written.</div>
+          <div class="delta-card-label">Code lines</div>
+          <div class="delta-card-from">Before: {{ baseline_code }}</div>
+          <div class="delta-card-to">{{ current_code }}</div>
+          {% if code_lines_delta_class == "pos" %}<span class="delta-card-change pos">{{ code_lines_delta_str }}</span>
+          {% else if code_lines_delta_class == "neg" %}<span class="delta-card-change neg">{{ code_lines_delta_str }}</span>
+          {% endif %}
+        </div>
+        <div class="delta-card">
+          <div class="dc-tip">Number of source files where language detection succeeded and line counting was performed. Changes here reflect files added, removed, or reclassified between scans.</div>
+          <div class="delta-card-label">Files analyzed</div>
+          <div class="delta-card-from">Before: {{ baseline_files }}</div>
+          <div class="delta-card-to">{{ current_files }}</div>
+          {% if files_analyzed_delta_class == "pos" %}<span class="delta-card-change pos">{{ files_analyzed_delta_str }}</span>
+          {% else if files_analyzed_delta_class == "neg" %}<span class="delta-card-change neg">{{ files_analyzed_delta_str }}</span>
+          {% endif %}
+        </div>
+        <div class="delta-card">
+          <div class="dc-tip">Lines containing only comments or inline documentation, counted per the active parser policy. A rise here may indicate more documentation; a drop may reflect comment cleanup.</div>
+          <div class="delta-card-label">Comment lines</div>
+          <div class="delta-card-from">Before: {{ baseline_comments }}</div>
+          <div class="delta-card-to">{{ current_comments }}</div>
+          {% if comment_lines_delta_class == "pos" %}<span class="delta-card-change pos">{{ comment_lines_delta_str }}</span>
+          {% else if comment_lines_delta_class == "neg" %}<span class="delta-card-change neg">{{ comment_lines_delta_str }}</span>
+          {% endif %}
+        </div>
+        <div class="delta-card delta-card-wide">
+          <div class="dc-tip">Per-file change breakdown between baseline and current scan. Modified = at least one effective line count changed. Unchanged = file exists in both scans with identical counts. Added/Removed = file only exists in one scan.</div>
+          <div class="delta-card-label">File changes</div>
+          <div class="file-changes-grid">
+            <div class="fc-row fc-modified"><span class="fc-count">{{ files_modified }}</span><span class="fc-label">Modified</span></div>
+            <div class="fc-row fc-added"><span class="fc-count">{{ files_added }}</span><span class="fc-label">Added</span></div>
+            <div class="fc-row fc-removed"><span class="fc-count">{{ files_removed }}</span><span class="fc-label">Removed</span></div>
+            <div class="fc-row fc-unchanged"><span class="fc-count">{{ files_unchanged }}</span><span class="fc-label">Unchanged (identical code counts)</span></div>
+          </div>
+        </div>
+      </div>
       </div>
     </section>
 
-    <div class="delta-strip">
-      <div class="delta-card">
-        <div class="delta-card-label">Code lines</div>
-        <div class="delta-card-from">Before: {{ baseline_code }}</div>
-        <div class="delta-card-to">{{ current_code }}</div>
-        <span class="delta-card-change {{ code_lines_delta_class }}">{{ code_lines_delta_str }}</span>
-      </div>
-      <div class="delta-card">
-        <div class="delta-card-label">Files analyzed</div>
-        <div class="delta-card-from">Before: {{ baseline_files }}</div>
-        <div class="delta-card-to">{{ current_files }}</div>
-        <span class="delta-card-change {{ files_analyzed_delta_class }}">{{ files_analyzed_delta_str }}</span>
-      </div>
-      <div class="delta-card">
-        <div class="delta-card-label">Comment lines Δ</div>
-        <div class="delta-card-to" style="font-size:18px;">{{ comment_lines_delta_str }}</div>
-        <span class="delta-card-change {{ comment_lines_delta_class }}">{{ comment_lines_delta_str }}</span>
-      </div>
-      <div class="delta-card">
-        <div class="delta-card-label">File changes</div>
-        <div class="delta-card-to" style="font-size:16px;">{{ files_modified }}M · {{ files_added }}A · {{ files_removed }}R</div>
-        <span class="delta-card-change zero">{{ files_unchanged }} unchanged</span>
-      </div>
-    </div>
-
     <section class="panel">
       <h2>File-level delta</h2>
-      <div class="change-summary">
-        <span class="chip modified">{{ files_modified }} modified</span>
-        <span class="chip added">{{ files_added }} added</span>
-        <span class="chip removed">{{ files_removed }} removed</span>
-        <span class="chip unchanged">{{ files_unchanged }} unchanged</span>
-      </div>
-      <div class="filter-tabs">
-        <button class="tab-btn active" onclick="filterRows('all', this)">All</button>
-        <button class="tab-btn" onclick="filterRows('modified', this)">Modified ({{ files_modified }})</button>
-        <button class="tab-btn" onclick="filterRows('added', this)">Added ({{ files_added }})</button>
-        <button class="tab-btn" onclick="filterRows('removed', this)">Removed ({{ files_removed }})</button>
-        <button class="tab-btn" onclick="filterRows('unchanged', this)">Unchanged ({{ files_unchanged }})</button>
+      <div class="filter-tabs-row">
+        <div class="filter-tabs">
+          <button class="tab-btn tab-all active" onclick="filterRows('all', this)">All</button>
+          <button class="tab-btn tab-modified" onclick="filterRows('modified', this)">Modified ({{ files_modified }})</button>
+          <button class="tab-btn tab-added" onclick="filterRows('added', this)">Added ({{ files_added }})</button>
+          <button class="tab-btn tab-removed" onclick="filterRows('removed', this)">Removed ({{ files_removed }})</button>
+          <button class="tab-btn tab-unchanged" onclick="filterRows('unchanged', this)">Unchanged ({{ files_unchanged }})</button>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:10px;">
+          <span class="delta-note">* &Delta; = delta (change from baseline &rarr; current)</span>
+          <div class="export-group">
+            <button type="button" class="btn-reset" onclick="resetDeltaTable()">&#8635; Reset</button>
+            <button type="button" class="export-btn" onclick="exportDeltaCsv()">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              CSV
+            </button>
+            <button type="button" class="export-btn" onclick="exportDeltaXls()">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Excel
+            </button>
+          </div>
+        </div>
       </div>
 
-      <table>
+      <div class="table-wrap">
+      <table id="delta-table">
+        <colgroup>
+          <col style="width:34%">
+          <col style="width:10%">
+          <col style="width:9%">
+          <col style="width:15%">
+          <col style="width:8%">
+          <col style="width:8%">
+          <col style="width:8%">
+        </colgroup>
         <thead>
-          <tr>
-            <th>File</th>
-            <th class="hide-sm">Language</th>
-            <th>Status</th>
-            <th>Code before → after</th>
-            <th>Code Δ</th>
-            <th class="hide-sm">Comment Δ</th>
-            <th>Total Δ</th>
+          <tr id="delta-thead">
+            <th class="sortable" data-sort-col="path" data-sort-type="str">File<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+            <th class="sortable hide-sm" data-sort-col="language" data-sort-type="str">Language<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+            <th class="sortable" data-sort-col="status" data-sort-type="str">Status<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+            <th class="sortable" data-sort-col="baseline_code" data-sort-type="num">Code before → after<span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+            <th class="sortable" data-sort-col="code_delta" data-sort-type="num">Code &Delta;<sup>*</sup><span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+            <th class="sortable hide-sm" data-sort-col="comment_delta" data-sort-type="num">Comment &Delta;<sup>*</sup><span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
+            <th class="sortable" data-sort-col="total_delta" data-sort-type="num">Total &Delta;<sup>*</sup><span class="sort-icon">&#8597;</span><div class="col-resize-handle"></div></th>
           </tr>
         </thead>
-        <tbody>
+        <tbody id="delta-tbody">
           {% for row in file_rows %}
-          <tr class="row-{{ row.status }}" data-status="{{ row.status }}">
+          <tr class="delta-row row-{{ row.status }}" data-status="{{ row.status }}"
+              data-path="{{ row.relative_path }}"
+              data-language="{{ row.language }}"
+              data-baseline-code="{{ row.baseline_code }}"
+              data-current-code="{{ row.current_code }}"
+              data-code-delta="{{ row.code_delta_str }}"
+              data-comment-delta="{{ row.comment_delta_str }}"
+              data-total-delta="{{ row.total_delta_str }}"
+              data-orig-idx="">
             <td class="file-path" title="{{ row.relative_path }}">{{ row.relative_path }}</td>
             <td class="hide-sm">{{ row.language }}</td>
             <td><span class="status-badge {{ row.status }}">{{ row.status }}</span></td>
@@ -6918,6 +7069,21 @@ struct CompareSelectTemplate {
           {% endfor %}
         </tbody>
       </table>
+      </div>
+      <div class="pagination">
+        <span class="pagination-info" id="pg-info"></span>
+        <div class="pagination-btns" id="pg-btns"></div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="per-page-label">Show</span>
+          <select class="per-page" id="per-page-sel" onchange="setDeltaPerPage(this.value)">
+            <option value="10">10 per page</option>
+            <option value="25" selected>25 per page</option>
+            <option value="50">50 per page</option>
+            <option value="100">100 per page</option>
+          </select>
+          <span class="per-page-label" id="pg-range-label"></span>
+        </div>
+      </div>
     </section>
   </div>
 
@@ -6971,15 +7137,168 @@ struct CompareSelectTemplate {
       })();
     })();
 
-    function filterRows(status, btn) {
-      Array.prototype.slice.call(document.querySelectorAll('tbody tr')).forEach(function (row) {
-        row.style.display = (status === 'all' || row.getAttribute('data-status') === status) ? '' : 'none';
+    var activeStatusFilter = 'all';
+    var deltaPerPage = 25, deltaCurrPage = 1;
+
+    function openFolder(path) {
+      fetch('/open-path?path=' + encodeURIComponent(path)).catch(function(){});
+    }
+
+    function getDeltaFilteredRows() {
+      return Array.prototype.slice.call(document.querySelectorAll('#delta-tbody .delta-row')).filter(function(r) {
+        return activeStatusFilter === 'all' || r.getAttribute('data-status') === activeStatusFilter;
       });
+    }
+
+    function renderDeltaPage() {
+      var filtered = getDeltaFilteredRows();
+      var total = filtered.length;
+      var totalPages = Math.max(1, Math.ceil(total / deltaPerPage));
+      deltaCurrPage = Math.min(deltaCurrPage, totalPages);
+      var start = (deltaCurrPage - 1) * deltaPerPage;
+      var end = Math.min(start + deltaPerPage, total);
+      var shownSet = {};
+      filtered.slice(start, end).forEach(function(r) { shownSet[r.dataset.origIdx] = true; });
+      Array.prototype.slice.call(document.querySelectorAll('#delta-tbody .delta-row')).forEach(function(r) {
+        r.style.display = shownSet[r.dataset.origIdx] !== undefined ? '' : 'none';
+      });
+      var rl = document.getElementById('pg-range-label');
+      if (rl) rl.textContent = total ? 'Showing ' + (start + 1) + '–' + end + ' of ' + total : 'No results';
+      var info = document.getElementById('pg-info');
+      if (info) info.textContent = totalPages > 1 ? 'Page ' + deltaCurrPage + ' of ' + totalPages : '';
+      var btns = document.getElementById('pg-btns');
+      if (!btns) return;
+      btns.innerHTML = '';
+      if (totalPages <= 1) return;
+      function makeBtn(lbl, pg, active, disabled) {
+        var b = document.createElement('button');
+        b.className = 'pg-btn' + (active ? ' active' : '');
+        b.textContent = lbl; b.disabled = disabled;
+        if (!disabled) b.addEventListener('click', function() { deltaCurrPage = pg; renderDeltaPage(); });
+        return b;
+      }
+      btns.appendChild(makeBtn('‹', deltaCurrPage - 1, false, deltaCurrPage === 1));
+      var ws = Math.max(1, deltaCurrPage - 2), we = Math.min(totalPages, ws + 4); ws = Math.max(1, we - 4);
+      for (var p = ws; p <= we; p++) btns.appendChild(makeBtn(String(p), p, p === deltaCurrPage, false));
+      btns.appendChild(makeBtn('›', deltaCurrPage + 1, false, deltaCurrPage === totalPages));
+    }
+
+    window.setDeltaPerPage = function(v) { deltaPerPage = parseInt(v, 10) || 25; deltaCurrPage = 1; renderDeltaPage(); };
+
+    function filterRows(status, btn) {
+      activeStatusFilter = status;
+      deltaCurrPage = 1;
       Array.prototype.slice.call(document.querySelectorAll('.tab-btn')).forEach(function (b) {
         b.classList.remove('active');
       });
       if (btn) btn.classList.add('active');
+      renderDeltaPage();
     }
+
+    // ── Sorting ──────────────────────────────────────────────────────────────
+    var sortCol = null, sortOrder = 'asc';
+    var sortHeaders = Array.prototype.slice.call(document.querySelectorAll('#delta-thead .sortable'));
+    (function() {
+      var tbody = document.getElementById('delta-tbody');
+      if (!tbody) return;
+      var rows = Array.prototype.slice.call(tbody.querySelectorAll('.delta-row'));
+      rows.forEach(function(r, i) { r.dataset.origIdx = i; });
+    })();
+
+    function parseDeltaNum(str) {
+      if (!str || str === '—') return 0;
+      return parseFloat(str.replace(/[^0-9.\-]/g, '')) * (str.trim().startsWith('-') ? -1 : 1);
+    }
+
+    sortHeaders.forEach(function(th) {
+      th.addEventListener('click', function(e) {
+        if (e.target.classList.contains('col-resize-handle')) return;
+        var col = th.dataset.sortCol, type = th.dataset.sortType || 'str';
+        if (sortCol === col) { sortOrder = sortOrder === 'asc' ? 'desc' : 'asc'; } else { sortCol = col; sortOrder = 'asc'; }
+        sortHeaders.forEach(function(t) { var si = t.querySelector('.sort-icon'); if (si) si.textContent = '↕'; t.classList.remove('sort-asc', 'sort-desc'); });
+        th.classList.add('sort-' + sortOrder);
+        var si = th.querySelector('.sort-icon'); if (si) si.textContent = sortOrder === 'asc' ? '↑' : '↓';
+        var tbody = document.getElementById('delta-tbody');
+        if (!tbody) return;
+        var rows = Array.prototype.slice.call(tbody.querySelectorAll('.delta-row'));
+        rows.sort(function(a, b) {
+          var va, vb;
+          if (col === 'path') { va = a.dataset.path || ''; vb = b.dataset.path || ''; }
+          else if (col === 'language') { va = a.dataset.language || ''; vb = b.dataset.language || ''; }
+          else if (col === 'status') { va = a.dataset.status || ''; vb = b.dataset.status || ''; }
+          else if (col === 'baseline_code') { va = parseFloat(a.dataset.baselineCode || 0); vb = parseFloat(b.dataset.baselineCode || 0); return sortOrder === 'asc' ? va - vb : vb - va; }
+          else if (col === 'code_delta') { va = parseDeltaNum(a.dataset.codeDelta); vb = parseDeltaNum(b.dataset.codeDelta); return sortOrder === 'asc' ? va - vb : vb - va; }
+          else if (col === 'comment_delta') { va = parseDeltaNum(a.dataset.commentDelta); vb = parseDeltaNum(b.dataset.commentDelta); return sortOrder === 'asc' ? va - vb : vb - va; }
+          else if (col === 'total_delta') { va = parseDeltaNum(a.dataset.totalDelta); vb = parseDeltaNum(b.dataset.totalDelta); return sortOrder === 'asc' ? va - vb : vb - va; }
+          else { va = ''; vb = ''; }
+          if (sortOrder === 'asc') return va < vb ? -1 : va > vb ? 1 : 0;
+          return va < vb ? 1 : va > vb ? -1 : 0;
+        });
+        rows.forEach(function(r) { tbody.appendChild(r); });
+        deltaCurrPage = 1;
+        renderDeltaPage();
+        var activeBtn = document.querySelector('.tab-btn.active');
+        Array.prototype.slice.call(document.querySelectorAll('.tab-btn')).forEach(function(b) { b.classList.remove('active'); });
+        if (activeBtn) activeBtn.classList.add('active');
+      });
+    });
+
+    // ── Column resize ─────────────────────────────────────────────────────────
+    (function() {
+      var table = document.getElementById('delta-table');
+      if (!table) return;
+      var cols = Array.prototype.slice.call(table.querySelectorAll('col'));
+      var ths = Array.prototype.slice.call(table.querySelectorAll('#delta-thead th'));
+      ths.forEach(function(th, i) {
+        var handle = th.querySelector('.col-resize-handle');
+        if (!handle || !cols[i]) return;
+        var startX, startW;
+        handle.addEventListener('mousedown', function(e) {
+          e.stopPropagation(); e.preventDefault();
+          startX = e.clientX; startW = cols[i].offsetWidth || th.offsetWidth;
+          handle.classList.add('dragging');
+          function onMove(e) { cols[i].style.width = Math.max(40, startW + e.clientX - startX) + 'px'; }
+          function onUp() { handle.classList.remove('dragging'); document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); }
+          document.addEventListener('mousemove', onMove);
+          document.addEventListener('mouseup', onUp);
+        });
+      });
+    })();
+
+    // ── Reset ─────────────────────────────────────────────────────────────────
+    window.resetDeltaTable = function() {
+      sortCol = null; sortOrder = 'asc';
+      sortHeaders.forEach(function(t) { var si = t.querySelector('.sort-icon'); if (si) si.textContent = '↕'; t.classList.remove('sort-asc', 'sort-desc'); });
+      var tbody = document.getElementById('delta-tbody');
+      if (tbody) {
+        var rows = Array.prototype.slice.call(tbody.querySelectorAll('.delta-row'));
+        rows.sort(function(a, b) { return parseInt(a.dataset.origIdx || 0) - parseInt(b.dataset.origIdx || 0); });
+        rows.forEach(function(r) { tbody.appendChild(r); });
+      }
+      var table = document.getElementById('delta-table');
+      if (table) Array.prototype.slice.call(table.querySelectorAll('col')).forEach(function(c) { c.style.width = ''; });
+      var pps = document.getElementById('per-page-sel'); if (pps) { pps.value = '25'; deltaPerPage = 25; }
+      activeStatusFilter = 'all';
+      deltaCurrPage = 1;
+      Array.prototype.slice.call(document.querySelectorAll('.tab-btn')).forEach(function(b) { b.classList.remove('active'); });
+      var allBtn = document.querySelector('.tab-btn');
+      if (allBtn) allBtn.classList.add('active');
+      renderDeltaPage();
+    };
+
+    renderDeltaPage();
+
+    // ── Export helpers ────────────────────────────────────────────────────────
+    function slocEscXml(v){return String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+    function slocEscCsv(v){var s=String(v);return(s.indexOf(',')>=0||s.indexOf('"')>=0||s.indexOf('\n')>=0)?'"'+s.replace(/"/g,'""')+'"':s;}
+    function slocDownload(data,name,mime){var b=new Blob([data],{type:mime});var u=URL.createObjectURL(b);var a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(u);},200);}
+    function slocCsv(fname,hdrs,rows){slocDownload([hdrs.map(slocEscCsv).join(',')].concat(rows.map(function(r){return r.map(slocEscCsv).join(',');})).join('\r\n'),fname,'text/csv;charset=utf-8;');}
+    function slocXls(fname,sheet,hdrs,rows){var x='<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="'+slocEscXml(sheet)+'"><Table><Row>'+hdrs.map(function(h){return '<Cell><Data ss:Type="String">'+slocEscXml(h)+'</Data></Cell>';}).join('')+'</Row>';rows.forEach(function(r){x+='<Row>'+r.map(function(c,i){var t=(i>0&&c!==''&&!isNaN(String(c).replace(/^[+\-]/,'')))?'Number':'String';return '<Cell><Data ss:Type="'+t+'">'+slocEscXml(c)+'</Data></Cell>';}).join('')+'</Row>';});x+='</Table></Worksheet></Workbook>';slocDownload(x,fname,'application/vnd.ms-excel');}
+
+    var _dh = ['File','Language','Status','Code Before','Code After','Code Δ','Comment Δ','Total Δ'];
+    function getDeltaExportRows(){var r=[];document.querySelectorAll('#delta-tbody .delta-row').forEach(function(tr){r.push([tr.getAttribute('data-path')||'',tr.getAttribute('data-language')||'',tr.getAttribute('data-status')||'',tr.getAttribute('data-baseline-code')||'',tr.getAttribute('data-current-code')||'',tr.getAttribute('data-code-delta')||'',tr.getAttribute('data-comment-delta')||'',tr.getAttribute('data-total-delta')||'']);});return r;}
+    window.exportDeltaCsv = function(){slocCsv('scan-delta.csv',_dh,getDeltaExportRows());};
+    window.exportDeltaXls = function(){slocXls('scan-delta.xls','File Delta',_dh,getDeltaExportRows());};
   </script>
 </body>
 </html>
@@ -6987,6 +7306,8 @@ struct CompareSelectTemplate {
     ext = "html"
 )]
 struct CompareTemplate {
+    baseline_run_id: String,
+    current_run_id: String,
     baseline_run_id_short: String,
     current_run_id_short: String,
     baseline_timestamp: String,
@@ -7000,6 +7321,8 @@ struct CompareTemplate {
     current_files: u64,
     files_analyzed_delta_str: String,
     files_analyzed_delta_class: String,
+    baseline_comments: u64,
+    current_comments: u64,
     comment_lines_delta_str: String,
     comment_lines_delta_class: String,
     files_added: usize,
@@ -7007,4 +7330,10 @@ struct CompareTemplate {
     files_modified: usize,
     files_unchanged: usize,
     file_rows: Vec<CompareFileDeltaRow>,
+    baseline_git_author: Option<String>,
+    current_git_author: Option<String>,
+    baseline_git_branch: String,
+    current_git_branch: String,
+    baseline_git_tags: Option<String>,
+    current_git_tags: Option<String>,
 }

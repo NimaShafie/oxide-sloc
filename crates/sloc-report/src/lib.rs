@@ -735,7 +735,11 @@ struct WarningOpportunityRow {
     .metric:hover .metric-tooltip { opacity: 1; }
     .hero { padding: 22px; margin-bottom: 18px; background: linear-gradient(180deg, rgba(255,255,255,0.34), transparent), var(--surface); }
     .hero-top { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; }
-    .hero h1 { margin:0; font-size: 28px; letter-spacing: -0.04em; }
+    .hero h1 { margin:0 0 8px; font-size: 28px; letter-spacing: -0.04em; }
+    .run-id-row { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+    .run-id-chip { display:inline-flex; align-items:center; gap:4px; font-size:12px; padding:3px 10px; border-radius:6px; background:var(--surface-2); border:1px solid var(--line); color:var(--text); font-family:ui-monospace,monospace; }
+    .run-id-chip strong { font-weight:700; }
+    .run-id-chip.muted-chip { color:var(--muted); font-style:italic; }
     .subtitle { margin: 10px 0 0; color: var(--muted); font-size: 16px; line-height: 1.65; }
     .meta { display:flex; flex-wrap:wrap; gap:10px; margin: 16px 0 18px; }
     .meta-chip, .soft-chip { display:inline-flex; align-items:center; min-height: 32px; padding: 0 12px; border-radius: 999px; border:1px solid var(--line); background: var(--surface-2); color: var(--text); font-size: 13px; font-weight: 700; }
@@ -746,6 +750,9 @@ struct WarningOpportunityRow {
     .pill { padding: 6px 10px; border-radius: 999px; border:1px solid var(--line); background: var(--surface-2); font-size: 12px; font-weight: 700; }
     .pill.good { background: var(--good-bg); color: var(--good-text); }
     .pill.info { background: var(--info-bg); color: var(--info-text); }
+    .export-group { display:flex; gap:6px; align-items:center; }
+    .export-btn { display:inline-flex; align-items:center; gap:5px; padding:6px 12px; border-radius:8px; border:1px solid var(--line-strong); background:var(--surface-2); color:var(--text); font-size:12px; font-weight:700; cursor:pointer; white-space:nowrap; }
+    .export-btn:hover { background:var(--accent); color:#fff; border-color:var(--accent); }
     .table-shell { border: 1px solid var(--line); border-radius: 16px; overflow: auto; background: var(--surface-2); max-height: 900px; }
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
     th, td { text-align: left; padding: 11px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -907,6 +914,8 @@ struct WarningOpportunityRow {
         <span class="nav-pill">Saved artifact</span>
         <button type="button" class="header-button" data-copy-link>Copy link</button>
         <button type="button" class="header-button" data-share-report>Share</button>
+        <button type="button" class="header-button" onclick="exportReportCsv()">Export CSV</button>
+        <button type="button" class="header-button" onclick="exportReportXls()">Export Excel</button>
         <button type="button" class="header-button" data-print-report>Save / Print</button>
         <button type="button" class="theme-toggle" data-theme-toggle aria-label="Toggle theme" title="Toggle theme">
           <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 15.5A8.5 8.5 0 1 1 12.5 4 6.7 6.7 0 0 0 20 15.5Z"></path></svg>
@@ -922,6 +931,24 @@ struct WarningOpportunityRow {
         <div>
           <div class="section-kicker">Saved report artifact</div>
           <h1>{{ title }}</h1>
+          <div class="run-id-row">
+            <span class="run-id-chip">Run ID <strong>{{ run.tool.run_id }}</strong></span>
+            {% if let Some(long_commit) = run.git_commit_long %}
+            <span class="run-id-chip">Git Commit: <strong>{{ long_commit }}</strong></span>
+            {% else %}
+            <span class="run-id-chip muted-chip">Git Commit: Not Detected</span>
+            {% endif %}
+            {% if let Some(branch) = run.git_branch %}
+            <span class="run-id-chip">Branch: <strong>{{ branch }}</strong></span>
+            {% else %}
+            <span class="run-id-chip muted-chip">Branch: Not Detected</span>
+            {% endif %}
+            {% if let Some(author) = run.git_commit_author %}
+            <span class="run-id-chip">Last Commit By: <strong>{{ author }}</strong></span>
+            {% else %}
+            <span class="run-id-chip muted-chip">Last Commit By: Not Detected</span>
+            {% endif %}
+          </div>
         </div>
       </div>
 
@@ -932,7 +959,6 @@ struct WarningOpportunityRow {
         <span class="meta-chip">OS {{ run.environment.operating_system }} / {{ run.environment.architecture }}</span>
         <span class="meta-chip">Files analyzed {{ run.summary_totals.files_analyzed }}</span>
         <span class="meta-chip">Files skipped {{ run.summary_totals.files_skipped }}</span>
-        <span class="meta-chip">Run ID {{ run.tool.run_id }}</span>
       </div>
 
       <div class="summary-grid">
@@ -1026,7 +1052,7 @@ struct WarningOpportunityRow {
       </section>
 
       <section class="panel stack">
-        <div class="toolbar"><div class="toolbar-left"><h2>Per-file detail</h2><input class="search" type="search" placeholder="Filter files, languages, status, warnings..." data-table-filter="per-file-table" /></div><div class="pill-row"><span class="pill good">Counts shown as analyzed by the selected policy</span></div></div>
+        <div class="toolbar"><div class="toolbar-left"><h2>Per-file detail</h2><input class="search" type="search" placeholder="Filter files, languages, status, warnings..." data-table-filter="per-file-table" /></div><div class="pill-row"><span class="pill good">Counts shown as analyzed by the selected policy</span><div class="export-group"><button class="export-btn" onclick="exportReportCsv()">&#8595; CSV</button><button class="export-btn" onclick="exportReportXls()">&#8595; Excel</button></div></div></div>
         <div class="table-shell">
           <table id="per-file-table" data-sort-table>
             <thead>
@@ -1255,6 +1281,16 @@ struct WarningOpportunityRow {
         img.style.cssText = 'width:' + sz + 'px;top:' + pos[0].toFixed(1) + '%;left:' + pos[1].toFixed(1) + '%;transform:rotate(' + rot + 'deg);opacity:' + op + ';';
       });
     })();
+    // ── Export helpers ────────────────────────────────────────────────────────
+    function slocEscXml(v){return String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+    function slocEscCsv(v){var s=String(v);return(s.indexOf(',')>=0||s.indexOf('"')>=0||s.indexOf('\n')>=0)?'"'+s.replace(/"/g,'""')+'"':s;}
+    function slocDownload(data,name,mime){var b=new Blob([data],{type:mime});var u=URL.createObjectURL(b);var a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(u);},200);}
+    function slocCsv(fname,hdrs,rows){slocDownload([hdrs.map(slocEscCsv).join(',')].concat(rows.map(function(r){return r.map(slocEscCsv).join(',');})).join('\r\n'),fname,'text/csv;charset=utf-8;');}
+    function slocXls(fname,sheet,hdrs,rows){var hcells=hdrs.map(function(h){return'<Cell><Data ss:Type="String">'+slocEscXml(h)+'</Data></Cell>';}).join('');var rrows=rows.map(function(r){var cells=r.map(function(v){var n=String(v);var isNum=n!==''&&!isNaN(Number(n));return'<Cell><Data ss:Type="'+(isNum?'Number':'String')+'">'+slocEscXml(v)+'</Data></Cell>';}).join('');return'<Row>'+cells+'</Row>';}).join('');var x='<?xml version="1.0"?><?mso-application progid="Excel.Sheet"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="'+slocEscXml(sheet)+'"><Table><Row>'+hcells+'</Row>'+rrows+'</Table></Worksheet></Workbook>';slocDownload(x,fname,'application/vnd.ms-excel');}
+    var _rh=['File','Language','Physical Lines','Code Lines','Comments','Blank','Mixed Separate'];
+    function getReportExportRows(){var r=[];document.querySelectorAll('#per-file-table tbody tr').forEach(function(tr){var tds=tr.querySelectorAll('td');if(tds.length<7)return;r.push([tds[0].textContent.trim(),tds[1].textContent.trim(),tds[2].textContent.trim(),tds[3].textContent.trim(),tds[4].textContent.trim(),tds[5].textContent.trim(),tds[6].textContent.trim()]);});return r;}
+    window.exportReportCsv=function(){slocCsv('report-per-file.csv',_rh,getReportExportRows());};
+    window.exportReportXls=function(){slocXls('report-per-file.xls','Per-File Detail',_rh,getReportExportRows());};
   </script>
   <footer class="report-footer">oxide-sloc v{{ tool_version }}</footer>
 </body>

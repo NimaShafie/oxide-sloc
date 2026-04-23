@@ -2022,7 +2022,11 @@ fn split_patterns(raw: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-fn build_sub_run(parent: &AnalysisRun, sub: &sloc_core::SubmoduleSummary, parent_path: &str) -> AnalysisRun {
+fn build_sub_run(
+    parent: &AnalysisRun,
+    sub: &sloc_core::SubmoduleSummary,
+    parent_path: &str,
+) -> AnalysisRun {
     let sub_files: Vec<_> = parent
         .per_file_records
         .iter()
@@ -2030,8 +2034,7 @@ fn build_sub_run(parent: &AnalysisRun, sub: &sloc_core::SubmoduleSummary, parent
         .cloned()
         .collect();
     let mut config = parent.effective_configuration.clone();
-    config.reporting.report_title =
-        format!("{} — {}", config.reporting.report_title, sub.name);
+    config.reporting.report_title = format!("{} — {}", config.reporting.report_title, sub.name);
     AnalysisRun {
         tool: parent.tool.clone(),
         environment: parent.environment.clone(),

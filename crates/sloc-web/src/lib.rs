@@ -27,7 +27,7 @@ use sloc_core::{
     analyze, compute_delta, read_json, AnalysisRun, FileChangeStatus, RegistryEntry, ScanRegistry,
     ScanSummarySnapshot, SummaryTotals,
 };
-use sloc_report::{render_html, write_pdf_from_html};
+use sloc_report::{render_html, render_sub_report_html, write_pdf_from_html};
 
 #[derive(Clone)]
 struct AppState {
@@ -900,7 +900,7 @@ async fn analyze_handler(
                 {
                     let parent_path = run.input_roots.first().map(|s| s.as_str()).unwrap_or("");
                     let sub_run = build_sub_run(&run, s, parent_path);
-                    if let Ok(sub_html) = render_html(&sub_run) {
+                    if let Ok(sub_html) = render_sub_report_html(&sub_run) {
                         let path = run_dir.join(format!("{}.html", artifact_key));
                         if fs::write(&path, sub_html.as_bytes()).is_ok() {
                             Some(format!("/runs/{}/{}", run_id, artifact_key))
@@ -3599,20 +3599,13 @@ struct SubmoduleRow {
                     <ul id="review-count-summary"></ul>
                   </div>
                   <div class="review-card">
-                    <div class="review-card-head"><h4>What will be saved</h4><button type="button" class="review-link jump-step" data-step-target="3">Edit step 3</button></div>
+                    <div class="review-card-head"><h4>Output &amp; artifacts</h4><button type="button" class="review-link jump-step" data-step-target="3">Edit step 3</button></div>
                     <ul id="review-artifact-summary"></ul>
-                  </div>
-                  <div class="review-card">
-                    <div class="review-card-head"><h4>Where output goes</h4><button type="button" class="review-link jump-step" data-step-target="3">Edit step 3</button></div>
-                    <ul id="review-output-summary"></ul>
+                    <ul id="review-output-summary" style="margin-top:6px;padding-left:18px;margin-bottom:0;"></ul>
                   </div>
                   <div class="review-card">
                     <div class="review-card-head"><h4>Scope preview snapshot</h4><button type="button" class="review-link jump-step" data-step-target="1">Review scope</button></div>
                     <ul id="review-preview-summary"></ul>
-                  </div>
-                  <div class="review-card highlight">
-                    <div class="review-card-head"><h4>Run readiness</h4><button type="button" class="review-link jump-step" data-step-target="4">Current step</button></div>
-                    <ul id="review-readiness-summary"></ul>
                   </div>
                 </div>
               </div>
@@ -5026,11 +5019,11 @@ struct SplashTemplate {}
       display: inline-flex; align-items: center; justify-content: center; border-radius: 14px; border: 1px solid rgba(111, 144, 255, 0.30); padding: 11px 14px; text-decoration: none; color: white; background: linear-gradient(135deg, var(--accent), var(--accent-2)); font-weight: 800; font-size: 14px; box-shadow: 0 12px 24px rgba(73, 106, 255, 0.22); cursor: pointer;
     }
     .button.secondary, .copy-button.secondary { background: var(--surface-3); box-shadow: none; color: var(--text); border-color: var(--line-strong); }
-    .path-list { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 18px; }
-    .path-item { padding: 14px; background: var(--surface-2); }
+    .path-list { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 18px; }
+    .path-item { padding: 10px 14px; background: var(--surface-2); display: flex; flex-direction: column; justify-content: space-between; }
+    .path-item-label { font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: 4px; }
     .path-item strong { display: block; margin-bottom: 6px; }
-    .path-item-full { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
-    .path-meta { font-size: 12px; color: var(--muted); margin-top: 5px; }
+    .path-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
     code { display: inline-block; max-width: 100%; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--surface-3); border: 1px solid var(--line); padding: 2px 6px; border-radius: 8px; color: var(--text); }
     .two-col { display: grid; grid-template-columns: 0.95fr 1.05fr; gap: 18px; align-items: start; }
     table { width: 100%; border-collapse: collapse; font-size: 14px; table-layout: fixed; }
@@ -5137,7 +5130,6 @@ struct SplashTemplate {}
           <p class="hero-note">The embedded preview below now reflects the current saved-report theme instead of the older blue prototype layout.</p>
         </div>
         <div class="pill-row">
-          <a class="button secondary" href="/scan">New scan</a>
           <button type="button" class="copy-button secondary" data-copy-value="{{ output_dir }}">Copy output folder</button>
           <button type="button" class="copy-button secondary" data-copy-value="{{ run_id }}">Copy run ID</button>
         </div>
@@ -5220,9 +5212,7 @@ struct SplashTemplate {}
                 <a class="button secondary" href="{{ url }}">Download HTML</a>
               {% when None %}{% endmatch %}
             {% match html_path %}
-              {% when Some with (_path) %}
-                <button type="button" class="open-path-btn open-folder-button" data-folder="{{ output_dir }}">Open HTML folder</button>
-              {% when None %}{% endmatch %}
+              {% when Some with (_path) %}{% when None %}{% endmatch %}
           </div>
         </div>
         <div class="action-card">
@@ -5237,9 +5227,7 @@ struct SplashTemplate {}
                 <a class="button secondary" href="{{ url }}">Download PDF</a>
               {% when None %}{% endmatch %}
             {% match pdf_path %}
-              {% when Some with (_path) %}
-                <button type="button" class="open-path-btn open-folder-button" data-folder="{{ output_dir }}">Open PDF folder</button>
-              {% when None %}{% endmatch %}
+              {% when Some with (_path) %}{% when None %}{% endmatch %}
           </div>
         </div>
         <div class="action-card">
@@ -5254,13 +5242,14 @@ struct SplashTemplate {}
                 <a class="button secondary" href="{{ url }}">Download JSON</a>
               {% when None %}{% endmatch %}
             {% match json_path %}
-              {% when Some with (_path) %}
-                <button type="button" class="open-path-btn open-folder-button" data-folder="{{ output_dir }}">Open JSON folder</button>
-              {% when None %}
+              {% when Some with (_path) %}{% when None %}
                 <p class="action-empty-note">JSON not enabled for this run — re-run with JSON artifact enabled to get a machine-readable result.</p>
               {% endmatch %}
           </div>
         </div>
+      </div>
+      <div style="margin-top:10px;">
+        <button type="button" class="open-path-btn open-folder-button" data-folder="{{ output_dir }}" style="font-size:13px;">Open output folder</button>
       </div>
 
       <div class="metrics-table-wrap">
@@ -5361,11 +5350,11 @@ struct SplashTemplate {}
 
       <div class="path-list">
         <div class="path-item">
-          <strong>Project path</strong>
+          <div class="path-item-label">Project path</div>
           <code>{{ project_path }}</code>
         </div>
         <div class="path-item">
-          <strong>Git branch</strong>
+          <div class="path-item-label">Git branch</div>
           {% if let Some(branch) = git_branch %}
           <code>{{ branch }}{% if let Some(sha) = git_commit %} @ {{ sha }}{% endif %}</code>
           {% if let Some(author) = git_author %}<div class="path-meta">Last commit by {{ author }}</div>{% endif %}
@@ -5373,53 +5362,17 @@ struct SplashTemplate {}
           <code style="color:var(--muted)">—</code>
           {% endif %}
         </div>
-        <div class="path-item path-item-full">
-          <div style="min-width:0;">
-            <strong>Output folder &amp; Run ID</strong>
-            <code style="display:block;margin-top:6px;overflow-wrap:anywhere;">{{ output_dir }}</code>
-            <div style="margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-              <code style="font-size:12px;">{{ run_id }}</code>
-              <span style="font-size:12px;color:var(--muted);">scan #{{ current_scan_number }} for this project</span>
+        <div class="path-item" style="gap:8px;">
+          <div>
+            <div class="path-item-label">Output folder &amp; Run ID</div>
+            <code style="display:block;margin-top:4px;overflow-wrap:anywhere;font-size:12px;">{{ output_dir }}</code>
+            <div style="margin-top:4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+              <code style="font-size:11px;">{{ run_id }}</code>
+              <span style="font-size:11px;color:var(--muted);">scan #{{ current_scan_number }}</span>
             </div>
           </div>
-          <button type="button" class="open-path-btn open-folder-button" data-folder="{{ output_dir }}" style="min-height:36px;font-size:13px;flex-shrink:0;">Open output folder</button>
         </div>
       </div>
-    </section>
-
-    <section class="panel" style="margin-bottom: 18px;">
-        <div class="toolbar-row">
-          <div>
-            <h2>Language breakdown</h2>
-            <p class="muted">A quick summary of what this run actually counted across supported languages.</p>
-          </div>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Language</th>
-              <th>Files</th>
-              <th>Physical</th>
-              <th>Code</th>
-              <th>Comments</th>
-              <th>Blank</th>
-              <th>Mixed</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for row in language_rows %}
-            <tr>
-              <td>{{ row.language }}</td>
-              <td>{{ row.files }}</td>
-              <td>{{ row.physical }}</td>
-              <td>{{ row.code }}</td>
-              <td>{{ row.comments }}</td>
-              <td>{{ row.blank }}</td>
-              <td>{{ row.mixed }}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
     </section>
 
     {% if !submodule_rows.is_empty() %}
@@ -5461,6 +5414,41 @@ struct SplashTemplate {}
       </table>
     </section>
     {% endif %}
+
+    <section class="panel" style="margin-bottom: 18px;">
+        <div class="toolbar-row">
+          <div>
+            <h2>Language breakdown</h2>
+            <p class="muted">A quick summary of what this run actually counted across supported languages.</p>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Language</th>
+              <th>Files</th>
+              <th>Physical</th>
+              <th>Code</th>
+              <th>Comments</th>
+              <th>Blank</th>
+              <th>Mixed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in language_rows %}
+            <tr>
+              <td>{{ row.language }}</td>
+              <td>{{ row.files }}</td>
+              <td>{{ row.physical }}</td>
+              <td>{{ row.code }}</td>
+              <td>{{ row.comments }}</td>
+              <td>{{ row.blank }}</td>
+              <td>{{ row.mixed }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+    </section>
 
   </div>
 

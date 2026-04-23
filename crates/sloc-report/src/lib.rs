@@ -9,6 +9,14 @@ use chrono::{DateTime, FixedOffset, Utc};
 use sloc_core::{AnalysisRun, FileRecord};
 
 pub fn render_html(run: &AnalysisRun) -> Result<String> {
+    render_html_inner(run, false)
+}
+
+pub fn render_sub_report_html(run: &AnalysisRun) -> Result<String> {
+    render_html_inner(run, true)
+}
+
+fn render_html_inner(run: &AnalysisRun, is_sub_report: bool) -> Result<String> {
     let config_json = serde_json::to_string_pretty(&run.effective_configuration)
         .context("failed to serialize effective configuration")?;
 
@@ -21,13 +29,14 @@ pub fn render_html(run: &AnalysisRun) -> Result<String> {
             "Oxide-SLOC | {}",
             run.effective_configuration.reporting.report_title
         ),
-        generated_display: normalize_timestamp_utc(run.tool.timestamp_utc),
+        generated_display: format!("{} (PST)", to_pst_display(run.tool.timestamp_utc)),
         scan_performed_by: format!(
             "{} / {}",
             run.environment.initiator_username, run.environment.initiator_hostname
         ),
         scan_time_pst: to_pst_display(run.tool.timestamp_utc),
         tool_version: run.tool.version.clone(),
+        is_sub_report,
         run,
         language_rows: run
             .totals_by_language
@@ -396,28 +405,6 @@ fn file_row_view(file: &FileRecord) -> FileRow {
     }
 }
 
-fn normalize_timestamp_utc(raw: impl ToString) -> String {
-    let raw = raw.to_string();
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return "-".to_string();
-    }
-
-    let normalized = trimmed.replace('T', " ");
-    let without_fraction = normalized
-        .split('.')
-        .next()
-        .unwrap_or(normalized.as_str())
-        .trim();
-    let without_z = without_fraction.trim_end_matches('Z').trim();
-
-    if without_z.len() >= 19 {
-        without_z[..19].to_string()
-    } else {
-        without_z.to_string()
-    }
-}
-
 fn to_pst_display(dt: DateTime<Utc>) -> String {
     // PST = UTC−8 fixed offset (no DST adjustment)
     let pst = FixedOffset::west_opt(8 * 3600).expect("valid PST offset");
@@ -652,6 +639,7 @@ struct WarningOpportunityRow {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{{ browser_title }}</title>
+  <link rel="icon" href="/images/logo/small-logo.png" type="image/png" />
   <style>
     :root {
       --radius: 18px;
@@ -890,11 +878,18 @@ struct WarningOpportunityRow {
 </head>
 <body>
   <div class="background-watermarks" aria-hidden="true">
-    <img src="/images/logo/logo-text.png" alt="" style="width:420px;top:-30px;left:-80px;transform:rotate(-10deg);" />
-    <img src="/images/logo/logo-text.png" alt="" style="width:360px;top:200px;right:-60px;transform:rotate(7deg);" />
-    <img src="/images/logo/logo-text.png" alt="" style="width:380px;bottom:80px;left:60px;transform:rotate(14deg);" />
-    <img src="/images/logo/logo-text.png" alt="" style="width:340px;bottom:-30px;right:120px;transform:rotate(-5deg);" />
-    <img src="/images/logo/logo-text.png" alt="" style="width:300px;top:500px;left:40%;transform:rotate(3deg);" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
   </div>
   <div class="top-nav">
     <div class="top-nav-inner">
@@ -933,7 +928,7 @@ struct WarningOpportunityRow {
       <div class="meta">
         <span class="meta-chip">Scan performed by {{ scan_performed_by }}</span>
         <span class="meta-chip">Time Scanned: {{ scan_time_pst }} (PST)</span>
-        <span class="meta-chip">Generated {{ generated_display }}</span>
+        <span class="meta-chip">Generated: {{ generated_display }}</span>
         <span class="meta-chip">OS {{ run.environment.operating_system }} / {{ run.environment.architecture }}</span>
         <span class="meta-chip">Files analyzed {{ run.summary_totals.files_analyzed }}</span>
         <span class="meta-chip">Files skipped {{ run.summary_totals.files_skipped }}</span>
@@ -950,9 +945,10 @@ struct WarningOpportunityRow {
     </section>
 
     <div class="report-stack">
+      {% if !is_sub_report %}
       <section class="panel stack">
         <div>
-          <div class="toolbar"><div class="toolbar-left"><h3 style="margin:0;font-size:15px;font-weight:800;">Warnings and next improvements</h3></div><div class="pill-row"><span class="pill info" style="font-size:11px;min-height:26px;">{{ warning_count }} total warnings</span></div></div>
+          <div class="toolbar"><div class="toolbar-left"><h2>Warnings and next improvements</h2></div><div class="pill-row"><span class="pill info" style="font-size:11px;min-height:26px;">{{ warning_count }} total warnings</span></div></div>
           {% if !has_run_warnings %}
             <div class="pill good">No top-level warnings.</div>
           {% else %}
@@ -993,6 +989,7 @@ struct WarningOpportunityRow {
           {% endif %}
         </div>
       </section>
+      {% endif %}
 
       <section class="panel stack">
         <div>
@@ -1085,6 +1082,7 @@ struct WarningOpportunityRow {
       </section>
 
       <section class="panel stack">
+        {% if !is_sub_report %}
         <div>
           <details>
             <summary>Detailed run warnings ({{ warning_count }})</summary>
@@ -1103,6 +1101,7 @@ struct WarningOpportunityRow {
             </div>
           </details>
         </div>
+        {% endif %}
 
         <div>
           <h2>Effective configuration</h2>
@@ -1269,6 +1268,7 @@ struct ReportTemplate<'a> {
     scan_performed_by: String,
     scan_time_pst: String,
     tool_version: String,
+    is_sub_report: bool,
     run: &'a AnalysisRun,
     language_rows: Vec<LanguageRow>,
     file_rows: Vec<FileRow>,

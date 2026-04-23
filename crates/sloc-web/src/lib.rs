@@ -2713,8 +2713,8 @@ struct SubmoduleRow {
       --text: #2f241c;
       --muted: #6f6257;
       --muted-2: #917f71;
-      --nav: #9a4c28;
-      --nav-2: #6f3119;
+      --nav: #b85d33;
+      --nav-2: #7a371b;
       --accent: #2563eb;
       --accent-2: #1d4ed8;
       --oxide: #b85d33;
@@ -2775,7 +2775,8 @@ struct SubmoduleRow {
     .nav-project-label { color: rgba(255,255,255,0.78); text-transform: uppercase; letter-spacing: 0.08em; font-size: 11px; font-weight: 800; }
     .nav-project-value { min-width:0; overflow:hidden; text-overflow:ellipsis; }
     .nav-status { display: flex; align-items: center; justify-content:flex-end; gap: 10px; flex-wrap: wrap; }
-    .nav-pill, .theme-toggle { display: inline-flex; align-items: center; gap: 8px; min-height: 38px; padding: 0 14px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.18); color: #fff; background: rgba(255,255,255,0.08); font-size: 12px; font-weight: 700; box-shadow: inset 0 1px 0 rgba(255,255,255,0.08); }
+    .nav-pill, .theme-toggle { display: inline-flex; align-items: center; gap: 8px; min-height: 38px; padding: 0 14px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.18); color: #fff; background: rgba(255,255,255,0.08); font-size: 12px; font-weight: 700; box-shadow: inset 0 1px 0 rgba(255,255,255,0.08); text-decoration:none; transition:background .15s ease,transform .15s ease; }
+    a.nav-pill:hover { background:rgba(255,255,255,0.18); transform:translateY(-1px); }
     .nav-pill code { color: #fff; background: rgba(0,0,0,0.28); border: 1px solid rgba(255,255,255,0.10); padding: 3px 8px; border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .theme-toggle { width: 38px; justify-content: center; padding: 0; cursor: pointer; transition: transform 0.15s ease, background 0.15s ease; }
     .theme-toggle:hover { transform: translateY(-1px); background: rgba(255,255,255,0.16); }
@@ -2783,10 +2784,8 @@ struct SubmoduleRow {
     .theme-toggle .icon-sun { display:none; }
     body.dark-theme .theme-toggle .icon-sun { display:block; }
     body.dark-theme .theme-toggle .icon-moon { display:none; }
-    .status-dot { width: 8px; height: 8px; border-radius: 999px; background: #26d768; box-shadow: 0 0 0 4px rgba(38,215,104,0.14); }
-    .nav-tab { display:inline-flex; align-items:center; gap: 7px; min-height: 36px; padding: 0 16px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.22); color: #fff; background: rgba(255,255,255,0.12); font-size: 13px; font-weight: 700; text-decoration: none; transition: background 0.15s ease, transform 0.15s ease; white-space: nowrap; }
-    .nav-tab:hover { background: rgba(255,255,255,0.22); transform: translateY(-1px); }
-    .nav-tab svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2.2; }
+    .status-dot { width: 8px; height: 8px; border-radius: 999px; background: #26d768; box-shadow: 0 0 0 4px rgba(38,215,104,0.14); flex:0 0 auto; }
+    .server-status-wrap{position:relative;display:inline-flex;}.server-online-pill{cursor:default;}.server-status-tip{display:none;position:absolute;top:calc(100% + 10px);right:0;z-index:100;background:rgba(20,12,8,0.97);color:rgba(255,255,255,0.92);border-radius:10px;padding:10px 14px;font-size:12px;font-weight:500;line-height:1.55;white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,0.32);pointer-events:none;border:1px solid rgba(255,255,255,0.10);}.server-status-tip::before{content:'';position:absolute;bottom:100%;right:18px;border:6px solid transparent;border-bottom-color:rgba(20,12,8,0.97);}.server-status-wrap:hover .server-status-tip,.server-status-wrap:focus-within .server-status-tip{display:block;}
     .page { max-width: 1720px; margin: 0 auto; padding: 18px 24px 40px; }
     .subnav { display:flex; align-items:center; gap:8px; margin-bottom: 14px; color: var(--muted-2); font-size: 13px; }
     .subnav strong { color: var(--text); }
@@ -3060,6 +3059,8 @@ struct SubmoduleRow {
     .site-footer a:hover { color: var(--text); text-decoration: underline; }
     @media (max-width: 1280px) { .layout { grid-template-columns: 200px 1fr; } .scope-stats, .explorer-meta-grid, .explorer-meta-grid.split { grid-template-columns: 1fr 1fr; } }
     @media (max-width: 980px) { .field-grid, .artifact-grid, .review-grid, .scope-stats, .explorer-meta-grid, .explorer-meta-grid.split, .glob-guidance-grid { grid-template-columns: 1fr; } .layout { grid-template-columns: 1fr; } .step-nav { position:static; } .top-nav-inner { grid-template-columns: 1fr; justify-items: stretch; } .nav-project-slot, .nav-status { justify-content:flex-start; } .input-group { grid-template-columns: 1fr 1fr; } .input-group.compact { grid-template-columns: 1fr 1fr; } .better-spacing { justify-content:flex-start; } .file-explorer-controls { flex-direction: column; align-items:flex-start; flex-wrap: wrap; } .file-explorer-search-row { margin-left: 0; flex-wrap: wrap; width: 100%; } .explorer-search { min-width: 0; width: 100%; } .file-explorer-header, .tree-row { grid-template-columns: minmax(0, 1fr) 110px 110px 140px; } .advanced-rule-row, .advanced-rule-row.static-note, .output-identity-grid, .counting-top-grid, .preset-inline-row { grid-template-columns: 1fr; } .wizard-progress { max-width: none; } .path-row-grid { grid-template-columns: 1fr; } .ws-left { flex-wrap: wrap; } .scan-pills-row { flex-wrap: wrap; } }
+    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+    @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
   </style>
 </head>
 <body>
@@ -3076,7 +3077,10 @@ struct SubmoduleRow {
     <img src="/images/logo/logo-text.png" alt="" />
     <img src="/images/logo/logo-text.png" alt="" />
     <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
   </div>
+  <div class="code-particles" id="code-particles" aria-hidden="true"></div>
   <div class="top-nav">
     <div class="top-nav-inner">
       <div class="brand">
@@ -3093,9 +3097,13 @@ struct SubmoduleRow {
         </div>
       </div>
       <div class="nav-status">
-        <a class="nav-tab" href="/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>Home</a>
-        <a class="nav-tab" href="/history"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>History</a>
-        <div class="nav-pill"><span class="status-dot"></span>Server online</div>
+        <a class="nav-pill" href="/">Home</a>
+        <a class="nav-pill" href="/history">View Reports</a>
+        <a class="nav-pill" href="/compare-select">Compare Scans</a>
+        <div class="server-status-wrap">
+          <div class="nav-pill server-online-pill"><span class="status-dot"></span>Server online</div>
+          <div class="server-status-tip">OxideSLOC is running as a local server in your terminal.<br>Close the terminal window to stop the server.</div>
+        </div>
         <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme" title="Toggle theme">
           <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 1 0 9.8 9.8z"></path></svg>
           <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="M4.9 4.9l1.4 1.4"></path><path d="M17.7 17.7l1.4 1.4"></path><path d="M4.9 19.1l1.4-1.4"></path><path d="M17.7 6.3l1.4-1.4"></path></svg>
@@ -4580,6 +4588,27 @@ struct SubmoduleRow {
           img.style.cssText = "width:" + size + "px;top:" + pos[0].toFixed(1) + "%;left:" + pos[1].toFixed(1) + "%;transform:rotate(" + rot + "deg);opacity:" + op + ";";
         });
       })();
+
+      (function spawnCodeParticles() {
+        var container = document.getElementById('code-particles');
+        if (!container) return;
+        var snippets = ['1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','3,841 physical','files: 60','450 comments','cargo build','Ok(run)','Vec<String>','match lang','fn main() {','.rs .go .py','sloc_core','render_html','2,163 code'];
+        for (var i = 0; i < 38; i++) {
+          (function(idx) {
+            var el = document.createElement('span');
+            el.className = 'code-particle';
+            el.textContent = snippets[idx % snippets.length];
+            var left = Math.random() * 94 + 2;
+            var top = Math.random() * 88 + 6;
+            var dur = (Math.random() * 10 + 9).toFixed(1);
+            var delay = (Math.random() * 18).toFixed(1);
+            var rot = (Math.random() * 26 - 13).toFixed(1);
+            var op = (Math.random() * 0.09 + 0.06).toFixed(3);
+            el.style.cssText = 'left:' + left.toFixed(1) + '%;top:' + top.toFixed(1) + '%;--rot:' + rot + 'deg;--op:' + op + ';animation-duration:' + dur + 's;animation-delay:-' + delay + 's;';
+            container.appendChild(el);
+          })(i);
+        }
+      })();
     })();
   </script>
   <footer class="site-footer">
@@ -4634,15 +4663,18 @@ struct IndexTemplate {
     .brand-title{margin:0;color:#fff;font-size:17px;font-weight:800;line-height:1.1;} .brand-subtitle{color:rgba(255,255,255,0.85);font-size:12px;margin-top:2px;line-height:1.2;}
     .nav-right{margin-left:auto;display:flex;align-items:center;gap:10px;}
     .nav-pill,.theme-toggle{display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:0 14px;border-radius:999px;border:1px solid rgba(255,255,255,0.18);color:#fff;background:rgba(255,255,255,0.08);font-size:12px;font-weight:700;text-decoration:none;}
+    a.nav-pill:hover{background:rgba(255,255,255,0.18);transform:translateY(-1px);}
     .theme-toggle{width:38px;justify-content:center;padding:0;cursor:pointer;transition:transform 0.15s ease;}
     .theme-toggle:hover{transform:translateY(-1px);background:rgba(255,255,255,0.16);}
     .theme-toggle svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8;}
     .theme-toggle .icon-sun{display:none;} body.dark-theme .theme-toggle .icon-sun{display:block;} body.dark-theme .theme-toggle .icon-moon{display:none;}
+    .status-dot{width:8px;height:8px;border-radius:999px;background:#26d768;box-shadow:0 0 0 4px rgba(38,215,104,0.14);flex:0 0 auto;}
+    .server-status-wrap{position:relative;display:inline-flex;}.server-online-pill{cursor:default;}.server-status-tip{display:none;position:absolute;top:calc(100% + 10px);right:0;z-index:100;background:rgba(20,12,8,0.97);color:rgba(255,255,255,0.92);border-radius:10px;padding:10px 14px;font-size:12px;font-weight:500;line-height:1.55;white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,0.32);pointer-events:none;border:1px solid rgba(255,255,255,0.10);}.server-status-tip::before{content:'';position:absolute;bottom:100%;right:18px;border:6px solid transparent;border-bottom-color:rgba(20,12,8,0.97);}.server-status-wrap:hover .server-status-tip,.server-status-wrap:focus-within .server-status-tip{display:block;}
     .page{max-width:1100px;margin:0 auto;padding:48px 24px 60px;position:relative;z-index:1;}
     .hero{text-align:center;margin-bottom:52px;}
-    .hero-logo{width:80px;height:88px;object-fit:contain;margin-bottom:20px;filter:drop-shadow(0 8px 22px rgba(184,93,51,0.30));animation:logoBob 3.6s ease-in-out infinite;}
-    @keyframes logoBob{0%,100%{transform:translateY(0) scale(1);}40%{transform:translateY(-10px) scale(1.04);}60%{transform:translateY(-8px) scale(1.03);}}
-    .hero-title{font-size:46px;font-weight:900;letter-spacing:-0.04em;margin:0 0 10px;
+    .hero-logo{width:88px;height:97px;object-fit:contain;margin-bottom:20px;filter:drop-shadow(0 8px 22px rgba(184,93,51,0.30));animation:logoBob 3.6s ease-in-out infinite;}
+    @keyframes logoBob{0%,100%{transform:translateY(0) scale(1);}40%{transform:translateY(-18px) scale(1.07);}60%{transform:translateY(-14px) scale(1.05);}}
+    .hero-title{font-size:51px;font-weight:900;letter-spacing:-0.04em;margin:0 0 10px;
       background:linear-gradient(90deg,#b85d33 0%,#d37a4c 25%,#6f9bff 50%,#b85d33 75%,#d37a4c 100%);
       background-size:200% auto;-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
       animation:titleShimmer 4s linear infinite;}
@@ -4698,6 +4730,7 @@ struct IndexTemplate {
     <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
     <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
     <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
   </div>
   <div class="code-particles" id="code-particles" aria-hidden="true"></div>
   <div class="top-nav">
@@ -4707,8 +4740,13 @@ struct IndexTemplate {
         <div class="brand-copy"><div class="brand-title">OxideSLOC</div><div class="brand-subtitle">Source line analysis workbench</div></div>
       </div>
       <div class="nav-right">
+        <a class="nav-pill" href="/">Home</a>
         <a class="nav-pill" href="/history">View Reports</a>
         <a class="nav-pill" href="/compare-select">Compare Scans</a>
+        <div class="server-status-wrap">
+          <div class="nav-pill server-online-pill"><span class="status-dot"></span>Server online</div>
+          <div class="server-status-tip">OxideSLOC is running as a local server in your terminal.<br>Close the terminal window to stop the server.</div>
+        </div>
         <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
           <svg class="icon-moon" viewBox="0 0 24 24"><path d="M20 15.5A8.5 8.5 0 1 1 12.5 4 6.7 6.7 0 0 0 20 15.5Z"></path></svg>
           <svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"></circle><path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.9 5.1l-1.6 1.6M6.7 17.3l-1.6 1.6M18.9 18.9l-1.6-1.6M6.7 6.7 5.1 5.1"></path></svg>
@@ -4953,7 +4991,8 @@ struct SplashTemplate {}
     .theme-toggle .icon-sun { display:none; }
     body.dark-theme .theme-toggle .icon-sun { display:block; }
     body.dark-theme .theme-toggle .icon-moon { display:none; }
-    .status-dot { width: 8px; height: 8px; border-radius: 999px; background: #26d768; box-shadow: 0 0 0 4px rgba(38,215,104,0.14); }
+    .status-dot { width: 8px; height: 8px; border-radius: 999px; background: #26d768; box-shadow: 0 0 0 4px rgba(38,215,104,0.14); flex:0 0 auto; }
+    .server-status-wrap{position:relative;display:inline-flex;}.server-online-pill{cursor:default;}.server-status-tip{display:none;position:absolute;top:calc(100% + 10px);right:0;z-index:100;background:rgba(20,12,8,0.97);color:rgba(255,255,255,0.92);border-radius:10px;padding:10px 14px;font-size:12px;font-weight:500;line-height:1.55;white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,0.32);pointer-events:none;border:1px solid rgba(255,255,255,0.10);}.server-status-tip::before{content:'';position:absolute;bottom:100%;right:18px;border:6px solid transparent;border-bottom-color:rgba(20,12,8,0.97);}.server-status-wrap:hover .server-status-tip,.server-status-wrap:focus-within .server-status-tip{display:block;}
     .page { max-width: 1720px; margin: 0 auto; padding: 18px 24px 40px; }
     .hero, .panel, .metric, .path-item { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
     .hero, .panel { padding: 22px; }
@@ -5038,6 +5077,8 @@ struct SplashTemplate {}
       .nav-project-slot, .nav-status { justify-content:flex-start; }
       .hero-top { flex-direction: column; }
     }
+    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+    @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
   </style>
 </head>
 <body>
@@ -5054,7 +5095,10 @@ struct SplashTemplate {}
     <img src="/images/logo/logo-text.png" alt="" />
     <img src="/images/logo/logo-text.png" alt="" />
     <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" />
   </div>
+  <div class="code-particles" id="code-particles" aria-hidden="true"></div>
   <div class="top-nav">
     <div class="top-nav-inner">
       <a class="brand" href="/">
@@ -5068,8 +5112,13 @@ struct SplashTemplate {}
         <div class="nav-project-pill"><span class="nav-project-label">Project</span><span class="nav-project-value">{{ report_title }}</span></div>
       </div>
       <div class="nav-status">
-        <a class="nav-pill" href="/history" style="text-decoration:none;">History</a>
-        <span class="nav-pill"><span class="status-dot"></span>Analysis saved</span>
+        <a class="nav-pill" href="/" style="text-decoration:none;">Home</a>
+        <a class="nav-pill" href="/history" style="text-decoration:none;">View Reports</a>
+        <a class="nav-pill" href="/compare-select" style="text-decoration:none;">Compare Scans</a>
+        <div class="server-status-wrap">
+          <div class="nav-pill server-online-pill"><span class="status-dot"></span>Server online</div>
+          <div class="server-status-tip">OxideSLOC is running as a local server in your terminal.<br>Close the terminal window to stop the server.</div>
+        </div>
         <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme" title="Toggle theme">
           <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 15.5A8.5 8.5 0 1 1 12.5 4 6.7 6.7 0 0 0 20 15.5Z"></path></svg>
           <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"></circle><path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.9 5.1l-1.6 1.6M6.7 17.3l-1.6 1.6M18.9 18.9l-1.6-1.6M6.7 6.7 5.1 5.1"></path></svg>
@@ -5495,6 +5544,27 @@ struct SplashTemplate {}
           img.style.cssText = "width:" + size + "px;top:" + pos[0].toFixed(1) + "%;left:" + pos[1].toFixed(1) + "%;transform:rotate(" + rot.toFixed(1) + "deg);opacity:" + op + ";";
         });
       })();
+
+      (function spawnCodeParticles() {
+        var container = document.getElementById('code-particles');
+        if (!container) return;
+        var snippets = ['1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','3,841 physical','files: 60','450 comments','cargo build','Ok(run)','Vec<String>','match lang','fn main() {','.rs .go .py','sloc_core','render_html','2,163 code'];
+        for (var i = 0; i < 38; i++) {
+          (function(idx) {
+            var el = document.createElement('span');
+            el.className = 'code-particle';
+            el.textContent = snippets[idx % snippets.length];
+            var left = Math.random() * 94 + 2;
+            var top = Math.random() * 88 + 6;
+            var dur = (Math.random() * 10 + 9).toFixed(1);
+            var delay = (Math.random() * 18).toFixed(1);
+            var rot = (Math.random() * 26 - 13).toFixed(1);
+            var op = (Math.random() * 0.09 + 0.06).toFixed(3);
+            el.style.cssText = 'left:' + left.toFixed(1) + '%;top:' + top.toFixed(1) + '%;--rot:' + rot + 'deg;--op:' + op + ';animation-duration:' + dur + 's;animation-delay:-' + delay + 's;';
+            container.appendChild(el);
+          })(i);
+        }
+      })();
     })();
   </script>
   <footer class="site-footer">
@@ -5615,6 +5685,10 @@ struct ResultTemplate {
     .btn-primary{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:0 18px;border-radius:14px;border:1px solid rgba(111,144,255,0.30);text-decoration:none;color:white;background:linear-gradient(135deg,var(--accent),var(--accent-2));font-weight:800;font-size:14px;box-shadow:0 10px 22px rgba(73,106,255,0.22);}
     .btn-secondary{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:0 18px;border-radius:14px;border:1px solid var(--line-strong);text-decoration:none;color:var(--text);background:var(--surface-2);font-weight:700;font-size:14px;}
     .btn-secondary:hover{background:var(--line);}
+    .status-dot{width:8px;height:8px;border-radius:999px;background:#26d768;box-shadow:0 0 0 4px rgba(38,215,104,0.14);flex:0 0 auto;}
+    .server-status-wrap{position:relative;display:inline-flex;}.server-online-pill{cursor:default;}.server-status-tip{display:none;position:absolute;top:calc(100% + 10px);right:0;z-index:100;background:rgba(20,12,8,0.97);color:rgba(255,255,255,0.92);border-radius:10px;padding:10px 14px;font-size:12px;font-weight:500;line-height:1.55;white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,0.32);pointer-events:none;border:1px solid rgba(255,255,255,0.10);}.server-status-tip::before{content:'';position:absolute;bottom:100%;right:18px;border:6px solid transparent;border-bottom-color:rgba(20,12,8,0.97);}.server-status-wrap:hover .server-status-tip,.server-status-wrap:focus-within .server-status-tip{display:block;}
+    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+    @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
   </style>
 </head>
 <body>
@@ -5623,7 +5697,10 @@ struct ResultTemplate {
     <img src="/images/logo/logo-text.png" alt="" style="width:280px;top:120px;right:-50px;transform:rotate(8deg);" />
     <img src="/images/logo/logo-text.png" alt="" style="width:260px;bottom:60px;left:30px;transform:rotate(15deg);" />
     <img src="/images/logo/logo-text.png" alt="" style="width:300px;bottom:-20px;right:80px;transform:rotate(-6deg);" />
+    <img src="/images/logo/logo-text.png" alt="" style="width:240px;top:50%;left:45%;transform:rotate(22deg);" />
+    <img src="/images/logo/logo-text.png" alt="" style="width:270px;top:10%;left:35%;transform:rotate(-18deg);" />
   </div>
+  <div class="code-particles" id="code-particles" aria-hidden="true"></div>
   <div class="top-nav">
     <div class="top-nav-inner">
       <a class="brand" href="/">
@@ -5634,8 +5711,13 @@ struct ResultTemplate {
         </div>
       </a>
       <div class="nav-right">
-        <a class="nav-pill" href="/scan">New scan</a>
-        <a class="nav-pill" href="/history">View reports</a>
+        <a class="nav-pill" href="/">Home</a>
+        <a class="nav-pill" href="/history">View Reports</a>
+        <a class="nav-pill" href="/compare-select">Compare Scans</a>
+        <div class="server-status-wrap">
+          <div class="nav-pill server-online-pill"><span class="status-dot"></span>Server online</div>
+          <div class="server-status-tip">OxideSLOC is running as a local server in your terminal.<br>Close the terminal window to stop the server.</div>
+        </div>
         <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
           <svg class="icon-moon" viewBox="0 0 24 24"><path d="M20 15.5A8.5 8.5 0 1 1 12.5 4 6.7 6.7 0 0 0 20 15.5Z"></path></svg>
           <svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"></circle><path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.9 5.1l-1.6 1.6M6.7 17.3l-1.6 1.6M18.9 18.9l-1.6-1.6M6.7 6.7 5.1 5.1"></path></svg>
@@ -5659,6 +5741,26 @@ struct ResultTemplate {
   </div>
   <script>
     (function(){var k="oxide-theme",b=document.body,s=localStorage.getItem(k);if(s==="dark")b.classList.add("dark-theme");document.getElementById("theme-toggle").addEventListener("click",function(){var d=b.classList.toggle("dark-theme");localStorage.setItem(k,d?"dark":"light");});})();
+    (function spawnCodeParticles() {
+      var container = document.getElementById('code-particles');
+      if (!container) return;
+      var snippets = ['1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','3,841 physical','files: 60','450 comments','cargo build','Ok(run)','Vec<String>','match lang','fn main() {','.rs .go .py','sloc_core','render_html','2,163 code'];
+      for (var i = 0; i < 38; i++) {
+        (function(idx) {
+          var el = document.createElement('span');
+          el.className = 'code-particle';
+          el.textContent = snippets[idx % snippets.length];
+          var left = Math.random() * 94 + 2;
+          var top = Math.random() * 88 + 6;
+          var dur = (Math.random() * 10 + 9).toFixed(1);
+          var delay = (Math.random() * 18).toFixed(1);
+          var rot = (Math.random() * 26 - 13).toFixed(1);
+          var op = (Math.random() * 0.09 + 0.06).toFixed(3);
+          el.style.cssText = 'left:' + left.toFixed(1) + '%;top:' + top.toFixed(1) + '%;--rot:' + rot + 'deg;--op:' + op + ';animation-duration:' + dur + 's;animation-delay:-' + delay + 's;';
+          container.appendChild(el);
+        })(i);
+      }
+    })();
   </script>
 </body>
 </html>
@@ -5766,6 +5868,10 @@ struct ErrorTemplate {
     .locate-label{font-size:13px;color:var(--muted);flex:1;min-width:180px;}
     .toast-success{display:flex;align-items:center;gap:10px;background:#e8f5ed;border:1px solid #a3d9b1;border-radius:10px;padding:10px 16px;margin-bottom:14px;font-size:13px;color:#1a5c35;font-weight:600;}
     body.dark-theme .toast-success{background:rgba(26,143,71,0.12);border-color:rgba(163,217,177,0.3);color:#6fcf97;}
+    .status-dot{width:8px;height:8px;border-radius:999px;background:#26d768;box-shadow:0 0 0 4px rgba(38,215,104,0.14);flex:0 0 auto;}
+    .server-status-wrap{position:relative;display:inline-flex;}.server-online-pill{cursor:default;}.server-status-tip{display:none;position:absolute;top:calc(100% + 10px);right:0;z-index:100;background:rgba(20,12,8,0.97);color:rgba(255,255,255,0.92);border-radius:10px;padding:10px 14px;font-size:12px;font-weight:500;line-height:1.55;white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,0.32);pointer-events:none;border:1px solid rgba(255,255,255,0.10);}.server-status-tip::before{content:'';position:absolute;bottom:100%;right:18px;border:6px solid transparent;border-bottom-color:rgba(20,12,8,0.97);}.server-status-wrap:hover .server-status-tip,.server-status-wrap:focus-within .server-status-tip{display:block;}
+    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+    @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
   </style>
 </head>
 <body>
@@ -5775,7 +5881,9 @@ struct ErrorTemplate {
     <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
     <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
     <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
   </div>
+  <div class="code-particles" id="code-particles" aria-hidden="true"></div>
   <div class="top-nav">
     <div class="top-nav-inner">
       <a class="brand" href="/">
@@ -5783,8 +5891,13 @@ struct ErrorTemplate {
         <div class="brand-copy"><div class="brand-title">OxideSLOC</div><div class="brand-subtitle">View reports</div></div>
       </a>
       <div class="nav-right">
+        <a class="nav-pill" href="/">Home</a>
+        <a class="nav-pill" href="/history">View Reports</a>
         <a class="nav-pill" href="/compare-select">Compare Scans</a>
-        <a class="nav-pill" href="/scan">New scan</a>
+        <div class="server-status-wrap">
+          <div class="nav-pill server-online-pill"><span class="status-dot"></span>Server online</div>
+          <div class="server-status-tip">OxideSLOC is running as a local server in your terminal.<br>Close the terminal window to stop the server.</div>
+        </div>
         <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
           <svg class="icon-moon" viewBox="0 0 24 24"><path d="M20 15.5A8.5 8.5 0 1 1 12.5 4 6.7 6.7 0 0 0 20 15.5Z"></path></svg>
           <svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"></circle><path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.9 5.1l-1.6 1.6M6.7 17.3l-1.6 1.6M18.9 18.9l-1.6-1.6M6.7 6.7 5.1 5.1"></path></svg>
@@ -6082,6 +6195,27 @@ struct ErrorTemplate {
         var half=Math.floor(wms.length/2);
         wms.forEach(function(img,i){var pos=pick(i<half),sz=Math.floor(Math.random()*80+110),rot=(Math.random()*360).toFixed(1),op=(Math.random()*0.07+0.10).toFixed(2);img.style.cssText='width:'+sz+'px;top:'+pos[0].toFixed(1)+'%;left:'+pos[1].toFixed(1)+'%;transform:rotate('+rot+'deg);opacity:'+op+';';});
       })();
+
+      (function spawnCodeParticles() {
+        var container = document.getElementById('code-particles');
+        if (!container) return;
+        var snippets = ['1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','3,841 physical','files: 60','450 comments','cargo build','Ok(run)','Vec<String>','match lang','fn main() {','.rs .go .py','sloc_core','render_html','2,163 code'];
+        for (var i = 0; i < 38; i++) {
+          (function(idx) {
+            var el = document.createElement('span');
+            el.className = 'code-particle';
+            el.textContent = snippets[idx % snippets.length];
+            var left = Math.random() * 94 + 2;
+            var top = Math.random() * 88 + 6;
+            var dur = (Math.random() * 10 + 9).toFixed(1);
+            var delay = (Math.random() * 18).toFixed(1);
+            var rot = (Math.random() * 26 - 13).toFixed(1);
+            var op = (Math.random() * 0.09 + 0.06).toFixed(3);
+            el.style.cssText = 'left:' + left.toFixed(1) + '%;top:' + top.toFixed(1) + '%;--rot:' + rot + 'deg;--op:' + op + ';animation-duration:' + dur + 's;animation-delay:-' + delay + 's;';
+            container.appendChild(el);
+          })(i);
+        }
+      })();
     })();
 
     function rowClick(runId, hasHtml) {
@@ -6207,6 +6341,10 @@ struct HistoryTemplate {
     .site-footer{text-align:center;padding:18px 24px;font-size:13px;color:var(--muted);position:relative;z-index:1;}
     .site-footer a{color:var(--muted);}
     @media(max-width:700px){td,th{padding:7px 8px;}.run-id-chip,.git-chip{display:none;}}
+    .status-dot{width:8px;height:8px;border-radius:999px;background:#26d768;box-shadow:0 0 0 4px rgba(38,215,104,0.14);flex:0 0 auto;}
+    .server-status-wrap{position:relative;display:inline-flex;}.server-online-pill{cursor:default;}.server-status-tip{display:none;position:absolute;top:calc(100% + 10px);right:0;z-index:100;background:rgba(20,12,8,0.97);color:rgba(255,255,255,0.92);border-radius:10px;padding:10px 14px;font-size:12px;font-weight:500;line-height:1.55;white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,0.32);pointer-events:none;border:1px solid rgba(255,255,255,0.10);}.server-status-tip::before{content:'';position:absolute;bottom:100%;right:18px;border:6px solid transparent;border-bottom-color:rgba(20,12,8,0.97);}.server-status-wrap:hover .server-status-tip,.server-status-wrap:focus-within .server-status-tip{display:block;}
+    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+    @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
   </style>
 </head>
 <body>
@@ -6216,7 +6354,9 @@ struct HistoryTemplate {
     <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
     <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
     <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
   </div>
+  <div class="code-particles" id="code-particles" aria-hidden="true"></div>
   <div class="top-nav">
     <div class="top-nav-inner">
       <a class="brand" href="/">
@@ -6224,9 +6364,13 @@ struct HistoryTemplate {
         <div><p class="brand-title">OxideSLOC</p><p class="brand-subtitle">Compare scans</p></div>
       </a>
       <div class="nav-right">
-        <a class="nav-pill" href="/history">View Reports</a>
-        <a class="nav-pill" href="/scan">New scan</a>
         <a class="nav-pill" href="/">Home</a>
+        <a class="nav-pill" href="/history">View Reports</a>
+        <a class="nav-pill" href="/compare-select">Compare Scans</a>
+        <div class="server-status-wrap">
+          <div class="nav-pill server-online-pill"><span class="status-dot"></span>Server online</div>
+          <div class="server-status-tip">OxideSLOC is running as a local server in your terminal.<br>Close the terminal window to stop the server.</div>
+        </div>
         <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
           <svg class="icon-moon" viewBox="0 0 24 24"><path d="M20 15.5A8.5 8.5 0 1 1 12.5 4 6.7 6.7 0 0 0 20 15.5Z"></path></svg>
           <svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"></circle><path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.9 5.1l-1.6 1.6M6.7 17.3l-1.6 1.6M18.9 18.9l-1.6-1.6M6.7 6.7 5.1 5.1"></path></svg>
@@ -6498,6 +6642,27 @@ struct HistoryTemplate {
         var half=Math.floor(wms.length/2);
         wms.forEach(function(img,i){var pos=pick(i<half),sz=Math.floor(Math.random()*80+110),rot=(Math.random()*360).toFixed(1),op=(Math.random()*0.07+0.10).toFixed(2);img.style.cssText='width:'+sz+'px;top:'+pos[0].toFixed(1)+'%;left:'+pos[1].toFixed(1)+'%;transform:rotate('+rot+'deg);opacity:'+op+';';});
       })();
+
+      (function spawnCodeParticles() {
+        var container = document.getElementById('code-particles');
+        if (!container) return;
+        var snippets = ['1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','3,841 physical','files: 60','450 comments','cargo build','Ok(run)','Vec<String>','match lang','fn main() {','.rs .go .py','sloc_core','render_html','2,163 code'];
+        for (var i = 0; i < 38; i++) {
+          (function(idx) {
+            var el = document.createElement('span');
+            el.className = 'code-particle';
+            el.textContent = snippets[idx % snippets.length];
+            var left = Math.random() * 94 + 2;
+            var top = Math.random() * 88 + 6;
+            var dur = (Math.random() * 10 + 9).toFixed(1);
+            var delay = (Math.random() * 18).toFixed(1);
+            var rot = (Math.random() * 26 - 13).toFixed(1);
+            var op = (Math.random() * 0.09 + 0.06).toFixed(3);
+            el.style.cssText = 'left:' + left.toFixed(1) + '%;top:' + top.toFixed(1) + '%;--rot:' + rot + 'deg;--op:' + op + ';animation-duration:' + dur + 's;animation-delay:-' + delay + 's;';
+            container.appendChild(el);
+          })(i);
+        }
+      })();
     })();
 
     var selected = [];
@@ -6639,9 +6804,24 @@ struct CompareSelectTemplate {
     .site-footer a{color:var(--muted);}
     @media(max-width:900px){.delta-strip{grid-template-columns:repeat(2,1fr);} th.hide-sm,td.hide-sm{display:none;}}
     @media(max-width:600px){.delta-strip{grid-template-columns:1fr;}}
+    .background-watermarks{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
+    .background-watermarks img{position:absolute;opacity:0.16;filter:blur(0.3px);user-select:none;max-width:none;}
+    .status-dot{width:8px;height:8px;border-radius:999px;background:#26d768;box-shadow:0 0 0 4px rgba(38,215,104,0.14);flex:0 0 auto;}
+    .server-status-wrap{position:relative;display:inline-flex;}.server-online-pill{cursor:default;}.server-status-tip{display:none;position:absolute;top:calc(100% + 10px);right:0;z-index:100;background:rgba(20,12,8,0.97);color:rgba(255,255,255,0.92);border-radius:10px;padding:10px 14px;font-size:12px;font-weight:500;line-height:1.55;white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,0.32);pointer-events:none;border:1px solid rgba(255,255,255,0.10);}.server-status-tip::before{content:'';position:absolute;bottom:100%;right:18px;border:6px solid transparent;border-bottom-color:rgba(20,12,8,0.97);}.server-status-wrap:hover .server-status-tip,.server-status-wrap:focus-within .server-status-tip{display:block;}
+    .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+    @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
   </style>
 </head>
 <body>
+  <div class="background-watermarks" aria-hidden="true">
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+    <img src="/images/logo/logo-text.png" alt="" /><img src="/images/logo/logo-text.png" alt="" />
+  </div>
+  <div class="code-particles" id="code-particles" aria-hidden="true"></div>
   <div class="top-nav">
     <div class="top-nav-inner">
       <a class="brand" href="/">
@@ -6649,9 +6829,13 @@ struct CompareSelectTemplate {
         <div><p class="brand-title">OxideSLOC</p><p class="brand-subtitle">Scan delta</p></div>
       </a>
       <div class="nav-right">
-        <a class="nav-pill" href="/history">History</a>
-        <a class="nav-pill" href="/scan">New scan</a>
         <a class="nav-pill" href="/">Home</a>
+        <a class="nav-pill" href="/history">View Reports</a>
+        <a class="nav-pill" href="/compare-select">Compare Scans</a>
+        <div class="server-status-wrap">
+          <div class="nav-pill server-online-pill"><span class="status-dot"></span>Server online</div>
+          <div class="server-status-tip">OxideSLOC is running as a local server in your terminal.<br>Close the terminal window to stop the server.</div>
+        </div>
         <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
           <svg class="icon-moon" viewBox="0 0 24 24"><path d="M20 15.5A8.5 8.5 0 1 1 12.5 4 6.7 6.7 0 0 0 20 15.5Z"></path></svg>
           <svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"></circle><path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.9 5.1l-1.6 1.6M6.7 17.3l-1.6 1.6M18.9 18.9l-1.6-1.6M6.7 6.7 5.1 5.1"></path></svg>
@@ -6766,6 +6950,37 @@ struct CompareSelectTemplate {
         body.classList.toggle('dark-theme', next === 'dark');
         try { localStorage.setItem(storageKey, next); } catch(e) {}
       });
+
+      (function randomizeWatermarks() {
+        var wms = Array.prototype.slice.call(document.querySelectorAll('.background-watermarks img'));
+        if (!wms.length) return;
+        var placed = [];
+        function tooClose(t,l){for(var i=0;i<placed.length;i++){if(Math.abs(placed[i][0]-t)<16&&Math.abs(placed[i][1]-l)<12)return true;}return false;}
+        function pick(lb){for(var a=0;a<50;a++){var t=Math.random()*88+2,l=lb?Math.random()*24+1:Math.random()*24+74;if(!tooClose(t,l)){placed.push([t,l]);return[t,l];}}var t=Math.random()*88+2,l=lb?Math.random()*24+1:Math.random()*24+74;placed.push([t,l]);return[t,l];}
+        var half=Math.floor(wms.length/2);
+        wms.forEach(function(img,i){var pos=pick(i<half),sz=Math.floor(Math.random()*80+110),rot=(Math.random()*360).toFixed(1),op=(Math.random()*0.07+0.10).toFixed(2);img.style.cssText='width:'+sz+'px;top:'+pos[0].toFixed(1)+'%;left:'+pos[1].toFixed(1)+'%;transform:rotate('+rot+'deg);opacity:'+op+';';});
+      })();
+
+      (function spawnCodeParticles() {
+        var container = document.getElementById('code-particles');
+        if (!container) return;
+        var snippets = ['1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312','// comment','pub fn run','use std::fs','Result<()>','let mut n = 0','git main','#[derive]','impl Scan','3,841 physical','files: 60','450 comments','cargo build','Ok(run)','Vec<String>','match lang','fn main() {','.rs .go .py','sloc_core','render_html','2,163 code'];
+        for (var i = 0; i < 38; i++) {
+          (function(idx) {
+            var el = document.createElement('span');
+            el.className = 'code-particle';
+            el.textContent = snippets[idx % snippets.length];
+            var left = Math.random() * 94 + 2;
+            var top = Math.random() * 88 + 6;
+            var dur = (Math.random() * 10 + 9).toFixed(1);
+            var delay = (Math.random() * 18).toFixed(1);
+            var rot = (Math.random() * 26 - 13).toFixed(1);
+            var op = (Math.random() * 0.09 + 0.06).toFixed(3);
+            el.style.cssText = 'left:' + left.toFixed(1) + '%;top:' + top.toFixed(1) + '%;--rot:' + rot + 'deg;--op:' + op + ';animation-duration:' + dur + 's;animation-delay:-' + delay + 's;';
+            container.appendChild(el);
+          })(i);
+        }
+      })();
     })();
 
     function filterRows(status, btn) {

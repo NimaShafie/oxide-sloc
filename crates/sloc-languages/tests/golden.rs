@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Nima Shafie <nimzshafie@gmail.com>
+
 /// Golden tests: known-good fixture files with expected line counts.
 ///
 /// Each test reads a corpus file, runs the lexical analyzer, and asserts exact

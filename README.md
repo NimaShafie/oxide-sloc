@@ -498,7 +498,7 @@ make clean        # cargo clean
 
 ```bash
 cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
 cargo run -p oxidesloc -- serve
 ```

@@ -7,6 +7,23 @@
 
 **oxide-sloc** is a Rust-based source line analysis tool built for teams that want more than a simple line counter.
 
+## Quick Start — no Rust, no dependencies
+
+Pre-built binaries are bundled in `dist/`. Transfer the repository folder to any machine and run:
+
+| Platform | Command | Result |
+|---|---|---|
+| **Windows 10/11** | Double-click `run.bat` | Extracts binary, starts web UI |
+| **Linux — RHEL 8/9, Ubuntu, Debian** | `bash run.sh` | Extracts binary, starts web UI |
+
+The web UI opens at **http://127.0.0.1:4317**. That's it — no setup, no install step, no internet.
+
+For step-by-step instructions and the source-build path, see [`docs/airgap.md`](./docs/airgap.md).
+
+---
+
+## Features
+
 One shared analysis core with multiple delivery surfaces:
 
 - **CLI** — `oxidesloc analyze / report / serve` with a full flag set
@@ -31,13 +48,30 @@ One shared analysis core with multiple delivery surfaces:
 
 ## Installation
 
-### Option 1 — Pre-built binary (no Rust required)
+### Option 1 — Bundled binary, zero setup (recommended)
 
-Download the latest binary for your platform from the [Releases page](https://github.com/NimaShafie/oxide-sloc/releases):
+The fastest path — no download step needed. The repository already contains pre-built
+binaries in `dist/` for Windows and Linux.
+
+```
+# Windows 10/11
+run.bat
+
+# Linux (RHEL 8/9, Ubuntu 18+, Debian 10+)
+bash run.sh
+```
+
+Both scripts extract the correct binary and start the web UI at http://127.0.0.1:4317.
+See [`docs/airgap.md`](./docs/airgap.md) for the full offline/air-gap guide.
+
+### Option 2 — Download from GitHub Releases (no Rust required)
+
+For platforms beyond Windows and Linux x86-64 (e.g. macOS), download from the
+[Releases page](https://github.com/NimaShafie/oxide-sloc/releases):
 
 | Platform | File |
 |---|---|
-| Linux x86-64 | `oxide-sloc-linux-x86_64` |
+| Linux x86-64 (static) | `oxide-sloc-linux-x86_64` |
 | Windows x86-64 | `oxide-sloc-windows-x86_64.exe` |
 | macOS x86-64 | `oxide-sloc-macos-x86_64` |
 | macOS Apple Silicon | `oxide-sloc-macos-arm64` |
@@ -47,11 +81,11 @@ Download the latest binary for your platform from the [Releases page](https://gi
 chmod +x oxide-sloc-linux-x86_64
 mv oxide-sloc-linux-x86_64 /usr/local/bin/oxidesloc
 
-# Windows — rename and add to PATH
+# Windows — rename and place in PATH
 ren oxide-sloc-windows-x86_64.exe oxidesloc.exe
 ```
 
-### Option 2 — Docker (no Rust required)
+### Option 3 — Docker (no Rust required)
 
 Pull the pre-built image from GitHub Container Registry:
 
@@ -80,7 +114,7 @@ docker run --rm \
 
 Chromium is bundled in the Docker image — PDF export works out of the box.
 
-### Option 3 — Build from source (requires Rust 1.78+)
+### Option 4 — Build from source (requires Rust 1.78+)
 
 ```bash
 cargo install --path crates/sloc-cli
@@ -94,15 +128,6 @@ cargo build --release -p oxidesloc
 ```
 
 All 328 crate dependencies are vendored in `vendor/` and `.cargo/config.toml` is pre-configured to use them — `cargo build` requires no network access after cloning.
-
-### Option 4 — Air-gapped / offline systems
-
-For environments with no internet access, all runtime and build-time dependencies are bundled in this repository:
-
-- **Rust crates** — `vendor/` directory, used automatically by Cargo
-- **Chart.js** — compiled into the binary; the web UI never contacts any CDN
-
-See [`docs/airgap.md`](./docs/airgap.md) for step-by-step offline installation instructions.
 
 ---
 
@@ -531,6 +556,12 @@ cargo test --workspace
 │   └── sloc-web/
 │       ├── static/       # Bundled static assets (Chart.js — no CDN needed)
 │       └── src/          # Axum web server, scan registry, metrics API, badge endpoint
+├── dist/
+│   ├── oxidesloc-windows-x64.zip        # Pre-built Windows binary (used by run.bat)
+│   ├── oxidesloc-linux-x86_64.tar.gz    # Pre-built Linux binary — static musl (used by run.sh)
+│   └── vendor-sources.7z                # Rust crate sources for air-gapped source builds
+├── run.bat               # Windows zero-dep launcher — double-click or run from terminal
+├── run.sh                # Linux zero-dep launcher — bash run.sh
 ├── vendor/               # All 328 Rust crate sources — enables offline builds
 ├── .cargo/
 │   └── config.toml       # Tells Cargo to use vendor/ instead of crates.io
@@ -540,14 +571,14 @@ cargo test --workspace
 │   └── sloc-ci-full-scope.toml # CI config preset — audit everything
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml        # PR / push checks + smoke tests + security audit
-│       ├── release.yml   # Cross-platform binary releases
-│       └── docker.yml    # Build and push Docker image to GHCR
+│       ├── ci.yml            # PR / push checks + smoke tests + security audit
+│       ├── release.yml       # Cross-platform binary releases
+│       ├── docker.yml        # Build and push Docker image to GHCR
+│       └── update-dist.yml   # Rebuild and commit dist/ bundles (run manually or on tag)
 ├── docs/
 │   ├── airgap.md             # Air-gapped / offline installation guide
 │   ├── ci-integrations.md    # Jenkins, GitHub Actions, GitLab CI, Confluence
-│   ├── licensing.md
-│   └── licensing-commercial.md
+│   └── licensing-commercial.md  # Commercial / enterprise licensing info
 ├── samples/
 │   └── basic/            # Fixture files used by CI smoke tests
 ├── Dockerfile
@@ -621,7 +652,12 @@ To report a vulnerability privately, see [`SECURITY.md`](./SECURITY.md).
 
 ## License
 
-[AGPL-3.0-or-later](./LICENSE). Commercial support, hosted services, and proprietary add-ons are available through separate arrangements. See [`docs/licensing.md`](./docs/licensing.md) and [`docs/licensing-commercial.md`](./docs/licensing-commercial.md).
+**oxide-sloc** is licensed under [AGPL-3.0-or-later](./LICENSE).
+Copyright (C) 2026 Nima Shafie. All intellectual property rights vest solely in the author.
+
+Third-party dependencies are distributed under their own licenses; see `Cargo.lock` and each crate's license metadata for details.
+
+Commercial support, hosted services, and proprietary add-ons are available through separate arrangements. See [`docs/licensing-commercial.md`](./docs/licensing-commercial.md).
 
 ---
 

@@ -17,11 +17,14 @@ use sloc_core::{analyze, read_json, write_json, AnalysisRun};
 use sloc_report::{render_html, write_html, write_pdf_from_html};
 
 #[derive(Debug, Parser)]
-#[command(name = "sloc")]
+#[command(name = "oxidesloc")]
 #[command(about = "Cross-platform source line analysis tool")]
+#[command(
+    long_about = "Cross-platform source line analysis tool.\n\nRun without arguments to start the web UI on http://127.0.0.1:4317."
+)]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -139,7 +142,10 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    match cli.command {
+    match cli.command.unwrap_or(Commands::Serve(ServeArgs {
+        config: None,
+        bind: None,
+    })) {
         Commands::Analyze(args) => run_analyze(args).await,
         Commands::Report(args) => run_report(args),
         Commands::Serve(args) => run_serve(args).await,

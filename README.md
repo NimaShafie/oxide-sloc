@@ -70,9 +70,9 @@ bash run.sh
 
 The web UI starts at **http://127.0.0.1:4317**.
 
-> **Creating a transferable bundle:** Run `make bundle` to produce `oxide-sloc-bundle.7z`
-> — the full repo compressed at max ratio, without `target/` or `.git/`. Drop it on a USB
-> drive or internal file share and run the install script on the target machine.
+> **Creating a transferable bundle:** Run `make bundle` to produce `oxide-sloc-bundle.tar.gz`
+> — the full repo without `target/` or `.git/`. Drop it on a USB drive or internal file
+> share and run the install script on the target machine.
 
 ### Path B — Docker
 
@@ -527,8 +527,7 @@ cargo test --workspace
 │       └── src/          # Axum web server, scan registry, metrics API, badge endpoint
 ├── dist/
 │   ├── oxidesloc-windows-x64.zip        # Pre-built Windows binary (used by run.sh)
-│   ├── oxidesloc-linux-x86_64.tar.gz    # Pre-built Linux binary — static musl (used by run.sh)
-│   └── vendor-sources.7z                # Rust crate sources for air-gapped source builds
+│   └── oxidesloc-linux-x86_64.tar.gz    # Pre-built Linux binary — static musl (used by run.sh)
 ├── install.sh            # Installer: bash install.sh (Windows via Git Bash, Linux)
 ├── run.sh                # Cross-platform launcher: bash run.sh (Windows via Git Bash, Linux)
 ├── vendor.tar.xz         # Compressed crate sources (22 MB); decompressed to vendor/ by install.sh

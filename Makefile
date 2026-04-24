@@ -15,7 +15,7 @@ help:
 	@echo ""
 	@echo "  Build & Package"
 	@echo "    make build          release binary → target/release/oxidesloc"
-	@echo "    make bundle         create transferable oxide-sloc-bundle.7z (excludes target/ and .git/)"
+	@echo "    make bundle         create transferable oxide-sloc-bundle.tar.gz (excludes target/ and .git/)"
 	@echo "    make clean          cargo clean"
 	@echo ""
 	@echo "  Docker"
@@ -49,15 +49,15 @@ analyze:
 	cargo run -p oxidesloc -- analyze $(DIR) --plain
 
 bundle:
-	@echo "Creating oxide-sloc-bundle.7z (excludes target/, .git/, uncompressed vendor/) ..."
-	7z a -t7z -mx=9 oxide-sloc-bundle.7z . \
-	    -xr!target \
-	    -xr!.git \
-	    -xr!'*.tmp' \
-	    -xr!out \
-	    -xr!vendor \
-	    -xr!'oxide-sloc-bundle*.7z'
-	@echo "Done: oxide-sloc-bundle.7z  (vendor.tar.xz included; vendor/ uncompressed excluded)"
+	@echo "Creating oxide-sloc-bundle.tar.gz (excludes target/, .git/, uncompressed vendor/) ..."
+	tar --exclude=./target \
+	    --exclude=./.git \
+	    --exclude=./'*.tmp' \
+	    --exclude=./out \
+	    --exclude=./vendor \
+	    --exclude=./oxide-sloc-bundle.tar.gz \
+	    -czf oxide-sloc-bundle.tar.gz .
+	@echo "Done: oxide-sloc-bundle.tar.gz  (vendor.tar.xz included; vendor/ uncompressed excluded)"
 
 docker-build:
 	docker build -t oxide-sloc .

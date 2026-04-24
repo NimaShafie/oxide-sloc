@@ -80,6 +80,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Download Linux bundle
         uses: actions/download-artifact@v4
@@ -100,4 +102,4 @@ jobs:
           git add dist/oxidesloc-linux-x86_64.tar.gz dist/oxidesloc-windows-x64.zip
           git diff --cached --quiet && echo "dist already up to date" && exit 0
           git commit -m "chore: refresh dist bundles [skip ci]"
-          git push
+          git push origin HEAD:main

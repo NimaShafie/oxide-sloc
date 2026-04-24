@@ -91,6 +91,6 @@ impl ScanRegistry {
     /// Remove entries whose json_path no longer exists on disk.
     pub fn prune_stale(&mut self) {
         self.entries
-            .retain(|e| e.json_path.as_ref().map_or(true, |p| p.exists()));
+            .retain(|e| e.json_path.as_ref().is_none_or(|p| p.exists()));
     }
 }

@@ -1,6 +1,9 @@
 # Build output
 /target/
 
+# Uncompressed vendor sources — tracked as vendor.tar.xz instead
+/vendor/
+
 # Logs and temp files
 *.log
 *.tmp
@@ -40,6 +43,13 @@ perf.data.old
 /dist/oxidesloc.exe
 /dist/oxide-sloc-*
 /dist/tmp-*/
+
+# Duplicate compressed Windows binary — .zip already covers this and extracts natively on Windows
+/dist/oxidesloc-windows-x64.7z
+
+# Transferable bundle archives created by `make bundle`
+/oxide-sloc-bundle*.7z
+/oxide-sloc-bundle*.tar.gz
 
 # Claude Code (project-local AI context — not for commit)
 CLAUDE.md

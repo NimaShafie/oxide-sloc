@@ -24,9 +24,10 @@ cache:
     - .cargo/
     - .rustup/
     - target/
+    - vendor/
 
 before_script:
-  - apt-get update -qq && apt-get install -y -qq curl build-essential pkg-config libssl-dev ca-certificates
+  - apt-get update -qq && apt-get install -y -qq curl build-essential pkg-config libssl-dev ca-certificates xz-utils
   - |
     if ! command -v cargo &>/dev/null; then
       curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs \
@@ -34,6 +35,11 @@ before_script:
     fi
   - export PATH="${CARGO_HOME}/bin:${PATH}"
   - rustup show
+  - |
+    if [ ! -d vendor ]; then
+      echo "Decompressing vendor.tar.xz (22 MB → 362 MB)..."
+      tar -xJf vendor.tar.xz
+    fi
 
 stages:
   - quality

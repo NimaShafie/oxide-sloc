@@ -7,18 +7,18 @@
 
 **oxide-sloc** is a Rust-based source line analysis tool built for teams that want more than a simple line counter.
 
-## Quick Start — no Rust, no dependencies
+## Quick Start
 
-Pre-built binaries are bundled in `dist/`. Transfer the repository folder to any machine and run:
+Transfer the repository folder to any machine — including air-gapped ones — and run:
 
-| Platform | Command | Result |
+| Platform | Install | Launch |
 |---|---|---|
-| **Windows 10/11** | Double-click `run.bat` | Extracts binary, starts web UI |
-| **Linux — RHEL 8/9, Ubuntu, Debian** | `bash run.bat` | Extracts binary, starts web UI |
+| **Windows 10/11** | `bash install.sh` (in Git Bash) | Double-click `run.bat` |
+| **Linux — RHEL 8/9, Ubuntu, Debian** | `bash install.sh` | `bash run.bat` |
 
-The web UI opens at **http://127.0.0.1:4317**. That's it — no setup, no install step, no internet.
+The install script extracts the pre-built binary if one is bundled in `dist/`, or builds from the vendored sources if Rust is already on the machine. On success, `run.bat` starts the web UI at **http://127.0.0.1:4317**.
 
-For step-by-step instructions and the source-build path, see [`docs/airgap.md`](./docs/airgap.md).
+For air-gapped setup, CI, and Docker, see [`docs/airgap.md`](./docs/airgap.md).
 
 ---
 
@@ -48,86 +48,54 @@ One shared analysis core with multiple delivery surfaces:
 
 ## Installation
 
-### Option 1 — Bundled binary, zero setup (recommended)
+### Path A — Pre-built binary (recommended, no Rust required)
 
-The fastest path — no download step needed. The repository already contains pre-built
-binaries in `dist/` for Windows and Linux.
+Run the install script once, then use `run.bat` to launch.
 
 ```
-# Windows 10/11
-run.bat
-
-# Linux (RHEL 8/9, Ubuntu 18+, Debian 10+)
-bash run.bat
+# Windows 10/11 (Git Bash) or Linux
+bash install.sh
 ```
 
-Both scripts extract the correct binary and start the web UI at http://127.0.0.1:4317.
-See [`docs/airgap.md`](./docs/airgap.md) for the full offline/air-gap guide.
+The script tries, in order:
+1. Pre-built binary already present → skip
+2. `dist/oxidesloc-windows-x64.zip` (Windows) or `dist/oxidesloc-linux-x86_64.tar.gz` (Linux) → extract
+3. Rust present → decompress `vendor.tar.xz` to `vendor/` if needed, build offline
+4. None of the above → prints instructions for bundling the Rust toolchain on air-gapped machines
 
-### Option 2 — Download from GitHub Releases (no Rust required)
+After install, launch with:
+```
+run.bat          # Windows — double-click or run in terminal
+bash run.bat     # Linux
+```
 
-For platforms beyond Windows and Linux x86-64 (e.g. macOS), download from the
-[Releases page](https://github.com/NimaShafie/oxide-sloc/releases):
+The web UI starts at **http://127.0.0.1:4317**.
 
-| Platform | File |
-|---|---|
-| Linux x86-64 (static) | `oxide-sloc-linux-x86_64` |
-| Windows x86-64 | `oxide-sloc-windows-x86_64.exe` |
-| macOS x86-64 | `oxide-sloc-macos-x86_64` |
-| macOS Apple Silicon | `oxide-sloc-macos-arm64` |
+> **Creating a transferable bundle:** Run `make bundle` to produce `oxide-sloc-bundle.7z`
+> — the full repo compressed at max ratio, without `target/` or `.git/`. Drop it on a USB
+> drive or internal file share and run the install script on the target machine.
+
+### Path B — Docker
 
 ```bash
-# Linux / macOS — make executable and move to PATH
-chmod +x oxide-sloc-linux-x86_64
-mv oxide-sloc-linux-x86_64 /usr/local/bin/oxidesloc
-
-# Windows — rename and place in PATH
-ren oxide-sloc-windows-x86_64.exe oxidesloc.exe
-```
-
-### Option 3 — Docker (no Rust required)
-
-Pull the pre-built image from GitHub Container Registry:
-
-```bash
+# Pull pre-built image
 docker pull ghcr.io/nimashafie/oxide-sloc:latest
-```
 
-Or build locally:
-
-```bash
+# Or build locally
 docker compose up
 ```
 
-Open [http://localhost:4317](http://localhost:4317) in your browser.
-
-> **Note:** The first local build takes a few minutes. The GHCR image starts instantly.
-
-To analyze a directory from the CLI via Docker:
+Open [http://localhost:4317](http://localhost:4317) in your browser. Chromium is bundled — PDF export works out of the box.
 
 ```bash
+# CLI via Docker
 docker run --rm \
   -v /path/to/your/repo:/repo:ro \
   ghcr.io/nimashafie/oxide-sloc:latest \
   analyze /repo --plain
 ```
 
-Chromium is bundled in the Docker image — PDF export works out of the box.
-
-### Option 4 — Build from source (requires Rust 1.78+)
-
-```bash
-cargo install --path crates/sloc-cli
-```
-
-Or build without installing:
-
-```bash
-cargo build --release -p oxidesloc
-./target/release/oxidesloc --help
-```
-
-All 328 crate dependencies are vendored in `vendor/` and `.cargo/config.toml` is pre-configured to use them — `cargo build` requires no network access after cloning.
+For air-gapped setup, Jenkins, GitLab CI, and Rust toolchain bundling, see [`docs/airgap.md`](./docs/airgap.md).
 
 ---
 
@@ -433,7 +401,7 @@ Three workflows ship in `.github/workflows/`:
 | `release.yml` | push a `v*` tag | cross-compile for 4 platforms → publish GitHub Release with binaries |
 | `docker.yml` | push to `main`, push a `v*` tag | build and push Docker image to GHCR with `latest` + semver tags |
 
-The `ci.yml` smoke job runs every analysis variant (plain, per-file, all 4 policies, JSON+HTML, re-render from JSON) and verifies the web UI responds HTTP 200.
+The `ci.yml` smoke job runs every analysis variant (plain, per-file, all 4 policies, JSON+HTML, re-render from JSON) and verifies the web UI responds HTTP 200. `vendor.tar.xz` is decompressed once and cached by the `actions/cache` step — subsequent runs skip re-extraction.
 
 To cut a release:
 
@@ -458,7 +426,7 @@ A `Jenkinsfile` is included at the repo root. It auto-installs Rust on the agent
 **Pipeline stages:**
 
 ```
-Install Rust → Format → Lint → Unit tests → Build
+Install Rust → Vendor sources → Format → Lint → Unit tests → Build
   → Smoke: plain summary
   → Smoke: JSON + HTML reports
   → Smoke: per-file breakdown
@@ -468,6 +436,8 @@ Install Rust → Format → Lint → Unit tests → Build
   → Web UI health check
   → Archive binary + CI reports
 ```
+
+> **Vendor sources stage:** `vendor.tar.xz` (22 MB) is committed to the repo; the pipeline decompresses it to `vendor/` once per workspace. Subsequent builds reuse the directory — no re-download or re-extraction unless the workspace is wiped.
 
 **Environment variables:**
 
@@ -487,7 +457,7 @@ Install Rust → Format → Lint → Unit tests → Build
 
 Smoke jobs run in parallel: `smoke:plain`, `smoke:per-file`, `smoke:reports`, `smoke:re-render`, `smoke:policies`, `smoke:web-ui`.
 
-CI reports are uploaded as GitLab artifacts and retained for 7 days.
+The `before_script` decompresses `vendor.tar.xz` on first run and caches `vendor/` between jobs. CI reports are uploaded as GitLab artifacts and retained for 7 days.
 
 ---
 
@@ -495,7 +465,7 @@ CI reports are uploaded as GitLab artifacts and retained for 7 days.
 
 ### Prerequisites
 
-- [Rust](https://rustup.rs) 1.78 or later
+- [Rust](https://rustup.rs) 1.95 or later (`bash install.sh` will decompress `vendor.tar.xz` and build if Rust is already present)
 - `make` (Linux/macOS) — optional but recommended
 
 ### Make targets
@@ -560,8 +530,9 @@ cargo test --workspace
 │   ├── oxidesloc-windows-x64.zip        # Pre-built Windows binary (used by run.bat)
 │   ├── oxidesloc-linux-x86_64.tar.gz    # Pre-built Linux binary — static musl (used by run.bat)
 │   └── vendor-sources.7z                # Rust crate sources for air-gapped source builds
+├── install.sh            # Installer: bash install.sh (Windows via Git Bash, Linux)
 ├── run.bat               # Cross-platform launcher: double-click on Windows, bash run.bat on Linux
-├── vendor/               # All 328 Rust crate sources — enables offline builds
+├── vendor.tar.xz         # Compressed crate sources (22 MB); decompressed to vendor/ by install.sh
 ├── .cargo/
 │   └── config.toml       # Tells Cargo to use vendor/ instead of crates.io
 ├── ci/

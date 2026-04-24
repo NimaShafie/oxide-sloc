@@ -81,6 +81,20 @@ pipeline {
             }
         }
 
+        // ── 1b. Vendor sources ────────────────────────────────────────────────
+        // vendor/ is gitignored; vendor.tar.xz (22 MB) is committed in its place.
+        // Decompress once per workspace — subsequent builds reuse the directory.
+        stage('Vendor sources') {
+            steps {
+                sh '''
+                    if [ ! -d vendor ]; then
+                        echo "Decompressing vendor.tar.xz (22 MB → 362 MB)..."
+                        tar -xJf vendor.tar.xz
+                    fi
+                '''
+            }
+        }
+
         // ── 2. Code quality gates ─────────────────────────────────────────────
         stage('Format') {
             steps {

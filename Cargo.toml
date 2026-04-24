@@ -12,7 +12,7 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 license = "AGPL-3.0-or-later"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 authors = ["Nima Shafie"]
 description = "Source line analysis tool with CLI, web UI, HTML/PDF reports, and CI/CD integration"
 keywords = ["sloc", "code-analysis", "cli", "static-analysis", "metrics"]
@@ -20,7 +20,7 @@ categories = ["command-line-utilities", "development-tools"]
 repository = "https://github.com/NimaShafie/oxide-sloc"
 homepage = "https://github.com/NimaShafie/oxide-sloc"
 documentation = "https://github.com/NimaShafie/oxide-sloc"
-rust-version = "1.78"
+rust-version = "1.95"
 
 [workspace.dependencies]
 anyhow = "1"

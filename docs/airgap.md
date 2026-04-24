@@ -2,123 +2,135 @@
 
 ## TL;DR
 
-**Windows 10/11** — double-click `run.bat`
+Run the install script once, then launch with `run.bat`.
 
-**Linux (RHEL 8/9, Ubuntu 18+, Debian 10+, any x86-64)**
-
-```bash
-bash run.bat
-```
-
-That is all. The script finds the pre-built binary in `dist/`, extracts it, and starts
-the web UI at **http://127.0.0.1:4317**.
-
-No Rust. No package manager. No internet. No extra tools.
-
----
-
-## What each script requires
-
-| Platform | Script | Required tools |
+| Platform | Install | Launch |
 |---|---|---|
-| Windows 10/11 | `run.bat` | PowerShell 5+ (built into every Windows 10/11 install) |
-| Linux x86-64 | `bash run.bat` | `bash` + `tar` (present on every RHEL/Ubuntu/Debian install) |
+| **Windows 10/11** | `bash install.sh` (in Git Bash) | Double-click `run.bat` (or `run.bat` in terminal) |
+| **Linux (RHEL 8/9, Ubuntu, Debian)** | `bash install.sh` | `bash run.bat` |
+
+No internet. No package manager. No extra tools beyond what ships with the OS.
 
 ---
 
-## Step-by-step: Windows
+## What `install.sh` does
 
-1. Transfer this repository folder (including `dist/`) to the target machine via USB, file
-   share, or internal network.
-2. Open the folder in Explorer and double-click **`run.bat`** — or open a terminal and run:
-   ```
-   run.bat
-   ```
-3. `run.bat` extracts `dist\oxidesloc-windows-x64.zip` using PowerShell's built-in
-   `Expand-Archive` and launches the binary. A terminal window opens showing the server
-   output. The web UI is available at **http://127.0.0.1:4317**.
+The install script tries each path in order and stops at the first success:
+
+1. **Binary already present** — `oxidesloc.exe` / `oxidesloc` is next to the script → nothing to do.
+2. **Pre-built binary in `dist/`** — extracts `dist/oxidesloc-windows-x64.zip` (Windows, via built-in PowerShell) or `dist/oxidesloc-linux-x86_64.tar.gz` (Linux, via `tar`). No extra tools needed.
+3. **Rust installed** — decompresses `vendor.tar.xz` (22 MB) to `vendor/` if not already present, then runs `cargo build --release --offline`. All 328 crate dependencies are in the archive; no internet access required.
+4. **Nothing works** — prints clear instructions for bundling the Rust toolchain on a networked machine and transferring it.
 
 ---
 
-## Step-by-step: Linux (RHEL 8/9)
+## Required tools per path
 
-1. Transfer this repository folder (including `dist/`) to the target machine.
-2. Open a terminal in the repository root and run:
-   ```bash
-   bash run.bat
-   ```
-3. `run.bat` extracts `dist/oxidesloc-linux-x86_64.tar.gz` using `tar` and starts the
-   server. Open **http://127.0.0.1:4317** in a browser. Press `Ctrl+C` to stop.
-
----
-
-## What is bundled in `dist/`
-
-| File | Platform | Notes |
+| Path | Windows | Linux |
 |---|---|---|
-| `oxidesloc-windows-x64.zip` | Windows x86-64 | Extracted by `run.bat` via PowerShell |
-| `oxidesloc-linux-x86_64.tar.gz` | Linux x86-64 | Extracted by `run.bat` via `tar`. Static musl build — no glibc dependency, runs on RHEL 8+ |
-| `vendor-sources.7z` | All | Rust crate sources for building from source (optional path only) |
-
-The Linux binary is built with `x86_64-unknown-linux-musl` (fully static). It carries zero
-runtime library dependencies and runs on RHEL 8 (glibc 2.28), RHEL 9 (glibc 2.34), and
-any other x86-64 Linux.
+| Pre-built binary | PowerShell 5+ (built into Windows 10/11) | `bash` + `tar` (present on every RHEL/Ubuntu install) |
+| Source build | `cargo` (Rust toolchain) | `cargo` (Rust toolchain) |
 
 ---
 
-## Keeping dist/ current (maintainer task)
+## Transferring to an air-gapped machine
 
-When a new version ships, the `dist/` bundles need to be regenerated. Run the
-**Update dist bundles** workflow from the GitHub Actions tab (no inputs needed), or push
-a `v*` tag which triggers it automatically.
+### Small transfer — binary only (~5 MB)
 
-The workflow builds both platform binaries, packages them, and commits the result to
-`dist/` in one step.
+If a pre-built binary is already in `dist/`, zip just the essentials:
 
----
-
-## Fallback: build from source
-
-Use this path only when you need to build from source on the air-gapped machine itself
-(e.g. unsupported architecture, custom patches).
-
-The `vendor/` directory contains all 328 Rust crate dependencies. Cargo reads from it
-automatically via `.cargo/config.toml` — no internet access needed after cloning.
-
-```bash
-# The machine must have Rust installed (see below if it does not)
-cargo build --release --workspace --offline
-
-# Binary output:
-#   target/release/oxidesloc        (Linux / macOS)
-#   target\release\oxidesloc.exe   (Windows)
-
-# Start the web UI
-./target/release/oxidesloc serve
-# or just: bash run.bat    (the script finds target/release/ automatically)
-```
-
-### Bundling a Rust toolchain for a machine with no internet and no Rust
-
-On a networked machine, archive the toolchain and bring it along:
-
-**Windows**
+**Windows (PowerShell):**
 ```powershell
-# Install rustup once, then archive
+Compress-Archive -Path run.bat, install.sh, dist -DestinationPath oxide-sloc-deploy.zip
+```
+
+**Linux:**
+```bash
+tar -czf oxide-sloc-deploy.tar.gz run.bat install.sh dist/
+```
+
+Extract on the target machine and run `bash install.sh`.
+
+### Full transfer — repo bundle (~500 MB, includes vendored sources for source builds)
+
+```bash
+# Requires 7-Zip
+make bundle
+# Produces: oxide-sloc-bundle.7z
+```
+
+Or manually with 7-Zip:
+
+**Windows (PowerShell):**
+```powershell
+7z a -t7z -mx=9 oxide-sloc-bundle.7z . -xr!target -xr!.git
+```
+
+**Linux:**
+```bash
+7z a -t7z -mx=9 oxide-sloc-bundle.7z . -xr!target -xr!.git
+# Or without 7-Zip:
+tar --exclude=./target --exclude=./.git -czf oxide-sloc-bundle.tar.gz .
+```
+
+Transfer the archive to the target machine, extract it, and run `bash install.sh`.
+
+> **Why ~160 MB?** `vendor.tar.xz` (22 MB) contains all 328 Rust crate sources compressed at xz-extreme ratio from 362 MB. The `target/` compiled artifacts (4+ GB) are excluded — platform-specific and rebuilt locally. `install.sh` decompresses `vendor.tar.xz` to `vendor/` automatically before building.
+
+---
+
+## Building from source on a machine with no Rust and no internet
+
+You need to pre-package the Rust toolchain on a networked machine and carry it over.
+
+### Bundle the toolchain (do this on a networked machine)
+
+**Windows:**
+```powershell
 rustup-init.exe --default-toolchain stable --no-modify-path
 Compress-Archive -Path "$env:USERPROFILE\.rustup","$env:USERPROFILE\.cargo" `
     -DestinationPath rust-toolchain-windows.zip
 ```
 
-**Linux**
+**Linux:**
 ```bash
-./rustup-init --default-toolchain stable --no-modify-path
+curl -sSf https://sh.rustup.rs | sh -s -- --default-toolchain stable --no-modify-path
 tar -czf rust-toolchain-linux.tar.gz ~/.rustup ~/.cargo
 ```
 
-On the air-gapped machine, extract the archive to the same paths, add
-`~/.cargo/bin` (or `%USERPROFILE%\.cargo\bin`) to `PATH`, and run
-`cargo build --release --workspace --offline`.
+### Restore on the air-gapped machine
+
+**Windows:**
+```powershell
+Expand-Archive rust-toolchain-windows.zip -DestinationPath $env:USERPROFILE
+# Add to PATH (run once, then reopen terminal):
+[Environment]::SetEnvironmentVariable("PATH", "$env:USERPROFILE\.cargo\bin;" + $env:PATH, "User")
+```
+
+**Linux:**
+```bash
+tar xzf rust-toolchain-linux.tar.gz -C ~
+echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+Then run `bash install.sh` — it decompresses `vendor.tar.xz` and builds from `vendor/` automatically.
+
+---
+
+## CI/CD on air-gapped infrastructure
+
+### Jenkins
+
+The included `Jenkinsfile` auto-installs Rust on the agent if not present. For a fully offline agent, pre-install the toolchain using the steps above, then point the job at this repository. The vendored sources mean no outbound network traffic during `cargo build`.
+
+### GitLab CI
+
+The included `.gitlab-ci.yml` works the same way. Use a self-hosted GitLab runner with Rust pre-installed.
+
+### GitHub Actions (internal/self-hosted runner)
+
+Use the standard `ci.yml` workflow on a self-hosted runner. Cache `~/.cargo` and `~/.rustup` between runs to avoid re-downloading.
 
 ---
 
@@ -126,12 +138,11 @@ On the air-gapped machine, extract the archive to the same paths, add
 
 | Feature | Network needed? |
 |---|---|
-| `serve` command (web UI) | No |
+| Web UI (`serve`) | No |
 | `analyze` command | No |
 | `report` command | No |
 | PDF export | No — uses locally installed Chromium |
-| `--smtp-to` email delivery | Yes |
-| `--webhook-url` delivery | Yes |
+| Email delivery (`--smtp-to`) | Yes |
+| Webhook delivery (`--webhook-url`) | Yes |
 
-PDF export requires a locally installed Chromium-based browser (Chrome, Edge, Brave,
-Vivaldi, or Opera). Set `SLOC_BROWSER=/path/to/chromium` if auto-discovery fails.
+PDF export requires a locally installed Chromium-based browser (Chrome, Edge, Brave, Vivaldi, or Opera). Set `SLOC_BROWSER=/path/to/chromium` if auto-discovery fails.

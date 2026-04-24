@@ -1,4 +1,4 @@
-.PHONY: help dev check fmt lint test build serve analyze docker-build docker-run clean
+.PHONY: help dev check fmt lint test build serve analyze bundle docker-build docker-run clean
 
 help:
 	@echo ""
@@ -13,8 +13,9 @@ help:
 	@echo "    make serve          start web UI on http://127.0.0.1:4317"
 	@echo "    make analyze DIR=.  analyze a directory from the CLI"
 	@echo ""
-	@echo "  Build"
+	@echo "  Build & Package"
 	@echo "    make build          release binary → target/release/oxidesloc"
+	@echo "    make bundle         create transferable oxide-sloc-bundle.7z (excludes target/ and .git/)"
 	@echo "    make clean          cargo clean"
 	@echo ""
 	@echo "  Docker"
@@ -46,6 +47,17 @@ serve:
 # Usage: make analyze DIR=./my-repo
 analyze:
 	cargo run -p oxidesloc -- analyze $(DIR) --plain
+
+bundle:
+	@echo "Creating oxide-sloc-bundle.7z (excludes target/, .git/, uncompressed vendor/) ..."
+	7z a -t7z -mx=9 oxide-sloc-bundle.7z . \
+	    -xr!target \
+	    -xr!.git \
+	    -xr!'*.tmp' \
+	    -xr!out \
+	    -xr!vendor \
+	    -xr!'oxide-sloc-bundle*.7z'
+	@echo "Done: oxide-sloc-bundle.7z  (vendor.tar.xz included; vendor/ uncompressed excluded)"
 
 docker-build:
 	docker build -t oxide-sloc .

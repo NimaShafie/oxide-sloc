@@ -24,10 +24,20 @@ oxide-sloc is a single self-contained binary — there are no daemon processes, 
 Every CI integration follows the same three-step pattern:
 
 ```
-1. acquire the binary  →  oxidesloc is installed on the agent
+1. acquire the binary  →  decompress vendor.tar.xz, install Rust, build oxidesloc
 2. run the scan        →  oxidesloc analyze ./src --json-out result.json --html-out report.html
 3. consume outputs     →  archive, publish, or push to external tools
 ```
+
+### Vendor sources note
+
+All crate dependencies live in `vendor.tar.xz` (22 MB, xz-compressed) rather than as raw files. `.cargo/config.toml` redirects every `cargo` command to `vendor/`, so the archive must be decompressed before any `cargo` invocation:
+
+```bash
+tar -xJf vendor.tar.xz   # one-time per workspace; vendor/ is then reusable
+```
+
+The pipeline files shipped in this repo already include this step. If you are adapting a snippet for your own pipeline, add this line before the first `cargo` command.
 
 The JSON output (`result.json`) is machine-readable and stable across versions — use it to feed dashboards, Confluence, Slack webhooks, or custom tooling. The HTML report is a self-contained single-file document suitable for artifact storage and browser viewing.
 
@@ -61,6 +71,16 @@ pipeline {
                     if ! command -v cargo &>/dev/null; then
                         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
                         export PATH="$HOME/.cargo/bin:$PATH"
+                    fi
+                '''
+            }
+        }
+
+        stage('Vendor sources') {
+            steps {
+                sh '''
+                    if [ ! -d vendor ]; then
+                        tar -xJf vendor.tar.xz
                     fi
                 '''
             }
@@ -278,6 +298,9 @@ Two workflows ship in `.github/workflows/`:
 ### Adding a scan step to an existing workflow
 
 ```yaml
+- name: Decompress vendor sources
+  run: tar -xJf vendor.tar.xz
+
 - name: Install oxidesloc
   run: cargo install --path crates/sloc-cli
 
@@ -335,6 +358,8 @@ sloc-scan:
   stage: test
   image: rust:latest
   script:
+    - apt-get update -qq && apt-get install -y -qq xz-utils
+    - tar -xJf vendor.tar.xz
     - cargo install --path crates/sloc-cli
     - |
       oxidesloc analyze ./src \

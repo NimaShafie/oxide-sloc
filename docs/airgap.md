@@ -53,24 +53,16 @@ Extract on the target machine and run `bash install.sh`.
 
 ### Full transfer — repo bundle (~500 MB, includes vendored sources for source builds)
 
+**Linux:**
 ```bash
-# Requires 7-Zip
 make bundle
-# Produces: oxide-sloc-bundle.7z
+# Produces: oxide-sloc-bundle.tar.gz
 ```
-
-Or manually with 7-Zip:
 
 **Windows (PowerShell):**
 ```powershell
-7z a -t7z -mx=9 oxide-sloc-bundle.7z . -xr!target -xr!.git
-```
-
-**Linux:**
-```bash
-7z a -t7z -mx=9 oxide-sloc-bundle.7z . -xr!target -xr!.git
-# Or without 7-Zip:
-tar --exclude=./target --exclude=./.git -czf oxide-sloc-bundle.tar.gz .
+Compress-Archive -Path . -DestinationPath oxide-sloc-bundle.zip `
+    -Exclude @("target", ".git", "out", "vendor")
 ```
 
 Transfer the archive to the target machine, extract it, and run `bash install.sh`.

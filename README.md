@@ -14,7 +14,7 @@ Pre-built binaries are bundled in `dist/`. Transfer the repository folder to any
 | Platform | Command | Result |
 |---|---|---|
 | **Windows 10/11** | Double-click `run.bat` | Extracts binary, starts web UI |
-| **Linux — RHEL 8/9, Ubuntu, Debian** | `bash run.sh` | Extracts binary, starts web UI |
+| **Linux — RHEL 8/9, Ubuntu, Debian** | `bash run.bat` | Extracts binary, starts web UI |
 
 The web UI opens at **http://127.0.0.1:4317**. That's it — no setup, no install step, no internet.
 
@@ -58,7 +58,7 @@ binaries in `dist/` for Windows and Linux.
 run.bat
 
 # Linux (RHEL 8/9, Ubuntu 18+, Debian 10+)
-bash run.sh
+bash run.bat
 ```
 
 Both scripts extract the correct binary and start the web UI at http://127.0.0.1:4317.
@@ -558,10 +558,9 @@ cargo test --workspace
 │       └── src/          # Axum web server, scan registry, metrics API, badge endpoint
 ├── dist/
 │   ├── oxidesloc-windows-x64.zip        # Pre-built Windows binary (used by run.bat)
-│   ├── oxidesloc-linux-x86_64.tar.gz    # Pre-built Linux binary — static musl (used by run.sh)
+│   ├── oxidesloc-linux-x86_64.tar.gz    # Pre-built Linux binary — static musl (used by run.bat)
 │   └── vendor-sources.7z                # Rust crate sources for air-gapped source builds
-├── run.bat               # Windows zero-dep launcher — double-click or run from terminal
-├── run.sh                # Linux zero-dep launcher — bash run.sh
+├── run.bat               # Cross-platform launcher: double-click on Windows, bash run.bat on Linux
 ├── vendor/               # All 328 Rust crate sources — enables offline builds
 ├── .cargo/
 │   └── config.toml       # Tells Cargo to use vendor/ instead of crates.io

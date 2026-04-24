@@ -2,16 +2,12 @@
 
 ## TL;DR
 
-**Windows 10/11**
-
-```
-run.bat
-```
+**Windows 10/11** — double-click `run.bat`
 
 **Linux (RHEL 8/9, Ubuntu 18+, Debian 10+, any x86-64)**
 
 ```bash
-bash run.sh
+bash run.bat
 ```
 
 That is all. The script finds the pre-built binary in `dist/`, extracts it, and starts
@@ -26,7 +22,7 @@ No Rust. No package manager. No internet. No extra tools.
 | Platform | Script | Required tools |
 |---|---|---|
 | Windows 10/11 | `run.bat` | PowerShell 5+ (built into every Windows 10/11 install) |
-| Linux x86-64 | `run.sh` | `bash` + `tar` (present on every RHEL/Ubuntu/Debian install) |
+| Linux x86-64 | `bash run.bat` | `bash` + `tar` (present on every RHEL/Ubuntu/Debian install) |
 
 ---
 
@@ -49,10 +45,9 @@ No Rust. No package manager. No internet. No extra tools.
 1. Transfer this repository folder (including `dist/`) to the target machine.
 2. Open a terminal in the repository root and run:
    ```bash
-   bash run.sh
+   bash run.bat
    ```
-   (`bash run.sh` works without `chmod`. If you prefer `./run.sh`, run `chmod +x run.sh` first.)
-3. `run.sh` extracts `dist/oxidesloc-linux-x86_64.tar.gz` using `tar` and starts the
+3. `run.bat` extracts `dist/oxidesloc-linux-x86_64.tar.gz` using `tar` and starts the
    server. Open **http://127.0.0.1:4317** in a browser. Press `Ctrl+C` to stop.
 
 ---
@@ -62,7 +57,7 @@ No Rust. No package manager. No internet. No extra tools.
 | File | Platform | Notes |
 |---|---|---|
 | `oxidesloc-windows-x64.zip` | Windows x86-64 | Extracted by `run.bat` via PowerShell |
-| `oxidesloc-linux-x86_64.tar.gz` | Linux x86-64 | Extracted by `run.sh` via `tar`. Static musl build — no glibc dependency, runs on RHEL 8+ |
+| `oxidesloc-linux-x86_64.tar.gz` | Linux x86-64 | Extracted by `run.bat` via `tar`. Static musl build — no glibc dependency, runs on RHEL 8+ |
 | `vendor-sources.7z` | All | Rust crate sources for building from source (optional path only) |
 
 The Linux binary is built with `x86_64-unknown-linux-musl` (fully static). It carries zero
@@ -100,7 +95,7 @@ cargo build --release --workspace --offline
 
 # Start the web UI
 ./target/release/oxidesloc serve
-# or just: bash run.sh    (the script finds target/release/ automatically)
+# or just: bash run.bat    (the script finds target/release/ automatically)
 ```
 
 ### Bundling a Rust toolchain for a machine with no internet and no Rust

@@ -28,7 +28,7 @@ echo " ════════════════════"
 # ── 1. Already installed ────────────────────────────────────────────────────
 if [[ -f "$EXE" ]]; then
     echo " [OK] $(basename "$EXE") already present."
-    echo " Run: bash run.bat"
+    echo " Run: bash run.sh"
     exit 0
 fi
 
@@ -36,8 +36,10 @@ fi
 if [[ -f "$DIST_ARCHIVE" ]]; then
     echo " Extracting pre-built binary from dist/..."
     if [[ "$PLATFORM" == windows ]]; then
+        WIN_ARCHIVE="$(cygpath -w "$DIST_ARCHIVE")"
+        WIN_DEST="$(cygpath -w "$SCRIPT_DIR")"
         powershell -NoProfile -Command \
-            "Expand-Archive -Path '$DIST_ARCHIVE' -DestinationPath '$SCRIPT_DIR' -Force"
+            "Expand-Archive -Path '$WIN_ARCHIVE' -DestinationPath '$WIN_DEST' -Force"
     else
         tar xzf "$DIST_ARCHIVE" -C "$SCRIPT_DIR"
     fi
@@ -45,7 +47,7 @@ if [[ -f "$DIST_ARCHIVE" ]]; then
         [[ "$PLATFORM" == linux ]] && chmod +x "$EXE"
         echo " [OK] Extracted $(basename "$EXE")"
         echo ""
-        echo " Start the web UI:  bash run.bat"
+        echo " Start the web UI:  bash run.sh"
         exit 0
     fi
     echo " [WARN] Extraction completed but binary not found — archive may be corrupt."
@@ -73,7 +75,7 @@ if command -v cargo &>/dev/null; then
         [[ "$PLATFORM" == linux ]] && chmod +x "$EXE"
         echo " [OK] Built and installed $(basename "$EXE")"
         echo ""
-        echo " Start the web UI:  bash run.bat"
+        echo " Start the web UI:  bash run.sh"
         exit 0
     fi
     echo " [ERROR] Build failed. Check output above." >&2

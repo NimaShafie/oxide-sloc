@@ -13,10 +13,10 @@ Transfer the repository folder to any machine — including air-gapped ones — 
 
 | Platform | Install | Launch |
 |---|---|---|
-| **Windows 10/11** | `bash install.sh` (in Git Bash) | Double-click `run.bat` |
-| **Linux — RHEL 8/9, Ubuntu, Debian** | `bash install.sh` | `bash run.bat` |
+| **Windows 10/11** | `bash install.sh` (in Git Bash) | `bash run.sh` (in Git Bash) |
+| **Linux — RHEL 8/9, Ubuntu, Debian** | `bash install.sh` | `bash run.sh` |
 
-The install script extracts the pre-built binary if one is bundled in `dist/`, or builds from the vendored sources if Rust is already on the machine. On success, `run.bat` starts the web UI at **http://127.0.0.1:4317**.
+The install script extracts the pre-built binary if one is bundled in `dist/`, or builds from the vendored sources if Rust is already on the machine. On success, `run.sh` starts the web UI at **http://127.0.0.1:4317**.
 
 For air-gapped setup, CI, and Docker, see [`docs/airgap.md`](./docs/airgap.md).
 
@@ -50,7 +50,7 @@ One shared analysis core with multiple delivery surfaces:
 
 ### Path A — Pre-built binary (recommended, no Rust required)
 
-Run the install script once, then use `run.bat` to launch.
+Run the install script once, then use `run.sh` to launch.
 
 ```
 # Windows 10/11 (Git Bash) or Linux
@@ -65,8 +65,7 @@ The script tries, in order:
 
 After install, launch with:
 ```
-run.bat          # Windows — double-click or run in terminal
-bash run.bat     # Linux
+bash run.sh
 ```
 
 The web UI starts at **http://127.0.0.1:4317**.
@@ -527,11 +526,11 @@ cargo test --workspace
 │       ├── static/       # Bundled static assets (Chart.js — no CDN needed)
 │       └── src/          # Axum web server, scan registry, metrics API, badge endpoint
 ├── dist/
-│   ├── oxidesloc-windows-x64.zip        # Pre-built Windows binary (used by run.bat)
-│   ├── oxidesloc-linux-x86_64.tar.gz    # Pre-built Linux binary — static musl (used by run.bat)
+│   ├── oxidesloc-windows-x64.zip        # Pre-built Windows binary (used by run.sh)
+│   ├── oxidesloc-linux-x86_64.tar.gz    # Pre-built Linux binary — static musl (used by run.sh)
 │   └── vendor-sources.7z                # Rust crate sources for air-gapped source builds
 ├── install.sh            # Installer: bash install.sh (Windows via Git Bash, Linux)
-├── run.bat               # Cross-platform launcher: double-click on Windows, bash run.bat on Linux
+├── run.sh                # Cross-platform launcher: bash run.sh (Windows via Git Bash, Linux)
 ├── vendor.tar.xz         # Compressed crate sources (22 MB); decompressed to vendor/ by install.sh
 ├── .cargo/
 │   └── config.toml       # Tells Cargo to use vendor/ instead of crates.io

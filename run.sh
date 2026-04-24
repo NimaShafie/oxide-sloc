@@ -1,64 +1,47 @@
-:<<'_END_'
-@echo off
-setlocal
-
-set "ROOT=%~dp0"
-set "EXE=%ROOT%oxidesloc.exe"
-set "EXE_DIST=%ROOT%dist\oxidesloc.exe"
-set "EXE_BUILD=%ROOT%target\release\oxidesloc.exe"
-set "ZIP=%ROOT%dist\oxidesloc-windows-x64.zip"
-
-if exist "%EXE%"       goto :run
-if exist "%EXE_DIST%"  ( set "EXE=%EXE_DIST%"  & goto :run )
-if exist "%EXE_BUILD%" ( set "EXE=%EXE_BUILD%" & goto :run )
-
-if exist "%ZIP%" (
-    echo Extracting oxide-sloc...
-    powershell -NoProfile -Command "Expand-Archive -Path '%ZIP%' -DestinationPath '%ROOT%' -Force"
-    if exist "%EXE%" goto :run
-    echo Extraction failed. Try extracting dist\oxidesloc-windows-x64.zip manually.
-    pause
-    exit /b 1
-)
-
-echo oxide-sloc: no binary found.
-echo.
-echo   Option 1 - Download: https://github.com/NimaShafie/oxide-sloc/releases
-echo              Place oxidesloc.exe next to this script and run again.
-echo   Option 2 - Build:    cargo build --release -p oxidesloc
-echo   Option 3 - Docker:   docker compose up
-echo.
-pause
-exit /b 1
-
-:run
-start "" "%EXE%"
-exit /b 0
-_END_
-
-# ── Linux / macOS ─────────────────────────────────────────────────────────────
-# Windows: double-click run.bat  -or-  bash run.sh  (Git Bash / WSL)
-# Linux:   bash run.sh  (or: chmod +x run.sh && ./run.sh)
+#!/usr/bin/env bash
+# oxide-sloc launcher
+# Usage: bash run.sh   (Windows via Git Bash; Linux/macOS)
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-EXE="$SCRIPT_DIR/oxidesloc"
-EXE_DIST="$SCRIPT_DIR/dist/oxidesloc"
-EXE_BUILD="$SCRIPT_DIR/target/release/oxidesloc"
-BUNDLE="$SCRIPT_DIR/dist/oxidesloc-linux-x86_64.tar.gz"
+# Detect Windows (Git Bash / MSYS2 / Cygwin)
+if [[ -n "${WINDIR+x}" ]] || [[ "${OSTYPE:-}" == msys* ]] || [[ "${OSTYPE:-}" == cygwin* ]]; then
+    PLATFORM=windows
+    EXE="$SCRIPT_DIR/oxidesloc.exe"
+    EXE_DIST="$SCRIPT_DIR/dist/oxidesloc.exe"
+    EXE_BUILD="$SCRIPT_DIR/target/release/oxidesloc.exe"
+    BUNDLE="$SCRIPT_DIR/dist/oxidesloc-windows-x64.zip"
+else
+    PLATFORM=linux
+    EXE="$SCRIPT_DIR/oxidesloc"
+    EXE_DIST="$SCRIPT_DIR/dist/oxidesloc"
+    EXE_BUILD="$SCRIPT_DIR/target/release/oxidesloc"
+    BUNDLE="$SCRIPT_DIR/dist/oxidesloc-linux-x86_64.tar.gz"
+fi
 
 launch() {
-    chmod +x "$1"
+    [[ "$PLATFORM" == linux ]] && chmod +x "$1"
     printf '\n  oxide-sloc starting \xe2\x86\x92 http://127.0.0.1:4317\n  Press Ctrl+C to stop.\n\n'
     "$1"
+}
+
+extract_bundle() {
+    echo "Extracting oxide-sloc..."
+    if [[ "$PLATFORM" == windows ]]; then
+        WIN_BUNDLE="$(cygpath -w "$BUNDLE")"
+        WIN_DEST="$(cygpath -w "$SCRIPT_DIR")"
+        powershell -NoProfile -Command "Expand-Archive -Path '$WIN_BUNDLE' -DestinationPath '$WIN_DEST' -Force"
+    else
+        tar xzf "$BUNDLE" -C "$SCRIPT_DIR"
+    fi
 }
 
 if   [[ -f "$EXE" ]];       then launch "$EXE";       exit 0
 elif [[ -f "$EXE_DIST" ]];  then launch "$EXE_DIST";  exit 0
 elif [[ -f "$EXE_BUILD" ]]; then launch "$EXE_BUILD"; exit 0
 elif [[ -f "$BUNDLE" ]]; then
-    echo "Extracting oxide-sloc..."
-    tar xzf "$BUNDLE" -C "$SCRIPT_DIR"
+    extract_bundle
     if [[ -f "$EXE" ]]; then
         launch "$EXE"
         exit 0
@@ -69,7 +52,7 @@ fi
 
 printf '\noxide-sloc: no binary found.\n\n' >&2
 printf '  Option 1 - Download: https://github.com/NimaShafie/oxide-sloc/releases\n' >&2
-printf '             Place binary as "oxidesloc" next to this script, then: bash run.sh\n' >&2
+printf '             Place binary next to this script, then: bash run.sh\n' >&2
 printf '  Option 2 - Build:    cargo build --release -p oxidesloc\n' >&2
 printf '  Option 3 - Docker:   docker compose up\n\n' >&2
 exit 1

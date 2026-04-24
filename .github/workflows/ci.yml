@@ -94,18 +94,18 @@ jobs:
           prefix-key: "v2-vendor"
 
       - name: Build release binary
-        run: cargo build --release -p oxidesloc
+        run: cargo build --release -p oxide-sloc
 
       - name: Plain summary
-        run: ./target/release/oxidesloc analyze samples/basic --plain
+        run: ./target/release/oxide-sloc analyze samples/basic --plain
 
       - name: Per-file breakdown
-        run: ./target/release/oxidesloc analyze samples/basic --per-file --plain
+        run: ./target/release/oxide-sloc analyze samples/basic --per-file --plain
 
       - name: JSON + HTML reports
         run: |
           mkdir -p $OUT_DIR
-          ./target/release/oxidesloc analyze samples/basic \
+          ./target/release/oxide-sloc analyze samples/basic \
             --report-title "CI run ${{ github.run_number }}" \
             --json-out $OUT_DIR/result.json \
             --html-out $OUT_DIR/report.html
@@ -114,7 +114,7 @@ jobs:
 
       - name: Re-render from saved JSON
         run: |
-          ./target/release/oxidesloc report $OUT_DIR/result.json \
+          ./target/release/oxide-sloc report $OUT_DIR/result.json \
             --html-out $OUT_DIR/re-rendered.html
           test -s $OUT_DIR/re-rendered.html
 
@@ -122,7 +122,7 @@ jobs:
         run: |
           for policy in code-only code-and-comment comment-only separate-mixed-category; do
             echo "--- policy: $policy ---"
-            ./target/release/oxidesloc analyze samples/basic \
+            ./target/release/oxide-sloc analyze samples/basic \
               --plain --mixed-line-policy "$policy"
           done
 
@@ -131,7 +131,7 @@ jobs:
 
       - name: Web UI health check
         run: |
-          ./target/release/oxidesloc serve &
+          ./target/release/oxide-sloc serve &
           SERVER_PID=$!
           sleep 4
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:4317/)

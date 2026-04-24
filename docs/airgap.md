@@ -17,8 +17,8 @@ No internet. No package manager. No extra tools beyond what ships with the OS.
 
 The install script tries each path in order and stops at the first success:
 
-1. **Binary already present** — `oxidesloc.exe` / `oxidesloc` is next to the script → nothing to do.
-2. **Pre-built binary in `dist/`** — extracts `dist/oxidesloc-windows-x64.zip` (Windows, via built-in PowerShell) or `dist/oxidesloc-linux-x86_64.tar.gz` (Linux, via `tar`). No extra tools needed.
+1. **Binary already present** — `oxide-sloc.exe` / `oxide-sloc` is next to the script → nothing to do.
+2. **Pre-built binary in `dist/`** — extracts `dist/oxide-sloc-windows-x64.zip` (Windows, via built-in PowerShell) or `dist/oxide-sloc-linux-x86_64.tar.gz` (Linux, via `tar`). No extra tools needed.
 3. **Rust installed** — decompresses `vendor.tar.xz` (22 MB) to `vendor/` if not already present, then runs `cargo build --release --offline`. All 328 crate dependencies are in the archive; no internet access required.
 4. **Nothing works** — prints clear instructions for bundling the Rust toolchain on a networked machine and transferring it.
 

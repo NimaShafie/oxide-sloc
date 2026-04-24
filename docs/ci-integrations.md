@@ -24,8 +24,8 @@ oxide-sloc is a single self-contained binary — there are no daemon processes, 
 Every CI integration follows the same three-step pattern:
 
 ```
-1. acquire the binary  →  decompress vendor.tar.xz, install Rust, build oxidesloc
-2. run the scan        →  oxidesloc analyze ./src --json-out result.json --html-out report.html
+1. acquire the binary  →  decompress vendor.tar.xz, install Rust, build oxide-sloc
+2. run the scan        →  oxide-sloc analyze ./src --json-out result.json --html-out report.html
 3. consume outputs     →  archive, publish, or push to external tools
 ```
 
@@ -88,14 +88,14 @@ pipeline {
 
         stage('Build') {
             steps {
-                sh 'cargo build --release -p oxidesloc'
+                sh 'cargo build --release -p oxide-sloc'
             }
         }
 
         stage('Scan') {
             steps {
                 sh '''
-                    ./target/release/oxidesloc analyze ./src \
+                    ./target/release/oxide-sloc analyze ./src \
                         --json-out out/result.json \
                         --html-out out/report.html \
                         --report-title "${JOB_NAME} #${BUILD_NUMBER}"
@@ -139,7 +139,7 @@ oxide-sloc does not have a native Confluence connector, but the JSON and HTML ou
 stage('Scan') {
     steps {
         sh '''
-            ./target/release/oxidesloc analyze ./src \
+            ./target/release/oxide-sloc analyze ./src \
                 --json-out out/result.json \
                 --html-out out/report.html \
                 --report-title "SLOC report — ${BUILD_TAG}"
@@ -301,12 +301,12 @@ Two workflows ship in `.github/workflows/`:
 - name: Decompress vendor sources
   run: tar -xJf vendor.tar.xz
 
-- name: Install oxidesloc
+- name: Install oxide-sloc
   run: cargo install --path crates/sloc-cli
 
 - name: Run SLOC scan
   run: |
-    oxidesloc analyze ./src \
+    oxide-sloc analyze ./src \
       --json-out out/result.json \
       --html-out out/report.html \
       --report-title "SLOC — ${{ github.ref_name }}"
@@ -337,7 +337,7 @@ Two workflows ship in `.github/workflows/`:
   env:
     SLOC_WEBHOOK_URL: ${{ secrets.SLOC_WEBHOOK_URL }}
   run: |
-    oxidesloc send out/result.json \
+    oxide-sloc send out/result.json \
       --webhook-url "$SLOC_WEBHOOK_URL"
 ```
 
@@ -362,7 +362,7 @@ sloc-scan:
     - tar -xJf vendor.tar.xz
     - cargo install --path crates/sloc-cli
     - |
-      oxidesloc analyze ./src \
+      oxide-sloc analyze ./src \
         --json-out out/result.json \
         --html-out out/report.html \
         --report-title "SLOC — $CI_PIPELINE_ID"
@@ -418,7 +418,7 @@ Store credentials in **Settings → CI/CD → Variables** as `CONFLUENCE_USER` a
 These are the flags most commonly used in CI pipelines:
 
 ```bash
-oxidesloc analyze ./src \
+oxide-sloc analyze ./src \
   --json-out out/result.json \       # machine-readable output for tooling
   --html-out out/report.html \       # self-contained HTML report
   --pdf-out  out/report.pdf \        # PDF (requires Chromium on PATH)
@@ -430,12 +430,12 @@ oxidesloc analyze ./src \
   --plain                            # machine-friendly terminal output
 
 # Re-render a stored JSON without re-scanning
-oxidesloc report out/result.json \
+oxide-sloc report out/result.json \
   --html-out out/report-v2.html \
   --pdf-out  out/report-v2.pdf
 
 # Send results via webhook
-oxidesloc send out/result.json \
+oxide-sloc send out/result.json \
   --webhook-url "https://hooks.slack.com/services/..."
 ```
 

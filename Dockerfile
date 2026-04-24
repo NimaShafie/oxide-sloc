@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY . .
-RUN cargo build --release -p oxidesloc
+RUN cargo build --release -p oxide-sloc
 
 # Stage 2: minimal runtime image
 FROM debian:bookworm-slim
@@ -18,12 +18,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/oxidesloc /usr/local/bin/oxidesloc
+COPY --from=builder /app/target/release/oxide-sloc /usr/local/bin/oxide-sloc
 
 # Point oxide-sloc at the system Chromium
 ENV SLOC_BROWSER=/usr/bin/chromium
 
 EXPOSE 4317
 
-ENTRYPOINT ["oxidesloc"]
+ENTRYPOINT ["oxide-sloc"]
 CMD ["serve"]

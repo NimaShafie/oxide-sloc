@@ -1,8 +1,8 @@
 # oxide-sloc CI configuration — default / balanced
 #
 # Equivalent to running the web UI with all defaults.
-# Use with: oxidesloc analyze ./src --config ci/sloc-ci-default.toml
-#           oxidesloc analyze ./src --config ci/sloc-ci-default.toml \
+# Use with: oxide-sloc analyze ./src --config ci/sloc-ci-default.toml
+#           oxide-sloc analyze ./src --config ci/sloc-ci-default.toml \
 #               --json-out out/result.json --html-out out/report.html
 
 [discovery]

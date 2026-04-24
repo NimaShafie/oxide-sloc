@@ -123,7 +123,7 @@ pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
         .as_millis();
 
     let profile_dir =
-        std::env::temp_dir().join(format!("oxidesloc-pdf-{}-{}", std::process::id(), nonce));
+        std::env::temp_dir().join(format!("oxide-sloc-pdf-{}-{}", std::process::id(), nonce));
 
     fs::create_dir_all(&profile_dir).with_context(|| {
         format!(
@@ -151,7 +151,6 @@ pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--allow-file-access-from-files",
-                "--allow-running-insecure-content",
                 "--disable-default-apps",
                 "--hide-scrollbars",
                 "--mute-audio",
@@ -1143,7 +1142,7 @@ struct WarningOpportunityRow {
   <script>
     (function () {
       var body = document.body;
-      var storageKey = 'oxidesloc-theme';
+      var storageKey = 'oxide-sloc-theme';
       var themeToggle = document.querySelector('[data-theme-toggle]');
       var copyLinkButtons = Array.prototype.slice.call(document.querySelectorAll('[data-copy-link]'));
       var shareButtons = Array.prototype.slice.call(document.querySelectorAll('[data-share-report]'));

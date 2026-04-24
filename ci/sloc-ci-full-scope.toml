@@ -2,7 +2,7 @@
 #
 # Counts everything: lockfiles, vendored code, generated files.
 # Use for audits or repository-footprint reporting.
-# Use with: oxidesloc analyze . --config ci/sloc-ci-full-scope.toml
+# Use with: oxide-sloc analyze . --config ci/sloc-ci-full-scope.toml
 
 [discovery]
 honor_ignore_files    = false

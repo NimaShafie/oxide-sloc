@@ -19,22 +19,22 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             artifact: oxide-sloc-linux-x86_64
-            binary: oxidesloc
+            binary: oxide-sloc
 
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: oxide-sloc-windows-x86_64.exe
-            binary: oxidesloc.exe
+            binary: oxide-sloc.exe
 
           - os: macos-13
             target: x86_64-apple-darwin
             artifact: oxide-sloc-macos-x86_64
-            binary: oxidesloc
+            binary: oxide-sloc
 
           - os: macos-14
             target: aarch64-apple-darwin
             artifact: oxide-sloc-macos-arm64
-            binary: oxidesloc
+            binary: oxide-sloc
 
     steps:
       - uses: actions/checkout@v4
@@ -57,7 +57,7 @@ jobs:
         run: rustup target add ${{ matrix.target }}
 
       - name: Build release binary
-        run: cargo build --release -p oxidesloc --target ${{ matrix.target }}
+        run: cargo build --release -p oxide-sloc --target ${{ matrix.target }}
 
       - name: Rename binary
         shell: bash
@@ -119,8 +119,8 @@ jobs:
             ```bash
             # Linux / macOS — make executable and move to PATH
             chmod +x oxide-sloc-linux-x86_64
-            mv oxide-sloc-linux-x86_64 /usr/local/bin/oxidesloc
+            mv oxide-sloc-linux-x86_64 /usr/local/bin/oxide-sloc
 
             # Windows — rename and add to PATH
-            ren oxide-sloc-windows-x86_64.exe oxidesloc.exe
+            ren oxide-sloc-windows-x86_64.exe oxide-sloc.exe
             ```

@@ -8,16 +8,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Detect Windows (Git Bash / MSYS2 / Cygwin)
 if [[ -n "${WINDIR+x}" ]] || [[ "${OSTYPE:-}" == msys* ]] || [[ "${OSTYPE:-}" == cygwin* ]]; then
     PLATFORM=windows
-    EXE="$SCRIPT_DIR/oxidesloc.exe"
-    EXE_DIST="$SCRIPT_DIR/dist/oxidesloc.exe"
-    EXE_BUILD="$SCRIPT_DIR/target/release/oxidesloc.exe"
-    BUNDLE="$SCRIPT_DIR/dist/oxidesloc-windows-x64.zip"
+    EXE="$SCRIPT_DIR/oxide-sloc.exe"
+    EXE_DIST="$SCRIPT_DIR/dist/oxide-sloc.exe"
+    EXE_BUILD="$SCRIPT_DIR/target/release/oxide-sloc.exe"
+    BUNDLE="$SCRIPT_DIR/dist/oxide-sloc-windows-x64.zip"
 else
     PLATFORM=linux
-    EXE="$SCRIPT_DIR/oxidesloc"
-    EXE_DIST="$SCRIPT_DIR/dist/oxidesloc"
-    EXE_BUILD="$SCRIPT_DIR/target/release/oxidesloc"
-    BUNDLE="$SCRIPT_DIR/dist/oxidesloc-linux-x86_64.tar.gz"
+    EXE="$SCRIPT_DIR/oxide-sloc"
+    EXE_DIST="$SCRIPT_DIR/dist/oxide-sloc"
+    EXE_BUILD="$SCRIPT_DIR/target/release/oxide-sloc"
+    BUNDLE="$SCRIPT_DIR/dist/oxide-sloc-linux-x86_64.tar.gz"
 fi
 
 launch() {
@@ -53,6 +53,6 @@ fi
 printf '\noxide-sloc: no binary found.\n\n' >&2
 printf '  Option 1 - Download: https://github.com/NimaShafie/oxide-sloc/releases\n' >&2
 printf '             Place binary next to this script, then: bash run.sh\n' >&2
-printf '  Option 2 - Build:    cargo build --release -p oxidesloc\n' >&2
+printf '  Option 2 - Build:    cargo build --release -p oxide-sloc\n' >&2
 printf '  Option 3 - Docker:   docker compose up\n\n' >&2
 exit 1

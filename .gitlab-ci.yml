@@ -71,10 +71,10 @@ test:
 build:
   stage: build
   script:
-    - cargo build --release -p oxidesloc
+    - cargo build --release -p oxide-sloc
   artifacts:
     paths:
-      - target/release/oxidesloc
+      - target/release/oxide-sloc
     expire_in: 1 hour
 
 # ── CLI smoke tests ───────────────────────────────────────────────────────────
@@ -91,13 +91,13 @@ smoke:plain:
   stage: smoke
   needs: [build]
   script:
-    - ./target/release/oxidesloc analyze samples/basic --plain
+    - ./target/release/oxide-sloc analyze samples/basic --plain
 
 smoke:per-file:
   stage: smoke
   needs: [build]
   script:
-    - ./target/release/oxidesloc analyze samples/basic --per-file --plain
+    - ./target/release/oxide-sloc analyze samples/basic --per-file --plain
 
 smoke:reports:
   stage: smoke
@@ -105,7 +105,7 @@ smoke:reports:
   script:
     - mkdir -p "${OUT_DIR}"
     - |
-      ./target/release/oxidesloc analyze samples/basic \
+      ./target/release/oxide-sloc analyze samples/basic \
         --report-title "GitLab CI run ${CI_PIPELINE_IID}" \
         --json-out "${OUT_DIR}/result.json" \
         --html-out "${OUT_DIR}/report.html"
@@ -122,7 +122,7 @@ smoke:re-render:
   needs: [smoke:reports]
   script:
     - |
-      ./target/release/oxidesloc report "${OUT_DIR}/result.json" \
+      ./target/release/oxide-sloc report "${OUT_DIR}/result.json" \
         --html-out "${OUT_DIR}/re-rendered.html"
     - test -s "${OUT_DIR}/re-rendered.html"
 
@@ -133,7 +133,7 @@ smoke:policies:
     - |
       for policy in code-only code-and-comment comment-only separate-mixed-category; do
         echo "--- policy: $policy ---"
-        ./target/release/oxidesloc analyze samples/basic \
+        ./target/release/oxide-sloc analyze samples/basic \
           --plain --mixed-line-policy "$policy"
       done
 
@@ -141,7 +141,7 @@ smoke:web-ui:
   stage: smoke
   needs: [build]
   script:
-    - ./target/release/oxidesloc serve &
+    - ./target/release/oxide-sloc serve &
     - SERVER_PID=$!
     - sleep 4
     - HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:4317/ || echo "000")
@@ -158,6 +158,6 @@ archive:
     - echo "Artifacts already uploaded by smoke:reports job."
   artifacts:
     paths:
-      - target/release/oxidesloc
+      - target/release/oxide-sloc
       - ci-out/
     expire_in: 30 days

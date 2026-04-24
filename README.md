@@ -26,7 +26,7 @@ For air-gapped setup, CI, and Docker, see [`docs/airgap.md`](./docs/airgap.md).
 
 One shared analysis core with multiple delivery surfaces:
 
-- **CLI** — `oxidesloc analyze / report / serve` with a full flag set
+- **CLI** — `oxide-sloc analyze / report / serve` with a full flag set
 - **Quick Scan** — one-click scan from the web UI with zero configuration
 - **Localhost web UI** — guided 4-step flow with light/dark theme, auto browser-open
 - **Rich HTML reports** — per-file breakdown, language summaries, warning analysis, high-value support opportunities
@@ -59,7 +59,7 @@ bash install.sh
 
 The script tries, in order:
 1. Pre-built binary already present → skip
-2. `dist/oxidesloc-windows-x64.zip` (Windows) or `dist/oxidesloc-linux-x86_64.tar.gz` (Linux) → extract
+2. `dist/oxide-sloc-windows-x64.zip` (Windows) or `dist/oxide-sloc-linux-x86_64.tar.gz` (Linux) → extract
 3. Rust present → decompress `vendor.tar.xz` to `vendor/` if needed, build offline
 4. None of the above → prints instructions for bundling the Rust toolchain on air-gapped machines
 
@@ -104,41 +104,41 @@ For air-gapped setup, Jenkins, GitLab CI, and Rust toolchain bundling, see [`doc
 
 ```bash
 # Analyze a directory — print summary to terminal
-oxidesloc analyze ./my-repo --plain
+oxide-sloc analyze ./my-repo --plain
 
 # Full output: JSON + HTML report
-oxidesloc analyze ./my-repo \
+oxide-sloc analyze ./my-repo \
   --json-out result.json \
   --html-out result.html
 
 # Per-file breakdown
-oxidesloc analyze ./my-repo --per-file --plain
+oxide-sloc analyze ./my-repo --per-file --plain
 
 # Apply a specific counting policy
-oxidesloc analyze ./my-repo --mixed-line-policy separate-mixed-category --plain
+oxide-sloc analyze ./my-repo --mixed-line-policy separate-mixed-category --plain
 
 # Include/exclude file patterns
-oxidesloc analyze ./my-repo \
+oxide-sloc analyze ./my-repo \
   --include-glob "src/**" \
   --exclude-glob "vendor/**" \
   --plain
 
 # Custom report title
-oxidesloc analyze ./my-repo \
+oxide-sloc analyze ./my-repo \
   --report-title "Q2 Code Review" \
   --html-out report.html
 
 # Scan a super-repository — detect git submodules and report each separately
-oxidesloc analyze ./mono-repo \
+oxide-sloc analyze ./mono-repo \
   --submodule-breakdown \
   --json-out result.json \
   --html-out report.html
 
 # Re-render a report from a saved JSON (change format without re-scanning)
-oxidesloc report result.json --html-out report.html --pdf-out report.pdf
+oxide-sloc report result.json --html-out report.html --pdf-out report.pdf
 
 # Start the web UI (auto-opens browser)
-oxidesloc serve
+oxide-sloc serve
 ```
 
 ### CLI flags reference
@@ -161,7 +161,7 @@ oxidesloc serve
 ### Web UI
 
 ```bash
-oxidesloc serve
+oxide-sloc serve
 # → http://127.0.0.1:4317  (opens automatically)
 ```
 
@@ -188,7 +188,7 @@ Copy the example config and edit it:
 cp sloc.example.toml sloc.toml
 ```
 
-CLI flags always override config file values. Run `oxidesloc --help` for the full flag list.
+CLI flags always override config file values. Run `oxide-sloc --help` for the full flag list.
 
 ---
 
@@ -252,7 +252,7 @@ If browser discovery fails, set the path manually:
 
 ```bash
 export SLOC_BROWSER=/usr/bin/chromium
-oxidesloc report result.json --pdf-out result.pdf
+oxide-sloc report result.json --pdf-out result.pdf
 ```
 
 PDF downloads are named `<report-title>.pdf` rather than a generic filename.
@@ -282,7 +282,7 @@ Projects that use **git submodules** (a "super-repository" with dozens of nested
 ### CLI usage
 
 ```bash
-oxidesloc analyze ./mono-repo \
+oxide-sloc analyze ./mono-repo \
   --submodule-breakdown \
   --json-out out/result.json \
   --html-out out/report.html
@@ -349,7 +349,7 @@ The `/embed/summary` endpoint returns a self-contained HTML snippet suitable for
 
 ## CI/CD
 
-oxide-sloc ships ready-to-use pipeline files for Jenkins, GitHub Actions, and GitLab CI. No plugins or integrations are required — the `oxidesloc` binary is the only dependency beyond a standard Rust toolchain.
+oxide-sloc ships ready-to-use pipeline files for Jenkins, GitHub Actions, and GitLab CI. No plugins or integrations are required — the `oxide-sloc` binary is the only dependency beyond a standard Rust toolchain.
 
 For detailed setup guides including Confluence publishing, see [`docs/ci-integrations.md`](./docs/ci-integrations.md).
 
@@ -359,18 +359,18 @@ Every web UI option maps 1:1 to a CLI flag, making it straightforward to reprodu
 
 | Web UI step | CLI equivalent |
 |---|---|
-| Step 1: select project folder | `oxidesloc analyze ./my-repo` |
+| Step 1: select project folder | `oxide-sloc analyze ./my-repo` |
 | Step 1: include pattern | `--include-glob "src/**"` |
 | Step 1: exclude pattern | `--exclude-glob "vendor/**"` |
 | Step 1: submodule breakdown | `--submodule-breakdown` |
-| Quick Scan button | `oxidesloc analyze ./my-repo --plain` |
+| Quick Scan button | `oxide-sloc analyze ./my-repo --plain` |
 | Step 2: mixed-line policy | `--mixed-line-policy code-only` |
 | Step 2: Python docstrings as code | `--python-docstrings-as-code` |
 | Step 3: JSON output | `--json-out result.json` |
 | Step 3: HTML output | `--html-out report.html` |
 | Step 3: PDF output | `--pdf-out report.pdf` |
 | Step 3: custom title | `--report-title "My Report"` |
-| Re-render from saved JSON | `oxidesloc report result.json --html-out report.html` |
+| Re-render from saved JSON | `oxide-sloc report result.json --html-out report.html` |
 | Custom config file | `--config ci/sloc-ci-default.toml` |
 
 ### CI config presets
@@ -385,7 +385,7 @@ The `ci/` directory contains ready-to-use `sloc.toml` files for common pipeline 
 
 ```bash
 # Use a preset in any pipeline stage
-oxidesloc analyze ./src --config ci/sloc-ci-strict.toml \
+oxide-sloc analyze ./src --config ci/sloc-ci-strict.toml \
   --json-out out/result.json \
   --html-out out/report.html
 ```
@@ -478,7 +478,7 @@ make dev          # fmt + lint + test + serve
 make fmt          # cargo fmt --all
 make lint         # cargo clippy -D warnings
 make test         # cargo test --workspace
-make build        # release binary → target/release/oxidesloc
+make build        # release binary → target/release/oxide-sloc
 make serve        # start web UI on http://127.0.0.1:4317
 make analyze DIR=./my-repo   # CLI analyze
 
@@ -494,7 +494,7 @@ make clean        # cargo clean
 cargo fmt --all
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
-cargo run -p oxidesloc -- serve
+cargo run -p oxide-sloc -- serve
 ```
 
 ### Formatting
@@ -526,8 +526,8 @@ cargo test --workspace
 │       ├── static/       # Bundled static assets (Chart.js — no CDN needed)
 │       └── src/          # Axum web server, scan registry, metrics API, badge endpoint
 ├── dist/
-│   ├── oxidesloc-windows-x64.zip        # Pre-built Windows binary (used by run.sh)
-│   └── oxidesloc-linux-x86_64.tar.gz    # Pre-built Linux binary — static musl (used by run.sh)
+│   ├── oxide-sloc-windows-x64.zip        # Pre-built Windows binary (used by run.sh)
+│   └── oxide-sloc-linux-x86_64.tar.gz    # Pre-built Linux binary — static musl (used by run.sh)
 ├── install.sh            # Installer: bash install.sh (Windows via Git Bash, Linux)
 ├── run.sh                # Cross-platform launcher: bash run.sh (Windows via Git Bash, Linux)
 ├── vendor.tar.xz         # Compressed crate sources (22 MB); decompressed to vendor/ by install.sh
@@ -577,7 +577,7 @@ By default oxide-sloc binds to `127.0.0.1:4317` (localhost only). It can be depl
 
 ```bash
 # Bind to all interfaces (or use a specific LAN IP)
-oxidesloc serve --bind 0.0.0.0:4317
+oxide-sloc serve --bind 0.0.0.0:4317
 ```
 
 Or set it in `sloc.toml`:
@@ -593,7 +593,7 @@ Set `SLOC_API_KEY` in the server environment. When set, every request must carry
 
 ```bash
 export SLOC_API_KEY="$(openssl rand -hex 32)"
-oxidesloc serve --bind 0.0.0.0:4317
+oxide-sloc serve --bind 0.0.0.0:4317
 ```
 
 **Step 3 — terminate TLS at a reverse proxy**

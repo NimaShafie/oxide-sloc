@@ -8,14 +8,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Detect Windows (Git Bash / MSYS2 / Cygwin)
 if [[ -n "${WINDIR+x}" ]] || [[ "${OSTYPE:-}" == msys* ]] || [[ "${OSTYPE:-}" == cygwin* ]]; then
     PLATFORM=windows
-    EXE="$SCRIPT_DIR/oxidesloc.exe"
-    DIST_ARCHIVE="$SCRIPT_DIR/dist/oxidesloc-windows-x64.zip"
-    BUILD_OUTPUT="$SCRIPT_DIR/target/release/oxidesloc.exe"
+    EXE="$SCRIPT_DIR/oxide-sloc.exe"
+    DIST_ARCHIVE="$SCRIPT_DIR/dist/oxide-sloc-windows-x64.zip"
+    BUILD_OUTPUT="$SCRIPT_DIR/target/release/oxide-sloc.exe"
 else
     PLATFORM=linux
-    EXE="$SCRIPT_DIR/oxidesloc"
-    DIST_ARCHIVE="$SCRIPT_DIR/dist/oxidesloc-linux-x86_64.tar.gz"
-    BUILD_OUTPUT="$SCRIPT_DIR/target/release/oxidesloc"
+    EXE="$SCRIPT_DIR/oxide-sloc"
+    DIST_ARCHIVE="$SCRIPT_DIR/dist/oxide-sloc-linux-x86_64.tar.gz"
+    BUILD_OUTPUT="$SCRIPT_DIR/target/release/oxide-sloc"
 fi
 
 VENDOR_ARCHIVE="$SCRIPT_DIR/vendor.tar.xz"
@@ -68,7 +68,7 @@ if command -v cargo &>/dev/null; then
 
     echo " Rust found. Building from vendored sources (this may take a few minutes)..."
     cd "$SCRIPT_DIR"
-    cargo build --release --offline -p oxidesloc
+    cargo build --release --offline -p oxide-sloc
 
     if [[ -f "$BUILD_OUTPUT" ]]; then
         cp "$BUILD_OUTPUT" "$EXE"

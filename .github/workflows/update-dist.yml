@@ -23,13 +23,13 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            binary: oxidesloc
-            bundle: oxidesloc-linux-x86_64.tar.gz
+            binary: oxide-sloc
+            bundle: oxide-sloc-linux-x86_64.tar.gz
 
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            binary: oxidesloc.exe
-            bundle: oxidesloc-windows-x64.zip
+            binary: oxide-sloc.exe
+            bundle: oxide-sloc-windows-x64.zip
 
     steps:
       - uses: actions/checkout@v4
@@ -52,20 +52,20 @@ jobs:
         run: rustup target add ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release -p oxidesloc --target ${{ matrix.target }}
+        run: cargo build --release -p oxide-sloc --target ${{ matrix.target }}
 
       - name: Package — Linux tar.gz
         if: runner.os == 'Linux'
         run: |
-          cp target/${{ matrix.target }}/release/oxidesloc /tmp/oxidesloc
-          tar czf ${{ matrix.bundle }} -C /tmp oxidesloc
+          cp target/${{ matrix.target }}/release/oxide-sloc /tmp/oxide-sloc
+          tar czf ${{ matrix.bundle }} -C /tmp oxide-sloc
 
       - name: Package — Windows zip
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Copy-Item "target\${{ matrix.target }}\release\oxidesloc.exe" "oxidesloc.exe"
-          Compress-Archive -Path oxidesloc.exe -DestinationPath ${{ matrix.bundle }} -Force
+          Copy-Item "target\${{ matrix.target }}\release\oxide-sloc.exe" "oxide-sloc.exe"
+          Compress-Archive -Path oxide-sloc.exe -DestinationPath ${{ matrix.bundle }} -Force
 
       - name: Upload bundle
         uses: actions/upload-artifact@v4
@@ -86,20 +86,20 @@ jobs:
       - name: Download Linux bundle
         uses: actions/download-artifact@v4
         with:
-          name: oxidesloc-linux-x86_64.tar.gz
+          name: oxide-sloc-linux-x86_64.tar.gz
           path: dist/
 
       - name: Download Windows bundle
         uses: actions/download-artifact@v4
         with:
-          name: oxidesloc-windows-x64.zip
+          name: oxide-sloc-windows-x64.zip
           path: dist/
 
       - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add dist/oxidesloc-linux-x86_64.tar.gz dist/oxidesloc-windows-x64.zip
+          git add dist/oxide-sloc-linux-x86_64.tar.gz dist/oxide-sloc-windows-x64.zip
           git diff --cached --quiet && echo "dist already up to date" && exit 0
           git commit -m "chore: refresh dist bundles [skip ci]"
           git push origin HEAD:main

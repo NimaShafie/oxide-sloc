@@ -1,5 +1,5 @@
 services:
-  oxidesloc:
+  oxide-sloc:
     build: .
     image: oxide-sloc
     ports:
@@ -9,7 +9,7 @@ services:
       - RUST_LOG=info
     volumes:
       # Mount a host directory to analyze it via the web UI or CLI.
-      # Example: docker compose run oxidesloc analyze /repo --plain
+      # Example: docker compose run oxide-sloc analyze /repo --plain
       - type: bind
         source: ${SLOC_TARGET:-./tmp-sloc}
         target: /repo

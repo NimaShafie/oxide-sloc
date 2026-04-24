@@ -17,7 +17,7 @@ use sloc_core::{analyze, read_json, write_json, AnalysisRun};
 use sloc_report::{render_html, write_html, write_pdf_from_html};
 
 #[derive(Debug, Parser)]
-#[command(name = "oxidesloc", version)]
+#[command(name = "oxide-sloc", version)]
 #[command(about = "Cross-platform source line analysis tool")]
 #[command(
     long_about = "Cross-platform source line analysis tool.\n\nRun without arguments to start the web UI on http://127.0.0.1:4317."

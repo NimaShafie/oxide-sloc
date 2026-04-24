@@ -14,7 +14,7 @@ help:
 	@echo "    make analyze DIR=.  analyze a directory from the CLI"
 	@echo ""
 	@echo "  Build & Package"
-	@echo "    make build          release binary → target/release/oxidesloc"
+	@echo "    make build          release binary → target/release/oxide-sloc"
 	@echo "    make bundle         create transferable oxide-sloc-bundle.tar.gz (excludes target/ and .git/)"
 	@echo "    make clean          cargo clean"
 	@echo ""
@@ -39,14 +39,14 @@ test:
 	cargo test --workspace
 
 build:
-	cargo build --release -p oxidesloc
+	cargo build --release -p oxide-sloc
 
 serve:
-	cargo run -p oxidesloc -- serve
+	cargo run -p oxide-sloc -- serve
 
 # Usage: make analyze DIR=./my-repo
 analyze:
-	cargo run -p oxidesloc -- analyze $(DIR) --plain
+	cargo run -p oxide-sloc -- analyze $(DIR) --plain
 
 bundle:
 	@echo "Creating oxide-sloc-bundle.tar.gz (excludes target/, .git/, uncompressed vendor/) ..."

@@ -2,7 +2,7 @@
 #
 # Fails the pipeline if binary files are found in source paths.
 # Good for enforcing clean source trees in automated review gates.
-# Use with: oxidesloc analyze ./src --config ci/sloc-ci-strict.toml
+# Use with: oxide-sloc analyze ./src --config ci/sloc-ci-strict.toml
 
 [discovery]
 honor_ignore_files    = true

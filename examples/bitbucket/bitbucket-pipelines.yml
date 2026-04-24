@@ -1,7 +1,7 @@
 # oxide-sloc Bitbucket Pipelines integration
 #
 # What this does:
-#   1. Installs oxidesloc from source (or a pre-built artifact).
+#   1. Installs oxide-sloc from source (or a pre-built artifact).
 #   2. Runs analysis and produces JSON + HTML reports.
 #   3. Posts results to Bitbucket Code Insights (native quality gate UI).
 #   4. Uploads the HTML report as a downloadable artifact.
@@ -29,14 +29,14 @@ definitions:
 pipelines:
   default:
     - step:
-        name: Build oxidesloc
+        name: Build oxide-sloc
         caches:
           - cargo-registry
           - cargo-git
         artifacts:
-          - target/release/oxidesloc
+          - target/release/oxide-sloc
         script:
-          - cargo build --release --bin oxidesloc
+          - cargo build --release --bin oxide-sloc
 
     - step:
         name: Analyze & report
@@ -44,7 +44,7 @@ pipelines:
           - .sloc-out/**
         script:
           - mkdir -p .sloc-out
-          - ./target/release/oxidesloc analyze . \
+          - ./target/release/oxide-sloc analyze . \
               --json-out .sloc-out/result.json \
               --html-out .sloc-out/report.html
 
@@ -82,7 +82,7 @@ pipelines:
                   {\"title\": \"Code ratio\",     \"type\": \"PERCENTAGE\", \"value\": ${RATIO}}
                 ]
               }" \
-              "${API}/oxidesloc-sloc"
+              "${API}/oxide-sloc-sloc"
 
             echo "Code Insights report posted for commit ${COMMIT}."
 
@@ -156,9 +156,9 @@ ${LANG_TABLE}\\n\\n\
           artifacts:
             - .sloc-out/**
           script:
-            - cargo build --release --bin oxidesloc
+            - cargo build --release --bin oxide-sloc
             - mkdir -p .sloc-out
-            - ./target/release/oxidesloc analyze . \
+            - ./target/release/oxide-sloc analyze . \
                 --json-out .sloc-out/result.json \
                 --html-out .sloc-out/report.html
             - echo "Artifact URLs available at the pipeline build page."

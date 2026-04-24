@@ -32,6 +32,7 @@ use sloc_core::{
     ScanSummarySnapshot, SummaryTotals,
 };
 use sloc_report::{render_html, render_sub_report_html, write_pdf_from_html};
+const MAX_CONCURRENT_ANALYSES: usize = 4;
 
 #[derive(Clone)]
 struct AppState {
@@ -39,6 +40,7 @@ struct AppState {
     artifacts: Arc<Mutex<HashMap<String, RunArtifacts>>>,
     registry: Arc<Mutex<ScanRegistry>>,
     registry_path: PathBuf,
+    analyze_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 type PendingPdf = Option<(PathBuf, PathBuf, bool)>;
@@ -71,8 +73,6 @@ async fn security_headers_middleware(request: Request, next: Next) -> Response {
         header::REFERRER_POLICY,
         axum::http::HeaderValue::from_static("no-referrer"),
     );
-    // Strict CSP: all resources must be same-origin; inline styles/scripts allowed because
-    // all templates are fully inline (no external CDN calls).
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
         axum::http::HeaderValue::from_static(
@@ -89,21 +89,20 @@ async fn security_headers_middleware(request: Request, next: Next) -> Response {
     response
 }
 
-/// Constant-time byte-slice equality — prevents timing side-channels when comparing secrets.
 fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
+    let len_diff: u8 = if a.len() == b.len() { 0 } else { 1 };
+    let mut acc: u8 = len_diff;
+    let max_len = a.len().max(b.len());
+    for i in 0..max_len {
+        // Pad the shorter slice with 0xff so equal padding cannot produce a
+        // false positive even if the actual bytes happen to match the padding.
+        let x = a.get(i).copied().unwrap_or(0xff);
+        let y = b.get(i).copied().unwrap_or(0xff);
+        acc |= x ^ y;
     }
-    let mut diff: u8 = 0;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
+    acc == 0
 }
 
-/// Rejects requests when `SLOC_API_KEY` is set and the `X-API-Key` header does not match.
-/// The comparison is constant-time to prevent timing-based key extraction.
-/// When the env var is absent the middleware is a no-op (localhost default mode).
 async fn api_key_middleware(request: Request, next: Next) -> Response {
     if let Ok(expected) = std::env::var("SLOC_API_KEY") {
         let provided = request
@@ -134,9 +133,9 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         artifacts: Arc::new(Mutex::new(HashMap::new())),
         registry: Arc::new(Mutex::new(registry)),
         registry_path,
+        analyze_semaphore: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_ANALYSES)),
     };
 
-    // Protected routes require API key when SLOC_API_KEY is set.
     let protected = Router::new()
         .route("/", get(splash))
         .route("/scan", get(index))
@@ -157,15 +156,11 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         .route("/embed/summary", get(embed_handler))
         .layer(middleware::from_fn(api_key_middleware));
 
-    // /healthz, /badge, and /static are always accessible (no auth).
-    // /static serves bundled assets so the tool works fully offline (air-gapped).
     let app = protected
         .route("/healthz", get(healthz))
         .route("/badge/:metric", get(badge_handler))
         .route("/static/chart.js", get(chart_js_handler))
-        // Limit form/body size to 10 MB — analysis paths are short strings, no uploads expected
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
-        // Apply security response headers to every route.
         .layer(middleware::from_fn(security_headers_middleware))
         .with_state(state);
 
@@ -336,15 +331,23 @@ async fn locate_report_handler(
     State(state): State<AppState>,
     Form(form): Form<LocateReportForm>,
 ) -> impl IntoResponse {
-    let html_path = PathBuf::from(&form.file_path);
-    let parent = match html_path.parent() {
-        Some(p) if html_path.exists() => p.to_path_buf(),
-        _ => {
+    let html_path = match fs::canonicalize(PathBuf::from(&form.file_path)) {
+        Ok(p) => p,
+        Err(_) => {
             let html = ErrorTemplate {
-                message: format!(
-                    "Report file not found or path is invalid:\n  {}",
-                    form.file_path
-                ),
+                message: "Report file not found or path is invalid.".to_string(),
+                last_report_url: Some("/history".to_string()),
+            }
+            .render()
+            .unwrap_or_else(|_| "<pre>Invalid path.</pre>".to_string());
+            return Html(html).into_response();
+        }
+    };
+    let parent = match html_path.parent() {
+        Some(p) => p.to_path_buf(),
+        None => {
+            let html = ErrorTemplate {
+                message: "Report file has no parent directory.".to_string(),
                 last_report_url: Some("/history".to_string()),
             }
             .render()
@@ -433,8 +436,6 @@ async fn open_path_handler(Query(query): Query<OpenPathQuery>) -> impl IntoRespo
         _ => return (StatusCode::BAD_REQUEST, "missing path").into_response(),
     };
 
-    // Canonicalize before use: rejects non-existent paths, resolves symlinks and
-    // `..` components so no traversal is possible regardless of the caller's input.
     let canonical = match fs::canonicalize(raw) {
         Ok(p) => p,
         Err(_) => return (StatusCode::BAD_REQUEST, "path not found").into_response(),
@@ -533,6 +534,27 @@ async fn analyze_handler(
     State(state): State<AppState>,
     Form(form): Form<AnalyzeForm>,
 ) -> impl IntoResponse {
+    let _permit = match Arc::clone(&state.analyze_semaphore).try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            let template = ErrorTemplate {
+                message:
+                    "Server is busy — too many concurrent analyses. Please try again in a moment."
+                        .to_string(),
+                last_report_url: None,
+            };
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Html(
+                    template
+                        .render()
+                        .unwrap_or_else(|_| "<pre>Server busy.</pre>".to_string()),
+                ),
+            )
+                .into_response();
+        }
+    };
+
     let mut config = state.base_config.clone();
     config.discovery.root_paths = vec![resolve_input_path(&form.path)];
 
@@ -1055,12 +1077,15 @@ async fn artifact_handler(
                     }
                 }
                 Err(err) => {
+                    let filename = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "report.html".to_string());
                     let msg = format!(
-                        "HTML report could not be read from the expected path:\n  {}\n\n\
+                        "HTML report '{filename}' could not be read.\n\n\
                          Error: {err}\n\n\
                          If you moved or renamed the output folder, the stored path is now stale. \
-                         Use 'Open HTML folder' from the results page to browse the output directory.",
-                        path.display()
+                         Use 'Open HTML folder' from the results page to browse the output directory."
                     );
                     let html = ErrorTemplate {
                         message: msg,
@@ -1122,12 +1147,15 @@ async fn artifact_handler(
                     }
                 }
                 Err(err) => {
+                    let filename = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "report.pdf".to_string());
                     let msg = format!(
-                        "PDF report could not be read from the expected path:\n  {}\n\n\
+                        "PDF report '{filename}' could not be read.\n\n\
                          Error: {err}\n\n\
                          If you moved or renamed the output folder, the stored path is now stale. \
-                         Use 'Open PDF folder' from the results page to browse the output directory.",
-                        path.display()
+                         Use 'Open PDF folder' from the results page to browse the output directory."
                     );
                     let html = ErrorTemplate {
                         message: msg,
@@ -1176,12 +1204,15 @@ async fn artifact_handler(
                     }
                 }
                 Err(err) => {
+                    let filename = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "result.json".to_string());
                     let msg = format!(
-                        "JSON result could not be read from the expected path:\n  {}\n\n\
+                        "JSON result '{filename}' could not be read.\n\n\
                          Error: {err}\n\n\
                          If you moved or renamed the output folder, the stored path is now stale. \
-                         Use 'Open JSON folder' from the results page to browse the output directory.",
-                        path.display()
+                         Use 'Open JSON folder' from the results page to browse the output directory."
                     );
                     let html = ErrorTemplate {
                         message: msg,
@@ -2155,7 +2186,7 @@ fn resolve_input_path(raw: &str) -> PathBuf {
     }
 
     let candidate = PathBuf::from(trimmed);
-    if candidate.is_absolute() {
+    let resolved = if candidate.is_absolute() {
         candidate
     } else {
         let rooted = workspace_root().join(&candidate);
@@ -2164,7 +2195,9 @@ fn resolve_input_path(raw: &str) -> PathBuf {
         } else {
             workspace_root().join(candidate)
         }
-    }
+    };
+
+    fs::canonicalize(&resolved).unwrap_or(resolved)
 }
 
 fn build_preview_html(
@@ -3794,7 +3827,7 @@ struct SubmoduleRow {
 
       function loadSavedTheme() {
         var saved = null;
-        try { saved = localStorage.getItem("oxidesloc-theme"); } catch (e) {}
+        try { saved = localStorage.getItem("oxide-sloc-theme"); } catch (e) {}
         applyTheme(saved === "dark" ? "dark" : "light");
       }
 
@@ -4368,7 +4401,7 @@ struct SubmoduleRow {
         themeToggle.addEventListener("click", function () {
           var nextTheme = document.body.classList.contains("dark-theme") ? "light" : "dark";
           applyTheme(nextTheme);
-          try { localStorage.setItem("oxidesloc-theme", nextTheme); } catch (e) {}
+          try { localStorage.setItem("oxide-sloc-theme", nextTheme); } catch (e) {}
         });
       }
 
@@ -4856,7 +4889,7 @@ struct IndexTemplate {
 
   <script>
     (function () {
-      var storageKey = 'oxidesloc-theme';
+      var storageKey = 'oxide-sloc-theme';
       var body = document.body;
       try { var s = localStorage.getItem(storageKey); if (s === 'dark' || s === 'light') body.classList.toggle('dark-theme', s === 'dark'); } catch(e) {}
       var toggle = document.getElementById('theme-toggle');
@@ -5482,7 +5515,7 @@ struct SplashTemplate {}
     (function () {
       var body = document.body;
       var themeToggle = document.getElementById('theme-toggle');
-      var storageKey = 'oxidesloc-theme';
+      var storageKey = 'oxide-sloc-theme';
 
       function applyTheme(theme) {
         body.classList.toggle('dark-theme', theme === 'dark');
@@ -6070,7 +6103,7 @@ struct ErrorTemplate {
   <script>
     (function () {
       // ── Theme ──────────────────────────────────────────────────────────────
-      var storageKey = 'oxidesloc-theme';
+      var storageKey = 'oxide-sloc-theme';
       var body = document.body;
       try { var s = localStorage.getItem(storageKey); if (s === 'dark' || s === 'light') body.classList.toggle('dark-theme', s === 'dark'); } catch(e) {}
       var toggle = document.getElementById('theme-toggle');
@@ -6535,7 +6568,7 @@ struct HistoryTemplate {
   <script>
     (function () {
       // ── Theme ──────────────────────────────────────────────────────────────
-      var storageKey = 'oxidesloc-theme';
+      var storageKey = 'oxide-sloc-theme';
       var body = document.body;
       try { var s = localStorage.getItem(storageKey); if (s === 'dark' || s === 'light') body.classList.toggle('dark-theme', s === 'dark'); } catch(e) {}
       var toggle = document.getElementById('theme-toggle');
@@ -7117,7 +7150,7 @@ struct CompareSelectTemplate {
 
   <script>
     (function () {
-      var storageKey = 'oxidesloc-theme';
+      var storageKey = 'oxide-sloc-theme';
       var body = document.body;
       try { var s = localStorage.getItem(storageKey); if (s === 'dark' || s === 'light') body.classList.toggle('dark-theme', s === 'dark'); } catch(e) {}
       var toggle = document.getElementById('theme-toggle');

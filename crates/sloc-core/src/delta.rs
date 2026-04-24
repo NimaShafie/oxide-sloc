@@ -84,9 +84,9 @@ pub fn compute_delta(baseline: &AnalysisRun, current: &AnalysisRun) -> ScanCompa
         let lang = record.language.map(|l| l.display_name().to_string());
 
         if let Some(base) = baseline_map.get(path) {
-            let code_delta = curr.code_lines as i64 - base.code_lines as i64;
-            let comment_delta = curr.comment_lines as i64 - base.comment_lines as i64;
-            let blank_delta = curr.blank_lines as i64 - base.blank_lines as i64;
+            let code_delta = curr.code_lines.cast_signed() - base.code_lines.cast_signed();
+            let comment_delta = curr.comment_lines.cast_signed() - base.comment_lines.cast_signed();
+            let blank_delta = curr.blank_lines.cast_signed() - base.blank_lines.cast_signed();
             let status = if code_delta == 0 && comment_delta == 0 && blank_delta == 0 {
                 FileChangeStatus::Unchanged
             } else {
@@ -96,32 +96,32 @@ pub fn compute_delta(baseline: &AnalysisRun, current: &AnalysisRun) -> ScanCompa
                 relative_path: record.relative_path.clone(),
                 language: lang,
                 status,
-                baseline_code: base.code_lines as i64,
-                current_code: curr.code_lines as i64,
+                baseline_code: base.code_lines.cast_signed(),
+                current_code: curr.code_lines.cast_signed(),
                 code_delta,
-                baseline_comment: base.comment_lines as i64,
-                current_comment: curr.comment_lines as i64,
+                baseline_comment: base.comment_lines.cast_signed(),
+                current_comment: curr.comment_lines.cast_signed(),
                 comment_delta,
-                baseline_blank: base.blank_lines as i64,
-                current_blank: curr.blank_lines as i64,
+                baseline_blank: base.blank_lines.cast_signed(),
+                current_blank: curr.blank_lines.cast_signed(),
                 blank_delta,
                 total_delta: code_delta + comment_delta + blank_delta,
             });
         } else {
-            let total = (curr.code_lines + curr.comment_lines + curr.blank_lines) as i64;
+            let total = (curr.code_lines + curr.comment_lines + curr.blank_lines).cast_signed();
             file_deltas.push(FileDelta {
                 relative_path: record.relative_path.clone(),
                 language: lang,
                 status: FileChangeStatus::Added,
                 baseline_code: 0,
-                current_code: curr.code_lines as i64,
-                code_delta: curr.code_lines as i64,
+                current_code: curr.code_lines.cast_signed(),
+                code_delta: curr.code_lines.cast_signed(),
                 baseline_comment: 0,
-                current_comment: curr.comment_lines as i64,
-                comment_delta: curr.comment_lines as i64,
+                current_comment: curr.comment_lines.cast_signed(),
+                comment_delta: curr.comment_lines.cast_signed(),
                 baseline_blank: 0,
-                current_blank: curr.blank_lines as i64,
-                blank_delta: curr.blank_lines as i64,
+                current_blank: curr.blank_lines.cast_signed(),
+                blank_delta: curr.blank_lines.cast_signed(),
                 total_delta: total,
             });
         }
@@ -131,20 +131,20 @@ pub fn compute_delta(baseline: &AnalysisRun, current: &AnalysisRun) -> ScanCompa
         if !current_paths.contains_key(record.relative_path.as_str()) {
             let base = &record.effective_counts;
             let lang = record.language.map(|l| l.display_name().to_string());
-            let total = (base.code_lines + base.comment_lines + base.blank_lines) as i64;
+            let total = (base.code_lines + base.comment_lines + base.blank_lines).cast_signed();
             file_deltas.push(FileDelta {
                 relative_path: record.relative_path.clone(),
                 language: lang,
                 status: FileChangeStatus::Removed,
-                baseline_code: base.code_lines as i64,
+                baseline_code: base.code_lines.cast_signed(),
                 current_code: 0,
-                code_delta: -(base.code_lines as i64),
-                baseline_comment: base.comment_lines as i64,
+                code_delta: -(base.code_lines.cast_signed()),
+                baseline_comment: base.comment_lines.cast_signed(),
                 current_comment: 0,
-                comment_delta: -(base.comment_lines as i64),
-                baseline_blank: base.blank_lines as i64,
+                comment_delta: -(base.comment_lines.cast_signed()),
+                baseline_blank: base.blank_lines.cast_signed(),
                 current_blank: 0,
-                blank_delta: -(base.blank_lines as i64),
+                blank_delta: -(base.blank_lines.cast_signed()),
                 total_delta: -total,
             });
         }
@@ -192,15 +192,18 @@ pub fn compute_delta(baseline: &AnalysisRun, current: &AnalysisRun) -> ScanCompa
             current_timestamp: current.tool.timestamp_utc,
             baseline_files: b.files_analyzed,
             current_files: s.files_analyzed,
-            files_analyzed_delta: s.files_analyzed as i64 - b.files_analyzed as i64,
+            files_analyzed_delta: s.files_analyzed.cast_signed() - b.files_analyzed.cast_signed(),
             baseline_code: b.code_lines,
             current_code: s.code_lines,
-            code_lines_delta: s.code_lines as i64 - b.code_lines as i64,
+            code_lines_delta: s.code_lines.cast_signed() - b.code_lines.cast_signed(),
             baseline_comments: b.comment_lines,
             current_comments: s.comment_lines,
-            comment_lines_delta: s.comment_lines as i64 - b.comment_lines as i64,
-            blank_lines_delta: s.blank_lines as i64 - b.blank_lines as i64,
-            total_lines_delta: s.total_physical_lines as i64 - b.total_physical_lines as i64,
+            comment_lines_delta: s.comment_lines.cast_signed() - b.comment_lines.cast_signed(),
+            blank_lines_delta: s.blank_lines.cast_signed() - b.blank_lines.cast_signed(),
+            total_lines_delta: s
+                .total_physical_lines
+                .cast_signed()
+                .wrapping_sub(b.total_physical_lines.cast_signed()),
         },
         file_deltas,
         files_added,

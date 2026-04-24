@@ -1,0 +1,56 @@
+# Jenkins CI agent for oxide-sloc
+#
+# Extends jenkins/jenkins:lts with everything the Jenkinsfile needs:
+#   - python3          Extract plot data stage (summary.csv / per_language.csv)
+#   - build-essential  Native libs required by some Rust crates
+#   - pkg-config       Required by openssl-sys and similar crates
+#   - libssl-dev       TLS support for Rust HTTP clients
+#   - xz-utils         tar -xJf decompression of vendor.tar.xz
+#   - curl             rustup installer fallback + web UI health check
+#
+# Build and use:
+#   docker build -t jenkins-oxide-sloc:latest -f ci/jenkins/Dockerfile.agent .
+#
+# In docker-compose.yml for the Jenkins service, replace:
+#   image: jenkins/jenkins:lts
+# with:
+#   build:
+#     context: .
+#     dockerfile: ci/jenkins/Dockerfile.agent
+#   image: jenkins-oxide-sloc:latest
+#
+# ── Air-gapped Rust toolchain ──────────────────────────────────────────────────
+# The Jenkinsfile stores the Rust toolchain in /var/jenkins_home/.rust-cache so
+# it persists across workspace wipes.  For a fully offline agent, pre-populate
+# this directory on a networked machine and carry it across:
+#
+#   # On a networked machine (run once):
+#   bash ci/jenkins/install-rust-cache.sh
+#   tar -czf rust-cache.tar.gz -C ~ .rust-cache
+#
+#   # On the air-gapped Jenkins host (before starting the container):
+#   tar -xzf rust-cache.tar.gz -C /var/lib/docker/volumes/<jenkins_home>/_data
+#
+# Once present, the "Install Rust" stage detects the cached toolchain and
+# skips all network access entirely.
+
+FROM jenkins/jenkins:lts-jdk21
+
+USER root
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-minimal \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    curl \
+    xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pre-create the persistent Rust cache directory so the Jenkins user can write
+# to it without requiring root on first use.
+RUN mkdir -p /var/jenkins_home/.rust-cache && \
+    chown -R jenkins:jenkins /var/jenkins_home/.rust-cache
+
+USER jenkins

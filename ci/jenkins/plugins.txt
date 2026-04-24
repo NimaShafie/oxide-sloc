@@ -1,0 +1,38 @@
+# oxide-sloc Jenkins pipeline — required plugins
+#
+# ── Online install (run once against the live container) ──────────────────────
+#   docker exec -u root <container> jenkins-plugin-cli \
+#     --plugins $(grep -Ev '^#|^$' ci/jenkins/plugins.txt | awk '{print $1}' | tr '\n' ' ')
+#
+# ── Air-gapped install ────────────────────────────────────────────────────────
+# Download each .hpi on a networked machine, then transfer and install offline:
+#
+#   # Download (on networked machine):
+#   while IFS= read -r line; do
+#     [[ "$line" =~ ^#|^$ ]] && continue
+#     id=$(echo "$line" | awk '{print $1}')
+#     curl -L -o "${id}.hpi" "https://updates.jenkins.io/latest/${id}.hpi"
+#   done < ci/jenkins/plugins.txt
+#
+#   # Install (on air-gapped host — repeat for each .hpi):
+#   docker exec -u root <container> \
+#     cp /host/path/<plugin>.hpi /var/jenkins_home/plugins/<plugin>.hpi
+#   # Then restart Jenkins to load the plugins.
+#
+# Alternatively, use the Jenkins web UI:
+#   Manage Jenkins → Plugins → Advanced → Deploy Plugin → Upload .hpi file
+
+# ── Core pipeline support ──────────────────────────────────────────────────────
+workflow-aggregator         # Declarative Pipeline syntax (stages, when, post)
+pipeline-utility-steps      # readJSON, writeJSON helpers used in post { success }
+ws-cleanup                  # cleanWs() in post { cleanup }
+
+# ── Source control ─────────────────────────────────────────────────────────────
+git                         # GitSCM checkout step
+
+# ── Credentials ───────────────────────────────────────────────────────────────
+credentials-binding         # credentials() binding in environment blocks
+
+# ── Optional — required for full pipeline feature set ─────────────────────────
+htmlpublisher               # publishHTML() — "SLOC Report" link in the build sidebar
+plot                        # plot() — code-lines trend charts across builds

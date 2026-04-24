@@ -2,12 +2,12 @@
 
 ## TL;DR
 
-Run the install script once, then launch with `run.bat`.
+Run the install script once, then launch with `bash run.sh`.
 
 | Platform | Install | Launch |
 |---|---|---|
-| **Windows 10/11** | `bash install.sh` (in Git Bash) | Double-click `run.bat` (or `run.bat` in terminal) |
-| **Linux (RHEL 8/9, Ubuntu, Debian)** | `bash install.sh` | `bash run.bat` |
+| **Windows 10/11** | `bash install.sh` (in Git Bash) | `bash run.sh` (in Git Bash) |
+| **Linux (RHEL 8/9, Ubuntu, Debian)** | `bash install.sh` | `bash run.sh` |
 
 No internet. No package manager. No extra tools beyond what ships with the OS.
 
@@ -41,12 +41,12 @@ If a pre-built binary is already in `dist/`, zip just the essentials:
 
 **Windows (PowerShell):**
 ```powershell
-Compress-Archive -Path run.bat, install.sh, dist -DestinationPath oxide-sloc-deploy.zip
+Compress-Archive -Path run.sh, install.sh, dist -DestinationPath oxide-sloc-deploy.zip
 ```
 
 **Linux:**
 ```bash
-tar -czf oxide-sloc-deploy.tar.gz run.bat install.sh dist/
+tar -czf oxide-sloc-deploy.tar.gz run.sh install.sh dist/
 ```
 
 Extract on the target machine and run `bash install.sh`.

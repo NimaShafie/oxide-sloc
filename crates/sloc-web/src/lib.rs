@@ -5,6 +5,7 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    process::Stdio,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -181,12 +182,20 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         #[cfg(target_os = "windows")]
         let _ = std::process::Command::new("cmd")
             .args(["/c", "start", "", &open_url])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn();
         #[cfg(target_os = "macos")]
-        let _ = std::process::Command::new("open").arg(&open_url).spawn();
+        let _ = std::process::Command::new("open")
+            .arg(&open_url)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
         #[cfg(target_os = "linux")]
         let _ = std::process::Command::new("xdg-open")
             .arg(&open_url)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn();
     });
 
@@ -447,11 +456,21 @@ async fn open_path_handler(Query(query): Query<OpenPathQuery>) -> impl IntoRespo
     #[cfg(target_os = "windows")]
     let _ = std::process::Command::new("explorer.exe")
         .arg(&target)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn();
     #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(&target).spawn();
+    let _ = std::process::Command::new("open")
+        .arg(&target)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
     #[cfg(target_os = "linux")]
-    let _ = std::process::Command::new("xdg-open").arg(&target).spawn();
+    let _ = std::process::Command::new("xdg-open")
+        .arg(&target)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
 
     (StatusCode::OK, "ok").into_response()
 }

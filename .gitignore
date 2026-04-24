@@ -35,8 +35,11 @@ flamegraph.svg
 perf.data
 perf.data.old
 
-# Pre-built binary archives (released via GitHub Releases, not tracked in git)
-/dist/
+# Uncompressed extracted binaries in dist/ — only the zip/tar.gz bundles are tracked
+/dist/oxidesloc
+/dist/oxidesloc.exe
+/dist/oxide-sloc-*
+/dist/tmp-*/
 
 # Claude Code (project-local AI context — not for commit)
 CLAUDE.md

@@ -1,0 +1,35 @@
+[Unit]
+Description=oxide-sloc source line analysis server
+After=network.target
+
+[Service]
+Type=simple
+User=oxide-sloc
+Group=oxide-sloc
+WorkingDirectory=/opt/oxide-sloc
+
+ExecStart=/usr/local/bin/oxide-sloc serve --server
+
+Restart=on-failure
+RestartSec=5
+
+# Point the server at the asset root (images/, etc.).
+Environment=OXIDE_SLOC_ROOT=/opt/oxide-sloc
+
+# Structured log level.  Change to 'debug' for troubleshooting.
+Environment=RUST_LOG=info
+
+# Override browser path if PDF export is needed and chromium is not in PATH.
+# Environment=SLOC_BROWSER=/usr/bin/chromium
+
+# Uncomment to store the scan registry on a separate volume/mount.
+# Environment=SLOC_REGISTRY_PATH=/var/lib/oxide-sloc/registry.json
+
+# Basic sandboxing — drop most Linux capabilities.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/oxide-sloc/out
+
+[Install]
+WantedBy=multi-user.target

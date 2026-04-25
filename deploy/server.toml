@@ -1,0 +1,24 @@
+# oxide-sloc server configuration
+# Copy to /etc/oxide-sloc/config.toml (or pass with --config) for server deployments.
+# See docs/server-deployment.md for full setup instructions.
+
+[web]
+# server_mode disables browser auto-open and desktop-only routes (file picker,
+# open-path).  It also defaults bind_address to 0.0.0.0 when not specified.
+server_mode = true
+# Override the bind address if you want a different port or interface.
+bind_address = "0.0.0.0:4317"
+
+[discovery]
+honor_ignore_files = true
+excluded_directories = [".git", "node_modules", "target"]
+max_file_size_bytes = 2097152
+
+[analysis]
+mixed_line_policy = "code_only"
+python_docstrings_as_comments = true
+generated_file_detection = true
+
+[reporting]
+report_title = "oxide-sloc"
+theme = "auto"

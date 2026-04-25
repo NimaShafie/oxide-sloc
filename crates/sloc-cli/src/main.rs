@@ -89,6 +89,11 @@ struct ServeArgs {
     config: Option<PathBuf>,
     #[arg(long)]
     bind: Option<String>,
+    /// Run in server mode: bind to 0.0.0.0 by default, suppress browser
+    /// auto-open, and disable desktop-only routes (pick-directory, open-path).
+    /// Use this when hosting for other users rather than for local personal use.
+    #[arg(long)]
+    server: bool,
 }
 
 #[derive(Debug, Args)]
@@ -145,6 +150,7 @@ async fn main() -> Result<()> {
     match cli.command.unwrap_or(Commands::Serve(ServeArgs {
         config: None,
         bind: None,
+        server: false,
     })) {
         Commands::Analyze(args) => run_analyze(args).await,
         Commands::Report(args) => run_report(args),
@@ -199,6 +205,13 @@ fn run_report(args: ReportArgs) -> Result<()> {
 
 async fn run_serve(args: ServeArgs) -> Result<()> {
     let mut config = load_base_config(args.config.as_deref())?;
+    if args.server {
+        config.web.server_mode = true;
+        // In server mode, default to all-interfaces unless the caller overrides.
+        if args.bind.is_none() && config.web.bind_address.starts_with("127.0.0.1") {
+            config.web.bind_address = "0.0.0.0:4317".into();
+        }
+    }
     if let Some(bind) = args.bind {
         config.web.bind_address = bind;
     }

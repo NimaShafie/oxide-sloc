@@ -4,9 +4,17 @@ services:
     image: oxide-sloc
     ports:
       - "4317:4317"
+    restart: unless-stopped
     environment:
       - SLOC_BROWSER=/usr/bin/chromium
       - RUST_LOG=info
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+        reservations:
+          memory: 256M
     volumes:
       # Mount a host directory to analyze it via the web UI or CLI.
       # Example: docker compose run oxide-sloc analyze /repo --plain

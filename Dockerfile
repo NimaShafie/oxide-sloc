@@ -30,6 +30,11 @@ WORKDIR /app
 COPY --from=builder /app/target/release/oxide-sloc /usr/local/bin/oxide-sloc
 COPY --from=builder /app/images ./images
 
+# Create a non-root service account and ensure the output directory is writable by it.
+RUN groupadd -r sloc && useradd -r -g sloc -u 1001 sloc \
+    && mkdir -p /app/out \
+    && chown -R sloc:sloc /app/out
+
 # OXIDE_SLOC_ROOT tells the server where to find images/ and other assets,
 # overriding the runtime binary-location heuristic for container deployments.
 ENV OXIDE_SLOC_ROOT=/app
@@ -39,5 +44,8 @@ ENV SLOC_BROWSER=/usr/bin/chromium
 
 EXPOSE 4317
 
+USER 1001
+
 ENTRYPOINT ["oxide-sloc"]
-CMD ["serve"]
+# --server: binds to 0.0.0.0, suppresses browser auto-open, disables desktop-only routes.
+CMD ["serve", "--server"]

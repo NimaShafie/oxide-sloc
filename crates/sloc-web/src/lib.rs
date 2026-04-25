@@ -13,9 +13,8 @@ use std::{
 use anyhow::{Context, Result};
 use askama::Template;
 use axum::{
-    extract::{DefaultBodyLimit, Form, Path as AxumPath, Query, Request, State},
+    extract::{DefaultBodyLimit, Form, Path as AxumPath, Query, State},
     http::{header, StatusCode},
-    middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -41,6 +40,7 @@ struct AppState {
     registry: Arc<Mutex<ScanRegistry>>,
     registry_path: PathBuf,
     analyze_semaphore: Arc<tokio::sync::Semaphore>,
+    server_mode: bool,
 }
 
 type PendingPdf = Option<(PathBuf, PathBuf, bool)>;
@@ -54,71 +54,9 @@ struct RunArtifacts {
     report_title: String,
 }
 
-/// Injects a standard hardening header set on every response.
-async fn security_headers_middleware(request: Request, next: Next) -> Response {
-    let mut response = next.run(request).await;
-    let headers = response.headers_mut();
-    // Prevent embedding in frames on other origins.
-    headers.insert(
-        header::X_FRAME_OPTIONS,
-        axum::http::HeaderValue::from_static("DENY"),
-    );
-    // Block MIME-type sniffing.
-    headers.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        axum::http::HeaderValue::from_static("nosniff"),
-    );
-    // Do not send Referer header to other origins.
-    headers.insert(
-        header::REFERRER_POLICY,
-        axum::http::HeaderValue::from_static("no-referrer"),
-    );
-    headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        axum::http::HeaderValue::from_static(
-            "default-src 'self'; \
-             script-src 'self' 'unsafe-inline'; \
-             style-src 'self' 'unsafe-inline'; \
-             img-src 'self' data:; \
-             font-src 'self'; \
-             object-src 'none'; \
-             base-uri 'self'; \
-             form-action 'self';",
-        ),
-    );
-    response
-}
-
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    let len_diff: u8 = if a.len() == b.len() { 0 } else { 1 };
-    let mut acc: u8 = len_diff;
-    let max_len = a.len().max(b.len());
-    for i in 0..max_len {
-        // Pad the shorter slice with 0xff so equal padding cannot produce a
-        // false positive even if the actual bytes happen to match the padding.
-        let x = a.get(i).copied().unwrap_or(0xff);
-        let y = b.get(i).copied().unwrap_or(0xff);
-        acc |= x ^ y;
-    }
-    acc == 0
-}
-
-async fn api_key_middleware(request: Request, next: Next) -> Response {
-    if let Ok(expected) = std::env::var("SLOC_API_KEY") {
-        let provided = request
-            .headers()
-            .get("X-API-Key")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        if !ct_eq(provided.as_bytes(), expected.as_bytes()) {
-            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-        }
-    }
-    next.run(request).await
-}
-
 pub async fn serve(config: AppConfig) -> Result<()> {
     let bind_address = config.web.bind_address.clone();
+    let server_mode = config.web.server_mode;
     let output_root = resolve_output_root(None).unwrap_or_else(|_| PathBuf::from("out/web"));
     // SLOC_REGISTRY_PATH overrides the registry location — useful for shared drives/mounts.
     let registry_path = std::env::var("SLOC_REGISTRY_PATH")
@@ -134,6 +72,7 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         registry: Arc::new(Mutex::new(registry)),
         registry_path,
         analyze_semaphore: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_ANALYSES)),
+        server_mode,
     };
 
     let protected = Router::new()
@@ -153,46 +92,48 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         .route("/api/metrics/latest", get(api_metrics_latest_handler))
         .route("/api/metrics/:run_id", get(api_metrics_run_handler))
         .route("/api/project-history", get(project_history_handler))
-        .route("/embed/summary", get(embed_handler))
-        .layer(middleware::from_fn(api_key_middleware));
+        .route("/embed/summary", get(embed_handler));
 
     let app = protected
         .route("/healthz", get(healthz))
         .route("/badge/:metric", get(badge_handler))
         .route("/static/chart.js", get(chart_js_handler))
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
-        .layer(middleware::from_fn(security_headers_middleware))
-        .with_state(state);
+        .with_state(state.clone());
 
     let listener = tokio::net::TcpListener::bind(&bind_address)
         .await
         .with_context(|| format!("failed to bind local web UI on {bind_address}"))?;
 
     let url = format!("http://{bind_address}/");
-    println!("OxideSLOC local web UI running at {url}");
-    println!("Press Ctrl+C to stop the server.");
-
-    let open_url = url.clone();
-    tokio::task::spawn_blocking(move || {
-        #[cfg(target_os = "windows")]
-        let _ = std::process::Command::new("cmd")
-            .args(["/c", "start", "", &open_url])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-        #[cfg(target_os = "macos")]
-        let _ = std::process::Command::new("open")
-            .arg(&open_url)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-        #[cfg(target_os = "linux")]
-        let _ = std::process::Command::new("xdg-open")
-            .arg(&open_url)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-    });
+    if server_mode {
+        println!("OxideSLOC server running at {url}");
+        println!("Use Ctrl+C to stop.");
+    } else {
+        println!("OxideSLOC local web UI running at {url}");
+        println!("Press Ctrl+C to stop the server.");
+        let open_url = url.clone();
+        tokio::task::spawn_blocking(move || {
+            #[cfg(target_os = "windows")]
+            let _ = std::process::Command::new("cmd")
+                .args(["/c", "start", "", &open_url])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+            #[cfg(target_os = "macos")]
+            let _ = std::process::Command::new("open")
+                .arg(&open_url)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+            #[cfg(target_os = "linux")]
+            let _ = std::process::Command::new("xdg-open")
+                .arg(&open_url)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+        });
+    }
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
@@ -284,7 +225,14 @@ struct PickDirectoryResponse {
     cancelled: bool,
 }
 
-async fn pick_directory_handler(Query(query): Query<PickDirectoryQuery>) -> impl IntoResponse {
+async fn pick_directory_handler(
+    State(state): State<AppState>,
+    Query(query): Query<PickDirectoryQuery>,
+) -> Response {
+    if state.server_mode {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
     let title = match query.kind.as_deref() {
         Some("output") => "Select output directory",
         _ => "Select project directory",
@@ -309,9 +257,13 @@ async fn pick_directory_handler(Query(query): Query<PickDirectoryQuery>) -> impl
         selected_path: picked.as_ref().map(|p| display_path(p)),
         cancelled: picked.is_none(),
     })
+    .into_response()
 }
 
-async fn pick_file_handler() -> impl IntoResponse {
+async fn pick_file_handler(State(state): State<AppState>) -> Response {
+    if state.server_mode {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let picked = rfd::FileDialog::new()
         .set_title("Select HTML report")
         .add_filter("HTML report", &["html"])
@@ -320,6 +272,7 @@ async fn pick_file_handler() -> impl IntoResponse {
         selected_path: picked.as_ref().map(|p| display_path(p)),
         cancelled: picked.is_none(),
     })
+    .into_response()
 }
 
 #[derive(Deserialize)]
@@ -343,6 +296,20 @@ async fn locate_report_handler(
             return Html(html).into_response();
         }
     };
+    // In server mode, only accept reports within the configured output directory.
+    if state.server_mode {
+        let output_root = resolve_output_root(None).unwrap_or_else(|_| PathBuf::from("out/web"));
+        let canonical_root = fs::canonicalize(&output_root).unwrap_or(output_root);
+        if !html_path.starts_with(&canonical_root) {
+            let html = ErrorTemplate {
+                message: "Report file must be within the configured output directory.".to_string(),
+                last_report_url: Some("/history".to_string()),
+            }
+            .render()
+            .unwrap_or_else(|_| "<pre>Invalid path.</pre>".to_string());
+            return Html(html).into_response();
+        }
+    }
     let parent = match html_path.parent() {
         Some(p) => p.to_path_buf(),
         None => {
@@ -430,7 +397,13 @@ struct OpenPathQuery {
     path: Option<String>,
 }
 
-async fn open_path_handler(Query(query): Query<OpenPathQuery>) -> impl IntoResponse {
+async fn open_path_handler(
+    State(state): State<AppState>,
+    Query(query): Query<OpenPathQuery>,
+) -> impl IntoResponse {
+    if state.server_mode {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let raw = match query.path.as_deref() {
         Some(p) if !p.is_empty() => p,
         _ => return (StatusCode::BAD_REQUEST, "missing path").into_response(),
@@ -556,7 +529,30 @@ async fn analyze_handler(
     };
 
     let mut config = state.base_config.clone();
-    config.discovery.root_paths = vec![resolve_input_path(&form.path)];
+    let resolved_path = resolve_input_path(&form.path);
+
+    if state.server_mode && !config.discovery.allowed_scan_roots.is_empty() {
+        let canonical = fs::canonicalize(&resolved_path).unwrap_or_else(|_| resolved_path.clone());
+        let allowed = config.discovery.allowed_scan_roots.iter().any(|root| {
+            fs::canonicalize(root)
+                .ok()
+                .map(|r| canonical.starts_with(&r))
+                .unwrap_or(false)
+        });
+        if !allowed {
+            let template = ErrorTemplate {
+                message: "The requested path is not within an allowed scan directory.".to_string(),
+                last_report_url: None,
+            };
+            return Html(
+                template
+                    .render()
+                    .unwrap_or_else(|_| "<pre>Path not allowed.</pre>".to_string()),
+            )
+            .into_response();
+        }
+    }
+    config.discovery.root_paths = vec![resolved_path];
 
     if let Some(policy) = form.mixed_line_policy {
         config.analysis.mixed_line_policy = policy;
@@ -1225,6 +1221,13 @@ async fn artifact_handler(
             }
         }
         _ if artifact.starts_with("sub_") => {
+            if artifact.len() > 128
+                || !artifact
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
+                return StatusCode::BAD_REQUEST.into_response();
+            }
             let filename = format!("{}.html", artifact);
             let path = artifact_set.output_dir.join(&filename);
             match fs::read_to_string(&path) {
@@ -1583,8 +1586,8 @@ async fn compare_handler(
 }
 
 // ── Badge endpoint ────────────────────────────────────────────────────────────
-// Public (no auth). Returns a shields.io-style SVG badge for embedding in
-// READMEs, Confluence pages, Jira descriptions, etc.
+// Returns a shields.io-style SVG badge for embedding in READMEs, Confluence
+// pages, Jira descriptions, etc.
 //
 // GET /badge/<metric>?label=<override>&color=<hex>
 // Metrics: code-lines  files  comment-lines  blank-lines

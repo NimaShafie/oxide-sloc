@@ -189,7 +189,6 @@ pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
                 "--disable-sync",
                 "--no-first-run",
                 "--no-default-browser-check",
-                "--allow-file-access-from-files",
                 "--disable-default-apps",
                 "--hide-scrollbars",
                 "--mute-audio",

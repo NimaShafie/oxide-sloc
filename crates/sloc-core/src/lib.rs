@@ -312,15 +312,8 @@ pub fn analyze(config: &AppConfig, runtime_mode: &str) -> Result<AnalysisRun> {
 
     let now = Utc::now();
     let run_id = {
-        let suffix = git
-            .commit_short
-            .as_deref()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| {
-                let raw = Uuid::new_v4().to_string().replace('-', "");
-                raw[..7].to_string()
-            });
-        format!("{}-{}", now.format("%Y%m%d-%H%M"), suffix)
+        let uuid_suffix = Uuid::new_v4().simple().to_string();
+        format!("{}-{}", now.format("%Y%m%d-%H%M"), uuid_suffix)
     };
 
     Ok(AnalysisRun {

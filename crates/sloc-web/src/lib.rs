@@ -2655,9 +2655,15 @@ fn language_icon_file(language: &str) -> Option<&'static str> {
 // r##"..."## delimiter used because the SVG content contains "#" (hex colours).
 fn language_inline_svg(language: &str) -> Option<&'static str> {
     match language {
-        "Go" => Some(r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 100 100" aria-hidden="true"><rect width="100" height="100" rx="16" fill="#00ACD7"/><text x="50" y="68" text-anchor="middle" font-family="sans-serif" font-weight="900" font-size="46" fill="#fff">Go</text></svg>"##),
-        "Rust" => Some(r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 100 100" aria-hidden="true"><rect width="100" height="100" rx="16" fill="#B7410E"/><text x="50" y="68" text-anchor="middle" font-family="sans-serif" font-weight="900" font-size="46" fill="#fff">Rs</text></svg>"##),
-        "TypeScript" => Some(r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 100 100" aria-hidden="true"><rect width="100" height="100" rx="16" fill="#3178C6"/><text x="50" y="68" text-anchor="middle" font-family="sans-serif" font-weight="900" font-size="46" fill="#fff">TS</text></svg>"##),
+        "Go" => Some(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 100 100" aria-hidden="true"><rect width="100" height="100" rx="16" fill="#00ACD7"/><text x="50" y="68" text-anchor="middle" font-family="sans-serif" font-weight="900" font-size="46" fill="#fff">Go</text></svg>"##,
+        ),
+        "Rust" => Some(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 100 100" aria-hidden="true"><rect width="100" height="100" rx="16" fill="#B7410E"/><text x="50" y="68" text-anchor="middle" font-family="sans-serif" font-weight="900" font-size="46" fill="#fff">Rs</text></svg>"##,
+        ),
+        "TypeScript" => Some(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 100 100" aria-hidden="true"><rect width="100" height="100" rx="16" fill="#3178C6"/><text x="50" y="68" text-anchor="middle" font-family="sans-serif" font-weight="900" font-size="46" fill="#fff">TS</text></svg>"##,
+        ),
         _ => None,
     }
 }

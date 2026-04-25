@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
 # oxide-sloc installer
-# Usage:  bash install.sh          (Windows via Git Bash, Linux, macOS)
+# Usage:  bash install.sh            (Windows via Git Bash, Linux, macOS)
+#         bash install.sh --rebuild  (force a fresh build even if binary exists)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+FORCE_REBUILD=false
+for arg in "$@"; do
+    case "$arg" in
+        --rebuild|--force|-f) FORCE_REBUILD=true ;;
+    esac
+done
 
 # Detect Windows (Git Bash / MSYS2 / Cygwin)
 if [[ -n "${WINDIR+x}" ]] || [[ "${OSTYPE:-}" == msys* ]] || [[ "${OSTYPE:-}" == cygwin* ]]; then
@@ -26,10 +34,16 @@ echo " oxide-sloc installer"
 echo " ════════════════════"
 
 # ── 1. Already installed ────────────────────────────────────────────────────
-if [[ -f "$EXE" ]]; then
+if [[ -f "$EXE" ]] && [[ "$FORCE_REBUILD" == false ]]; then
     echo " [OK] $(basename "$EXE") already present."
     echo " Run: bash run.sh"
+    echo " To rebuild from source:  bash install.sh --rebuild"
     exit 0
+fi
+
+if [[ -f "$EXE" ]] && [[ "$FORCE_REBUILD" == true ]]; then
+    echo " [--rebuild] Removing existing binary to force a fresh build..."
+    rm -f "$EXE"
 fi
 
 # ── 2. Pre-built binary ─────────────────────────────────────────────────────

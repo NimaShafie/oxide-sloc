@@ -23,6 +23,10 @@ fi
 launch() {
     [[ "$PLATFORM" == linux ]] && chmod +x "$1"
     printf '\n  oxide-sloc starting \xe2\x86\x92 http://127.0.0.1:4317\n  Press Ctrl+C to stop.\n\n'
+    # cd to the project root so relative paths and images/ resolve correctly,
+    # and export OXIDE_SLOC_ROOT as an explicit override for the same reason.
+    cd "$SCRIPT_DIR"
+    export OXIDE_SLOC_ROOT="$SCRIPT_DIR"
     "$1"
 }
 

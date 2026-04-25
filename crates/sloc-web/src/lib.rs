@@ -2172,11 +2172,36 @@ fn display_path(path: &Path) -> String {
 }
 
 fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
+    // OXIDE_SLOC_ROOT env var takes priority — useful in Docker, systemd, CI.
+    if let Ok(root) = std::env::var("OXIDE_SLOC_ROOT") {
+        let p = PathBuf::from(root);
+        if p.is_dir() {
+            return p;
+        }
+    }
+
+    // Binary's parent directory — works when install.sh places the binary
+    // next to the images/ folder, regardless of where the project lives.
+    // This is the primary fix for cross-machine / moved-directory deployments;
+    // env!("CARGO_MANIFEST_DIR") bakes the compile-time path into the binary,
+    // which breaks on any machine other than the one that compiled it.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if dir.join("images").is_dir() {
+                return dir.to_path_buf();
+            }
+        }
+    }
+
+    // Current working directory — works for `cargo run` invocations launched
+    // from the project root, and for run.sh which cds there first.
+    if let Ok(cwd) = std::env::current_dir() {
+        if cwd.join("images").is_dir() {
+            return cwd;
+        }
+    }
+
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
 fn resolve_input_path(raw: &str) -> PathBuf {
@@ -2289,6 +2314,8 @@ fn build_preview_html(
         for language in &languages {
             if let Some(icon) = language_icon_file(language) {
                 out.push_str(&format!(r#"<button type="button" class="language-pill has-icon detected-language-chip" data-language-filter="{}"><img src="/images/icons/{}" alt="{} icon" /><span>{}</span></button>"#, escape_html(&language.to_ascii_lowercase()), icon, escape_html(language), escape_html(language)));
+            } else if let Some(svg) = language_inline_svg(language) {
+                out.push_str(&format!(r#"<button type="button" class="language-pill has-icon detected-language-chip" data-language-filter="{}">{}<span>{}</span></button>"#, escape_html(&language.to_ascii_lowercase()), svg, escape_html(language)));
             } else {
                 out.push_str(&format!(
                     r#"<button type="button" class="language-pill detected-language-chip" data-language-filter="{}">{}</button>"#,
@@ -2618,6 +2645,19 @@ fn language_icon_file(language: &str) -> Option<&'static str> {
         "HTML" => Some("html-5.png"),
         "Java" => Some("java.png"),
         "Visual Basic" => Some("visual-basic.png"),
+        _ => None,
+    }
+}
+
+// Inline SVG badges for languages that have no PNG icon in images/icons/.
+// Using inline SVG keeps the web UI fully self-contained — no extra files
+// needed on disk, no 404s on air-gapped deployments.
+// r##"..."## delimiter used because the SVG content contains "#" (hex colours).
+fn language_inline_svg(language: &str) -> Option<&'static str> {
+    match language {
+        "Go" => Some(r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 100 100" aria-hidden="true"><rect width="100" height="100" rx="16" fill="#00ACD7"/><text x="50" y="68" text-anchor="middle" font-family="sans-serif" font-weight="900" font-size="46" fill="#fff">Go</text></svg>"##),
+        "Rust" => Some(r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 100 100" aria-hidden="true"><rect width="100" height="100" rx="16" fill="#B7410E"/><text x="50" y="68" text-anchor="middle" font-family="sans-serif" font-weight="900" font-size="46" fill="#fff">Rs</text></svg>"##),
+        "TypeScript" => Some(r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 100 100" aria-hidden="true"><rect width="100" height="100" rx="16" fill="#3178C6"/><text x="50" y="68" text-anchor="middle" font-family="sans-serif" font-weight="900" font-size="46" fill="#fff">TS</text></svg>"##),
         _ => None,
     }
 }

@@ -11,6 +11,32 @@ use askama::Template;
 use chrono::{DateTime, FixedOffset, Utc};
 use sloc_core::{AnalysisRun, FileRecord};
 
+// Embed logo images at compile time so every generated HTML report is fully
+// self-contained.  Server-relative paths like /images/logo/... break when the
+// HTML is rendered by Chrome via file:// (PDF export) or opened from disk.
+static LOGO_TEXT_PNG: &[u8] = include_bytes!("../../../images/logo/logo-text.png");
+static SMALL_LOGO_PNG: &[u8] = include_bytes!("../../../images/logo/small-logo.png");
+
+fn png_data_uri(bytes: &[u8]) -> String {
+    format!("data:image/png;base64,{}", base64_encode(bytes))
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(CHARS[((n >> 18) & 63) as usize] as char);
+        out.push(CHARS[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 { CHARS[((n >> 6) & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { CHARS[(n & 63) as usize] as char } else { '=' });
+    }
+    out
+}
+
 pub fn render_html(run: &AnalysisRun) -> Result<String> {
     render_html_inner(run, false)
 }
@@ -25,6 +51,9 @@ fn render_html_inner(run: &AnalysisRun, is_sub_report: bool) -> Result<String> {
 
     let warning_summary_rows = summarize_warnings(&run.warnings);
     let warning_opportunity_rows = build_support_opportunities(&run.warnings);
+
+    let logo_text_uri = png_data_uri(LOGO_TEXT_PNG);
+    let small_logo_uri = png_data_uri(SMALL_LOGO_PNG);
 
     let template = ReportTemplate {
         title: run.effective_configuration.reporting.report_title.clone(),
@@ -64,6 +93,8 @@ fn render_html_inner(run: &AnalysisRun, is_sub_report: bool) -> Result<String> {
         warning_console_preview: build_warning_console_preview(&run.warnings, 12),
         warning_console_full: build_warning_console(&run.warnings),
         warning_preview_truncated: run.warnings.len() > 12,
+        logo_text_uri,
+        small_logo_uri,
     };
 
     template.render().context("failed to render HTML report")
@@ -641,7 +672,7 @@ struct WarningOpportunityRow {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{{ browser_title }}</title>
-  <link rel="icon" href="/images/logo/small-logo.png" type="image/png" />
+  <link rel="icon" href="{{ small_logo_uri }}" type="image/png" />
   <style>
     :root {
       --radius: 18px;
@@ -887,23 +918,23 @@ struct WarningOpportunityRow {
 </head>
 <body>
   <div class="background-watermarks" aria-hidden="true">
-    <img src="/images/logo/logo-text.png" alt="" />
-    <img src="/images/logo/logo-text.png" alt="" />
-    <img src="/images/logo/logo-text.png" alt="" />
-    <img src="/images/logo/logo-text.png" alt="" />
-    <img src="/images/logo/logo-text.png" alt="" />
-    <img src="/images/logo/logo-text.png" alt="" />
-    <img src="/images/logo/logo-text.png" alt="" />
-    <img src="/images/logo/logo-text.png" alt="" />
-    <img src="/images/logo/logo-text.png" alt="" />
-    <img src="/images/logo/logo-text.png" alt="" />
-    <img src="/images/logo/logo-text.png" alt="" />
-    <img src="/images/logo/logo-text.png" alt="" />
+    <img src="{{ logo_text_uri }}" alt="" />
+    <img src="{{ logo_text_uri }}" alt="" />
+    <img src="{{ logo_text_uri }}" alt="" />
+    <img src="{{ logo_text_uri }}" alt="" />
+    <img src="{{ logo_text_uri }}" alt="" />
+    <img src="{{ logo_text_uri }}" alt="" />
+    <img src="{{ logo_text_uri }}" alt="" />
+    <img src="{{ logo_text_uri }}" alt="" />
+    <img src="{{ logo_text_uri }}" alt="" />
+    <img src="{{ logo_text_uri }}" alt="" />
+    <img src="{{ logo_text_uri }}" alt="" />
+    <img src="{{ logo_text_uri }}" alt="" />
   </div>
   <div class="top-nav">
     <div class="top-nav-inner">
       <a class="brand" href="/">
-        <img class="brand-logo" src="/images/logo/small-logo.png" alt="OxideSLOC logo" />
+        <img class="brand-logo" src="{{ small_logo_uri }}" alt="OxideSLOC logo" />
         <div class="brand-copy">
           <div class="brand-title">OxideSLOC Local analysis workbench</div>
           <div class="brand-subtitle">Saved HTML report</div>
@@ -1319,4 +1350,6 @@ struct ReportTemplate<'a> {
     warning_console_preview: String,
     warning_console_full: String,
     warning_preview_truncated: bool,
+    logo_text_uri: String,
+    small_logo_uri: String,
 }

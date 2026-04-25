@@ -48,6 +48,8 @@ pub struct DiscoveryConfig {
     pub parallelism_limit: Option<usize>,
     /// When true, detect .gitmodules and produce a per-submodule summary alongside the overall run.
     pub submodule_breakdown: bool,
+    #[serde(default)]
+    pub allowed_scan_roots: Vec<PathBuf>,
 }
 
 impl Default for DiscoveryConfig {
@@ -63,6 +65,7 @@ impl Default for DiscoveryConfig {
             max_file_size_bytes: 2 * 1024 * 1024,
             parallelism_limit: None,
             submodule_breakdown: true,
+            allowed_scan_roots: Vec::new(),
         }
     }
 }
@@ -128,12 +131,17 @@ impl Default for ReportingConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebConfig {
     pub bind_address: String,
+    /// When true the server binds to 0.0.0.0 by default, suppresses browser
+    /// auto-open, and disables desktop-only routes (pick-directory, open-path).
+    #[serde(default)]
+    pub server_mode: bool,
 }
 
 impl Default for WebConfig {
     fn default() -> Self {
         Self {
             bind_address: "127.0.0.1:4317".into(),
+            server_mode: false,
         }
     }
 }

@@ -2926,8 +2926,12 @@ struct SubmoduleRow {
     .ws-value { font-size: 13px; font-weight: 700; color: var(--text); }
     .ws-badge { display:inline-flex; align-items:center; padding: 1px 8px; border-radius: 999px; background: rgba(184,93,51,0.10); border: 1px solid rgba(184,93,51,0.20); color: var(--oxide-2); font-size: 12px; font-weight: 800; position:relative; cursor:help; overflow: visible; }
     body.dark-theme .ws-badge { background: rgba(211,122,76,0.15); border-color: rgba(211,122,76,0.25); color: var(--oxide); }
-    .ws-lang-tooltip { display:none; position:absolute; top:calc(100% + 8px); left:0; z-index:200; background:var(--surface); border:1px solid var(--line-strong); border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,0.14); padding:10px 14px; font-size:12px; font-weight:700; color:var(--text); white-space:nowrap; pointer-events:none; }
+    .ws-lang-tooltip { display:none; position:absolute; top:calc(100% + 8px); left:0; z-index:200; background:var(--surface); border:1px solid var(--line-strong); border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,0.18); padding:14px 16px; pointer-events:none; min-width:400px; }
     .ws-badge:hover .ws-lang-tooltip { display:block; }
+    .ws-lang-tooltip-hdr { font-size:10px; font-weight:900; text-transform:uppercase; letter-spacing:0.10em; color:var(--muted-2); margin-bottom:9px; }
+    .ws-lang-grid { display:grid; grid-template-columns:repeat(5, 1fr); gap:5px 7px; }
+    .ws-lang-item { padding:3px 6px; border-radius:5px; background:rgba(184,93,51,0.08); border:1px solid rgba(184,93,51,0.14); color:var(--oxide-2); font-size:11px; font-weight:700; text-align:center; white-space:nowrap; }
+    body.dark-theme .ws-lang-item { background:rgba(211,122,76,0.12); border-color:rgba(211,122,76,0.22); color:var(--oxide); }
     .ws-divider { display: none; }
     .ws-path-link { background:none; border:none; padding:0; font:inherit; font-size:13px; font-weight:700; color:var(--oxide-2); cursor:pointer; text-decoration:underline; text-decoration-style:dotted; }
     .ws-path-link:hover { color:var(--oxide); }
@@ -3257,8 +3261,53 @@ struct SubmoduleRow {
           <div class="ws-stat">
             <span class="ws-label">Analyzers</span>
             <span class="ws-value">
-              <span class="ws-badge">11 languages
-                <div class="ws-lang-tooltip">C &nbsp;·&nbsp; C++ &nbsp;·&nbsp; C# &nbsp;·&nbsp; Go &nbsp;·&nbsp; Java &nbsp;·&nbsp; JavaScript &nbsp;·&nbsp; Python &nbsp;·&nbsp; Rust &nbsp;·&nbsp; Shell &nbsp;·&nbsp; PowerShell &nbsp;·&nbsp; TypeScript</div>
+              <span class="ws-badge">41 languages
+                <div class="ws-lang-tooltip">
+                  <div class="ws-lang-tooltip-hdr">41 supported languages</div>
+                  <div class="ws-lang-grid">
+                    <span class="ws-lang-item">Assembly</span>
+                    <span class="ws-lang-item">C</span>
+                    <span class="ws-lang-item">C++</span>
+                    <span class="ws-lang-item">C#</span>
+                    <span class="ws-lang-item">Clojure</span>
+                    <span class="ws-lang-item">CSS</span>
+                    <span class="ws-lang-item">Dart</span>
+                    <span class="ws-lang-item">Dockerfile</span>
+                    <span class="ws-lang-item">Elixir</span>
+                    <span class="ws-lang-item">Erlang</span>
+                    <span class="ws-lang-item">F#</span>
+                    <span class="ws-lang-item">Go</span>
+                    <span class="ws-lang-item">Groovy</span>
+                    <span class="ws-lang-item">Haskell</span>
+                    <span class="ws-lang-item">HTML</span>
+                    <span class="ws-lang-item">Java</span>
+                    <span class="ws-lang-item">JavaScript</span>
+                    <span class="ws-lang-item">Julia</span>
+                    <span class="ws-lang-item">Kotlin</span>
+                    <span class="ws-lang-item">Lua</span>
+                    <span class="ws-lang-item">Makefile</span>
+                    <span class="ws-lang-item">Nim</span>
+                    <span class="ws-lang-item">Obj-C</span>
+                    <span class="ws-lang-item">OCaml</span>
+                    <span class="ws-lang-item">Perl</span>
+                    <span class="ws-lang-item">PHP</span>
+                    <span class="ws-lang-item">PowerShell</span>
+                    <span class="ws-lang-item">Python</span>
+                    <span class="ws-lang-item">R</span>
+                    <span class="ws-lang-item">Ruby</span>
+                    <span class="ws-lang-item">Rust</span>
+                    <span class="ws-lang-item">Scala</span>
+                    <span class="ws-lang-item">SCSS</span>
+                    <span class="ws-lang-item">Shell</span>
+                    <span class="ws-lang-item">SQL</span>
+                    <span class="ws-lang-item">Svelte</span>
+                    <span class="ws-lang-item">Swift</span>
+                    <span class="ws-lang-item">TypeScript</span>
+                    <span class="ws-lang-item">Vue</span>
+                    <span class="ws-lang-item">XML</span>
+                    <span class="ws-lang-item">Zig</span>
+                  </div>
+                </div>
               </span>
             </span>
           </div>
@@ -4830,6 +4879,7 @@ struct IndexTemplate {
     .info-chip-tip::after{content:"";position:absolute;top:100%;left:50%;transform:translateX(-50%);
       border:6px solid transparent;border-top-color:var(--text);}
     .info-chip:hover .info-chip-tip{display:block;}
+    .info-chip-tip-lg{white-space:normal;max-width:330px;text-align:left;line-height:1.7;}
     .site-footer{text-align:center;padding:18px 24px;font-size:13px;color:var(--muted);position:relative;z-index:1;}
     .site-footer a{color:var(--muted);}
   </style>
@@ -4907,8 +4957,8 @@ struct IndexTemplate {
 
     <div class="info-strip">
       <div class="info-chip">
-        <div class="info-chip-tip">C, C++, C#, Go, Java, JavaScript,<br>Python, Rust, Shell, PowerShell, TypeScript</div>
-        <div class="info-chip-val">11</div>
+        <div class="info-chip-tip info-chip-tip-lg"><b>Systems:</b> C · C++ · Rust · Zig · Go · Nim · Assembly · Swift · Obj-C<br><b>Web &amp; UI:</b> JS · TS · HTML · CSS · SCSS · PHP · Svelte · Vue · Dart<br><b>JVM &amp; .NET:</b> Java · Kotlin · Scala · C# · F# · Groovy · Clojure<br><b>Scripting:</b> Python · Ruby · Perl · Lua · R · Shell · PowerShell<br><b>Functional &amp; data:</b> Haskell · Elixir · Erlang · OCaml · SQL · Julia · Makefile · XML · Dockerfile</div>
+        <div class="info-chip-val">41</div>
         <div class="info-chip-label">Languages</div>
       </div>
       <div class="info-chip">

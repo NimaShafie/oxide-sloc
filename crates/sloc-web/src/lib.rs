@@ -4879,7 +4879,6 @@ struct IndexTemplate {
     .info-chip-tip::after{content:"";position:absolute;top:100%;left:50%;transform:translateX(-50%);
       border:6px solid transparent;border-top-color:var(--text);}
     .info-chip:hover .info-chip-tip{display:block;}
-    .info-chip-tip-lg{white-space:normal;max-width:330px;text-align:left;line-height:1.7;}
     .site-footer{text-align:center;padding:18px 24px;font-size:13px;color:var(--muted);position:relative;z-index:1;}
     .site-footer a{color:var(--muted);}
   </style>
@@ -4957,7 +4956,7 @@ struct IndexTemplate {
 
     <div class="info-strip">
       <div class="info-chip">
-        <div class="info-chip-tip info-chip-tip-lg"><b>Systems:</b> C · C++ · Rust · Zig · Go · Nim · Assembly · Swift · Obj-C<br><b>Web &amp; UI:</b> JS · TS · HTML · CSS · SCSS · PHP · Svelte · Vue · Dart<br><b>JVM &amp; .NET:</b> Java · Kotlin · Scala · C# · F# · Groovy · Clojure<br><b>Scripting:</b> Python · Ruby · Perl · Lua · R · Shell · PowerShell<br><b>Functional &amp; data:</b> Haskell · Elixir · Erlang · OCaml · SQL · Julia · Makefile · XML · Dockerfile</div>
+        <div class="info-chip-tip">C · C++ · Rust · Go · Python · Java · Kotlin · Swift<br>TypeScript · Zig · Haskell · Elixir · and 29 more</div>
         <div class="info-chip-val">41</div>
         <div class="info-chip-label">Languages</div>
       </div>

@@ -26,9 +26,10 @@ For air-gapped setup, CI, and Docker, see [`docs/airgap.md`](./docs/airgap.md).
 
 One shared analysis core with multiple delivery surfaces:
 
-- **CLI** — `oxide-sloc analyze / report / serve` with a full flag set
+- **CLI** — `oxide-sloc analyze / report / serve / send` with a full flag set
 - **Quick Scan** — one-click scan from the web UI with zero configuration
 - **Localhost web UI** — guided 4-step flow with light/dark theme, auto browser-open
+- **Server mode** — `--server` flag binds to `0.0.0.0`, suppresses browser auto-open, and disables desktop-only routes for multi-user hosting
 - **Rich HTML reports** — per-file breakdown, language summaries, warning analysis, high-value support opportunities
 - **PDF export** — non-blocking background generation via locally installed Chromium
 - **Export to CSV / Excel** — download per-file data from any HTML report via nav bar buttons
@@ -39,6 +40,7 @@ One shared analysis core with multiple delivery surfaces:
 - **Metrics API** — JSON endpoints for CI/CD dashboards and custom tooling
 - **SVG badge endpoint** — embed live code-line counts in READMEs, Confluence pages, and Jira
 - **Embeddable summary widget** — drop an `<iframe>` into any internal wiki page
+- **Report delivery** — `send` command emails HTML reports via SMTP or POSTs JSON results to webhooks
 - **CI/CD ready** — Jenkinsfile, GitHub Actions, and GitLab CI pipelines included
 - **Docker image** — auto-published to GHCR on every push to `main` and on every release tag
 - **Air-gap / offline** — all 328 crate dependencies vendored; Chart.js compiled in; no CDN calls ever
@@ -94,7 +96,7 @@ docker run --rm \
   analyze /repo --plain
 ```
 
-For air-gapped setup, Jenkins, GitLab CI, and Rust toolchain bundling, see [`docs/airgap.md`](./docs/airgap.md).
+For air-gapped setup, Jenkins, GitLab CI, and Rust toolchain bundling, see [`docs/airgap.md`](./docs/airgap.md). For persistent server deployments (systemd, reverse proxy), see [`docs/server-deployment.md`](./docs/server-deployment.md).
 
 ---
 
@@ -139,9 +141,25 @@ oxide-sloc report result.json --html-out report.html --pdf-out report.pdf
 
 # Start the web UI (auto-opens browser)
 oxide-sloc serve
+
+# Start in server mode — binds to 0.0.0.0, no browser auto-open
+oxide-sloc serve --server
+
+# Send a saved report via email
+oxide-sloc send result.json \
+  --smtp-to team@example.com \
+  --smtp-from bot@example.com \
+  --smtp-host smtp.example.com
+
+# POST JSON result to a webhook
+oxide-sloc send result.json \
+  --webhook-url https://hooks.example.com/sloc \
+  --webhook-token "$WEBHOOK_TOKEN"
 ```
 
 ### CLI flags reference
+
+#### `analyze`
 
 | Flag | Values | Default | Description |
 |---|---|---|---|
@@ -149,14 +167,38 @@ oxide-sloc serve
 | `--python-docstrings-as-code` | *(flag)* | off | Treat docstrings as code instead of comments |
 | `--include-glob` | glob pattern | *(all)* | Only scan files matching this pattern (repeatable) |
 | `--exclude-glob` | glob pattern | *(none)* | Skip files matching this pattern (repeatable) |
+| `--enabled-language` | language name | *(all)* | Restrict analysis to a specific language (repeatable) |
+| `--no-ignore-files` | *(flag)* | off | Ignore `.gitignore` and other ignore files |
+| `--follow-symlinks` | *(flag)* | off | Follow symbolic links during directory traversal |
 | `--report-title` | string | folder name | Title shown in HTML/PDF reports |
 | `--json-out` | path | *(none)* | Write JSON analysis result to file |
 | `--html-out` | path | *(none)* | Write HTML report to file |
 | `--pdf-out` | path | *(none)* | Write PDF report to file |
 | `--per-file` | *(flag)* | off | Include per-file breakdown in terminal output |
-| `--plain` | *(flag)* | off | Plain terminal output (no color) |
+| `--plain` | *(flag)* | off | Plain terminal output (key=value pairs) |
 | `--submodule-breakdown` | *(flag)* | off | Detect `.gitmodules` and emit per-submodule stats |
 | `--config` | path | `sloc.toml` | Load settings from TOML config file |
+
+#### `serve`
+
+| Flag | Values | Default | Description |
+|---|---|---|---|
+| `--server` | *(flag)* | off | Server mode: bind to `0.0.0.0`, suppress browser auto-open, disable desktop-only routes |
+| `--bind` | `host:port` | `127.0.0.1:4317` | Override the bind address |
+| `--config` | path | `sloc.toml` | Load settings from TOML config file |
+
+#### `send`
+
+| Flag | Values | Default | Description |
+|---|---|---|---|
+| `--smtp-to` | `email,...` | *(none)* | Recipient address(es), comma-separated (repeatable) |
+| `--smtp-from` | email | *(none)* | Sender address (required with `--smtp-to`) |
+| `--smtp-host` | hostname | `SLOC_SMTP_HOST` env | SMTP relay host |
+| `--smtp-port` | port | `587` | SMTP port |
+| `--smtp-user` | string | `SLOC_SMTP_USER` env | SMTP username |
+| `--smtp-pass` | string | `SLOC_SMTP_PASS` env | SMTP password |
+| `--webhook-url` | URL | *(none)* | POST JSON result to this URL (repeatable) |
+| `--webhook-token` | string | `SLOC_WEBHOOK_TOKEN` env | Bearer token for webhook auth |
 
 ### Web UI
 
@@ -242,6 +284,45 @@ Adding language support requires changes in two crates:
 
 ---
 
+## Report delivery (`send`)
+
+The `send` command delivers a saved JSON analysis result (`--json-out`) as a formatted report — useful for automated pipelines, nightly CI reports, or alerting integrations.
+
+### SMTP email
+
+The HTML report is sent as a multipart email with a plain-text fallback. STARTTLS is used automatically on port 587.
+
+```bash
+oxide-sloc send result.json \
+  --smtp-to alice@example.com,bob@example.com \
+  --smtp-from reports@example.com \
+  --smtp-host smtp.example.com \
+  --smtp-port 587
+```
+
+Credentials can be supplied via flags or environment variables:
+
+```bash
+export SLOC_SMTP_HOST=smtp.example.com
+export SLOC_SMTP_USER=reports@example.com
+export SLOC_SMTP_PASS=secret
+oxide-sloc send result.json --smtp-to alice@example.com --smtp-from reports@example.com
+```
+
+### Webhook
+
+The full JSON analysis result is POSTed to the target URL. An optional Bearer token is added to the `Authorization` header.
+
+```bash
+oxide-sloc send result.json \
+  --webhook-url https://hooks.example.com/sloc \
+  --webhook-token "$SLOC_WEBHOOK_TOKEN"
+```
+
+Both SMTP and webhook targets can be combined in a single `send` call — all deliveries run and the command fails if any one of them does.
+
+---
+
 ## PDF export
 
 PDF generation uses a locally installed Chromium-based browser (Chrome, Edge, Brave, Vivaldi, or Opera). Generation runs in the background — the web UI returns results immediately while the PDF is being written.
@@ -305,14 +386,14 @@ submodule_breakdown = true
 
 When the web UI server is running, a JSON metrics API is available for CI/CD dashboards and custom tooling.
 
-| Endpoint | Auth required | Description |
-|---|---|---|
-| `GET /api/metrics/latest` | Yes | Metrics for the most recent scan across all projects |
-| `GET /api/metrics/:run_id` | Yes | Metrics for a specific run by its UUID |
-| `GET /api/project-history?path=<dir>` | Yes | Scan history for a specific project root |
-| `GET /badge/:metric` | No | SVG badge (shields.io-style) |
-| `GET /embed/summary` | No | Embeddable HTML summary widget |
-| `GET /healthz` | No | Health check — always returns `200 OK` |
+| Endpoint | Description |
+|---|---|
+| `GET /api/metrics/latest` | Metrics for the most recent scan across all projects |
+| `GET /api/metrics/:run_id` | Metrics for a specific run by its UUID |
+| `GET /api/project-history?path=<dir>` | Scan history for a specific project root |
+| `GET /badge/:metric` | SVG badge (shields.io-style) |
+| `GET /embed/summary` | Embeddable HTML summary widget |
+| `GET /healthz` | Health check — always returns `200 OK` |
 
 ### Metric values for `/badge/:metric`
 
@@ -396,7 +477,7 @@ Three workflows ship in `.github/workflows/`:
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `ci.yml` | push to `main`, all PRs | fmt → clippy → build → unit tests → security audit → CLI smoke tests → web UI health check |
+| `ci.yml` | push to `main`, all PRs | fmt → clippy → build → unit tests → CLI smoke tests → web UI health check |
 | `release.yml` | push a `v*` tag | cross-compile for 4 platforms → publish GitHub Release with binaries |
 | `docker.yml` | push to `main`, push a `v*` tag | build and push Docker image to GHCR with `latest` + semver tags |
 
@@ -444,7 +525,6 @@ Install Rust → Vendor sources → Format → Lint → Unit tests → Build
 |---|---|
 | `RUST_LOG` | Tracing verbosity (`warn`, `info`, `debug`) |
 | `SLOC_BROWSER` | Override Chromium path for PDF export (also checked: `BROWSER`) |
-| `SLOC_API_KEY` | Enable API key auth — every request must carry `X-API-Key: <value>` |
 | `SLOC_REGISTRY_PATH` | Override the scan-history registry location (default: `out/web/registry.json`) |
 | `SKIP_WEB_CHECK` | Set to any non-empty value to skip the web UI health check stage |
 
@@ -539,13 +619,17 @@ cargo test --workspace
 │   └── sloc-ci-full-scope.toml # CI config preset — audit everything
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml            # PR / push checks + smoke tests + security audit
+│       ├── ci.yml            # PR / push checks + smoke tests
 │       ├── release.yml       # Cross-platform binary releases
 │       ├── docker.yml        # Build and push Docker image to GHCR
 │       └── update-dist.yml   # Rebuild and commit dist/ bundles (run manually or on tag)
+├── deploy/
+│   ├── oxide-sloc.service    # systemd unit for bare-metal / VPS deployments
+│   └── server.toml           # Config template for server mode
 ├── docs/
 │   ├── airgap.md             # Air-gapped / offline installation guide
 │   ├── ci-integrations.md    # Jenkins, GitHub Actions, GitLab CI, Confluence
+│   ├── server-deployment.md  # Docker Compose, systemd, and reverse proxy setup
 │   └── licensing-commercial.md  # Commercial / enterprise licensing info
 ├── samples/
 │   └── basic/            # Fixture files used by CI smoke tests
@@ -557,64 +641,6 @@ cargo test --workspace
 ├── sloc.example.toml
 └── Cargo.toml
 ```
-
----
-
-## Security
-
-By default oxide-sloc binds to `127.0.0.1:4317` (localhost only). It can be deployed on a LAN or WLAN for personal or team use with the following measures.
-
-### Hardened defaults
-
-- HTTP request bodies are capped at 10 MB
-- Error details are logged server-side only; generic messages are shown in the browser
-- PDF generation uses Rust's `Command::args([...])` (no shell interpolation)
-- Dependency CVEs are checked on every CI run via `cargo audit`
-
-### LAN / team deployment
-
-**Step 1 — bind to a network interface**
-
-```bash
-# Bind to all interfaces (or use a specific LAN IP)
-oxide-sloc serve --bind 0.0.0.0:4317
-```
-
-Or set it in `sloc.toml`:
-
-```toml
-[web]
-bind_address = "0.0.0.0:4317"
-```
-
-**Step 2 — enable API key authentication**
-
-Set `SLOC_API_KEY` in the server environment. When set, every request must carry a matching `X-API-Key` header. Requests without the correct key receive HTTP 401. The health check endpoint (`/healthz`) and the badge/embed endpoints are exempt so monitoring probes and external widgets continue to work.
-
-```bash
-export SLOC_API_KEY="$(openssl rand -hex 32)"
-oxide-sloc serve --bind 0.0.0.0:4317
-```
-
-**Step 3 — terminate TLS at a reverse proxy**
-
-oxide-sloc speaks plain HTTP. Put it behind nginx, Caddy, or Traefik for HTTPS termination:
-
-```nginx
-server {
-    listen 443 ssl;
-    server_name sloc.internal;
-    ssl_certificate     /etc/ssl/certs/sloc.crt;
-    ssl_certificate_key /etc/ssl/private/sloc.key;
-
-    location / {
-        proxy_pass http://127.0.0.1:4317;
-        proxy_set_header X-API-Key $http_x_api_key;
-    }
-}
-```
-
-To report a vulnerability privately, see [`SECURITY.md`](./SECURITY.md).
 
 ---
 

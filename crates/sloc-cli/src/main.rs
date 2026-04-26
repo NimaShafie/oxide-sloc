@@ -945,9 +945,9 @@ fn truncate(input: &str, width: usize) -> String {
 }
 
 fn open_path(path: &Path) {
-    let path_str = path.to_string_lossy();
     #[cfg(target_os = "windows")]
     {
+        let path_str = path.to_string_lossy();
         let _ = std::process::Command::new("cmd")
             .args(["/c", "start", "", path_str.as_ref()])
             .spawn();

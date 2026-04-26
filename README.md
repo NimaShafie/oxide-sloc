@@ -3,6 +3,7 @@
 [![CI](https://github.com/NimaShafie/oxide-sloc/actions/workflows/ci.yml/badge.svg)](https://github.com/NimaShafie/oxide-sloc/actions/workflows/ci.yml)
 [![Release](https://github.com/NimaShafie/oxide-sloc/actions/workflows/release.yml/badge.svg)](https://github.com/NimaShafie/oxide-sloc/actions/workflows/release.yml)
 [![Docker](https://github.com/NimaShafie/oxide-sloc/actions/workflows/docker.yml/badge.svg)](https://github.com/NimaShafie/oxide-sloc/actions/workflows/docker.yml)
+[![Latest Release](https://img.shields.io/github/v/release/NimaShafie/oxide-sloc?include_prereleases&label=release)](https://github.com/NimaShafie/oxide-sloc/releases/latest)
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](./LICENSE)
 
 **oxide-sloc** is a Rust-based source line analysis tool built for teams that want more than a simple line counter.
@@ -32,7 +33,7 @@ One shared analysis core with multiple delivery surfaces:
 - **Server mode** — `--server` flag binds to `0.0.0.0`, suppresses browser auto-open, and disables desktop-only routes for multi-user hosting
 - **Rich HTML reports** — per-file breakdown, language summaries, warning analysis, high-value support opportunities
 - **PDF export** — non-blocking background generation via locally installed Chromium
-- **Export to CSV / Excel** — download per-file data from any HTML report via nav bar buttons
+- **Export to CSV / Excel** — via `--csv-out` / `--xlsx-out` CLI flags or nav bar buttons in the HTML report
 - **Scan history & delta tracking** — every run is saved; re-scan to see lines added/removed/unchanged
 - **Side-by-side diff view** — compare any two historical scans at the file level (`/compare`)
 - **Policy-aware counting** — mixed code/comment lines, Python docstrings
@@ -105,18 +106,32 @@ For air-gapped setup, Jenkins, GitLab CI, and Rust toolchain bundling, see [`doc
 ### CLI
 
 ```bash
-# Analyze a directory — print summary to terminal
+# Analyze a directory — print colored summary
+oxide-sloc analyze ./my-repo
+
+# Machine-readable key=value output (great for scripts)
 oxide-sloc analyze ./my-repo --plain
 
-# Full output: JSON + HTML report
+# Full output: JSON + HTML + CSV + Excel — short aliases available
 oxide-sloc analyze ./my-repo \
-  --json-out result.json \
-  --html-out result.html
+  -j result.json \
+  -H report.html \
+  -c report.csv \
+  -x report.xlsx
 
-# Per-file breakdown
-oxide-sloc analyze ./my-repo --per-file --plain
+# Per-file breakdown in the terminal
+oxide-sloc analyze ./my-repo --per-file
 
-# Apply a specific counting policy
+# Open the HTML report in the browser immediately after generation
+oxide-sloc analyze ./my-repo -H report.html --open
+
+# Quiet mode — only write files, print nothing (ideal for CI pipelines)
+oxide-sloc analyze ./my-repo -j result.json --quiet
+
+# Fail the pipeline if warnings exist (exit 2) or code drops below threshold (exit 3)
+oxide-sloc analyze ./my-repo --fail-on-warnings --fail-below 10000
+
+# Apply a specific mixed-line counting policy
 oxide-sloc analyze ./my-repo --mixed-line-policy separate-mixed-category --plain
 
 # Include/exclude file patterns
@@ -125,19 +140,30 @@ oxide-sloc analyze ./my-repo \
   --exclude-glob "vendor/**" \
   --plain
 
+# Restrict to specific languages
+oxide-sloc analyze ./my-repo --enabled-language rust --enabled-language python --plain
+
 # Custom report title
 oxide-sloc analyze ./my-repo \
   --report-title "Q2 Code Review" \
-  --html-out report.html
+  -H report.html
 
 # Scan a super-repository — detect git submodules and report each separately
 oxide-sloc analyze ./mono-repo \
   --submodule-breakdown \
-  --json-out result.json \
-  --html-out report.html
+  -j result.json \
+  -H report.html
 
 # Re-render a report from a saved JSON (change format without re-scanning)
-oxide-sloc report result.json --html-out report.html --pdf-out report.pdf
+oxide-sloc report result.json -H report.html --pdf-out report.pdf -c report.csv -x report.xlsx
+
+# Compare two saved results and show the line-count delta
+oxide-sloc diff baseline.json current.json
+oxide-sloc diff baseline.json current.json -j delta.json -c delta.csv -x delta.xlsx
+
+# Generate a starter config file
+oxide-sloc init                        # creates .oxide-sloc.toml
+oxide-sloc init ci/sloc.toml --force   # custom path, overwrite existing
 
 # Start the web UI (auto-opens browser)
 oxide-sloc serve
@@ -161,23 +187,56 @@ oxide-sloc send result.json \
 
 #### `analyze`
 
-| Flag | Values | Default | Description |
-|---|---|---|---|
-| `--mixed-line-policy` | `code-only` `code-and-comment` `comment-only` `separate-mixed-category` | `code-only` | How lines containing both code and inline comments are classified |
-| `--python-docstrings-as-code` | *(flag)* | off | Treat docstrings as code instead of comments |
-| `--include-glob` | glob pattern | *(all)* | Only scan files matching this pattern (repeatable) |
-| `--exclude-glob` | glob pattern | *(none)* | Skip files matching this pattern (repeatable) |
-| `--enabled-language` | language name | *(all)* | Restrict analysis to a specific language (repeatable) |
-| `--no-ignore-files` | *(flag)* | off | Ignore `.gitignore` and other ignore files |
-| `--follow-symlinks` | *(flag)* | off | Follow symbolic links during directory traversal |
-| `--report-title` | string | folder name | Title shown in HTML/PDF reports |
-| `--json-out` | path | *(none)* | Write JSON analysis result to file |
-| `--html-out` | path | *(none)* | Write HTML report to file |
-| `--pdf-out` | path | *(none)* | Write PDF report to file |
-| `--per-file` | *(flag)* | off | Include per-file breakdown in terminal output |
-| `--plain` | *(flag)* | off | Plain terminal output (key=value pairs) |
-| `--submodule-breakdown` | *(flag)* | off | Detect `.gitmodules` and emit per-submodule stats |
-| `--config` | path | `sloc.toml` | Load settings from TOML config file |
+| Flag | Short | Values | Default | Description |
+|---|---|---|---|---|
+| `--json-out` | `-j` | path | *(none)* | Write JSON analysis result to file |
+| `--html-out` | `-H` | path | *(none)* | Write HTML report to file |
+| `--csv-out` | `-c` | path | *(none)* | Write CSV summary to file (language + per-file) |
+| `--xlsx-out` | `-x` | path | *(none)* | Write Excel workbook to file (4 sheets) |
+| `--pdf-out` | | path | *(none)* | Write PDF report (requires Chrome/Edge/Brave) |
+| `--open` | | *(flag)* | off | Open generated HTML in the system browser |
+| `--quiet` | `-q` | *(flag)* | off | Suppress all output except errors |
+| `--plain` | | *(flag)* | off | Machine-readable key=value terminal output |
+| `--per-file` | | *(flag)* | off | Include per-file breakdown in terminal output |
+| `--fail-on-warnings` | | *(flag)* | off | Exit 2 if any warnings are emitted |
+| `--fail-below` | | integer | *(none)* | Exit 3 if code lines fall below this threshold |
+| `--mixed-line-policy` | | `code-only` `code-and-comment` `comment-only` `separate-mixed-category` | `code-only` | How lines with both code and inline comments are classified |
+| `--python-docstrings-as-code` | | *(flag)* | off | Treat docstrings as code instead of comments |
+| `--include-glob` | | glob | *(all)* | Only scan files matching this pattern (repeatable) |
+| `--exclude-glob` | | glob | *(none)* | Skip files matching this pattern (repeatable) |
+| `--enabled-language` | | language name | *(all)* | Restrict to a specific language (repeatable) |
+| `--no-ignore-files` | | *(flag)* | off | Ignore `.gitignore` and `.ignore` files |
+| `--follow-symlinks` | | *(flag)* | off | Follow symbolic links during traversal |
+| `--report-title` | | string | folder name | Title shown in HTML/PDF/XLSX reports |
+| `--submodule-breakdown` | | *(flag)* | off | Detect `.gitmodules` and emit per-submodule stats |
+| `--config` | | path | *(none)* | Load settings from a TOML config file |
+
+#### `report`
+
+| Flag | Short | Description |
+|---|---|---|
+| `--html-out` | `-H` | Write HTML report |
+| `--pdf-out` | | Write PDF report |
+| `--csv-out` | `-c` | Write CSV summary |
+| `--xlsx-out` | `-x` | Write Excel workbook |
+| `--open` | | Open generated HTML in the browser |
+
+#### `diff`
+
+| Flag | Short | Description |
+|---|---|---|
+| `--json-out` | `-j` | Write delta JSON |
+| `--csv-out` | `-c` | Write delta CSV |
+| `--xlsx-out` | `-x` | Write delta Excel workbook |
+| `--plain` | | Machine-readable key=value terminal output |
+| `--quiet` | `-q` | Suppress all output except errors |
+
+#### `init`
+
+| Flag | Description |
+|---|---|
+| `[PATH]` | Where to write the config file (default: `.oxide-sloc.toml`) |
+| `--force` | Overwrite if the file already exists |
 
 #### `serve`
 
@@ -257,30 +316,63 @@ Navigate to `/history` to browse all past scans. Select any two runs and click *
 
 ---
 
-## Currently supported languages
+## Supported languages (41)
 
-| Language | Extensions |
-|---|---|
-| C | `.c`, `.h` |
-| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx` |
-| C# | `.cs` |
-| Go | `.go` |
-| Java | `.java` |
-| JavaScript | `.js`, `.mjs`, `.cjs` |
-| Python | `.py` |
-| Rust | `.rs` |
-| Shell | `.sh`, `.bash`, `.zsh`, `.ksh` |
-| PowerShell | `.ps1`, `.psm1`, `.psd1` |
-| TypeScript | `.ts`, `.mts`, `.cts` |
+| Language | Extensions / Filenames | Comment styles |
+|---|---|---|
+| Assembly | `.asm`, `.s` | `;` |
+| C | `.c`, `.h` | `//` `/* */` |
+| C++ | `.cc`, `.cpp`, `.cxx`, `.hpp`, `.hxx` | `//` `/* */` |
+| C# | `.cs` | `//` `/* */` verbatim strings |
+| Clojure | `.clj`, `.cljs`, `.cljc`, `.edn` | `;` |
+| CSS | `.css` | `/* */` |
+| Dart | `.dart` | `//` `/* */` |
+| Dockerfile | `Dockerfile`, `Dockerfile.*` | `#` |
+| Elixir | `.ex`, `.exs` | `#` |
+| Erlang | `.erl`, `.hrl` | `%` |
+| F# | `.fs`, `.fsi`, `.fsx` | `//` `(* *)` |
+| Go | `.go` | `//` `/* */` |
+| Groovy | `.groovy`, `.gradle` | `//` `/* */` |
+| Haskell | `.hs`, `.lhs` | `--` `{- -}` |
+| HTML | `.html`, `.htm`, `.xhtml` | `<!-- -->` |
+| Java | `.java` | `//` `/* */` |
+| JavaScript | `.js`, `.mjs`, `.cjs` | `//` `/* */` |
+| Julia | `.jl` | `#` `#= =#` |
+| Kotlin | `.kt`, `.kts` | `//` `/* */` |
+| Lua | `.lua` | `--` `--[[ ]]` |
+| Makefile | `Makefile`, `GNUmakefile`, `.mk` | `#` |
+| Nim | `.nim`, `.nims` | `#` `#[ ]#` |
+| Objective-C | `.m`, `.mm` | `//` `/* */` |
+| OCaml | `.ml`, `.mli` | `(* *)` |
+| Perl | `.pl`, `.pm`, `.t` | `#` |
+| PHP | `.php` | `//` `#` `/* */` |
+| PowerShell | `.ps1`, `.psm1`, `.psd1` | `#` `<# #>` |
+| Python | `.py` | `#` docstrings |
+| R | `.r` | `#` |
+| Ruby | `.rb`, `.rake`, `Rakefile`, `Gemfile` | `#` |
+| Rust | `.rs` | `//` `/* */` |
+| Scala | `.scala`, `.sc` | `//` `/* */` |
+| SCSS | `.scss`, `.sass` | `//` `/* */` |
+| Shell | `.sh`, `.bash`, `.zsh`, `.ksh` | `#` |
+| SQL | `.sql` | `--` `/* */` |
+| Svelte | `.svelte` | `//` `/* */` |
+| Swift | `.swift` | `//` `/* */` |
+| TypeScript | `.ts`, `.mts`, `.cts` | `//` `/* */` |
+| Vue | `.vue` | `//` `/* */` |
+| XML / SVG | `.xml`, `.xsd`, `.xsl`, `.svg` | `<!-- -->` |
+| Zig | `.zig` | `//` |
 
-> **Note:** TOML, Markdown, and YAML are not analyzed (no meaningful SLOC metric applies). All languages above use a fast lexical state-machine parser. Python, C, and C++ will additionally gain tree-sitter-backed adapters for higher-accuracy parsing.
+> **Not supported (intentionally):** TOML, Markdown, YAML — no meaningful SLOC metric applies.
+> Shebang (`#!`) detection works for Python, Shell, Ruby, Perl, PHP, and Node.js scripts.
+> All languages use a lexical state-machine parser. C, C++, and Python additionally support
+> tree-sitter-backed analysis (behind the `tree-sitter` feature flag) for higher accuracy.
 
 ### Adding a new language
 
 Adding language support requires changes in two crates:
 
 1. **`crates/sloc-languages/src/lib.rs`** — add a variant to `Language`, implement `display_name`/`as_slug`/`from_name`, register file extensions in `detect_language`, and add a `ScanConfig` entry in `analyze_text`.
-2. **`crates/sloc-config/src/lib.rs`** — add the language name to any allowlists used by `AnalysisConfig` if you want it on by default.
+2. **`crates/sloc-config/src/lib.rs`** — no change needed in most cases; `enabled_languages` filtering uses `Language::from_name` which picks up new variants automatically.
 
 ---
 
@@ -345,6 +437,24 @@ In Docker, Chromium is bundled in the image — no extra setup needed.
 ## Export to CSV and Excel
 
 Every HTML report includes **Export CSV** and **Export Excel** buttons in the top navigation bar, as well as in the "Per-file detail" table toolbar. Clicking either button downloads the per-file breakdown as a `.csv` or `.xls` file respectively — no server round-trip required, the export is generated entirely in the browser from the rendered table data.
+
+The same exports are also available directly from the CLI — no HTML report needed:
+
+```bash
+# Write CSV and Excel alongside the HTML report in one pass
+oxide-sloc analyze ./my-repo \
+  --csv-out out/result.csv \
+  --xlsx-out out/result.xlsx \
+  --html-out out/result.html
+
+# Re-export from a previously saved JSON scan
+oxide-sloc report result.json --csv-out result.csv --xlsx-out result.xlsx
+
+# Export a diff between two scans
+oxide-sloc diff baseline.json current.json --csv-out delta.csv --xlsx-out delta.xlsx
+```
+
+The Excel workbook (`.xlsx`) contains four sheets: **Summary**, **By Language**, **Per File**, and **Skipped Files**. It is a self-contained ZIP+XML file that opens in Excel, LibreOffice Calc, and Google Sheets without any plugins.
 
 ---
 
@@ -447,11 +557,19 @@ Every web UI option maps 1:1 to a CLI flag, making it straightforward to reprodu
 | Quick Scan button | `oxide-sloc analyze ./my-repo --plain` |
 | Step 2: mixed-line policy | `--mixed-line-policy code-only` |
 | Step 2: Python docstrings as code | `--python-docstrings-as-code` |
-| Step 3: JSON output | `--json-out result.json` |
-| Step 3: HTML output | `--html-out report.html` |
+| Step 3: JSON output | `--json-out result.json` (`-j`) |
+| Step 3: HTML output | `--html-out report.html` (`-H`) |
 | Step 3: PDF output | `--pdf-out report.pdf` |
+| Step 3: CSV output | `--csv-out result.csv` (`-c`) |
+| Step 3: Excel output | `--xlsx-out result.xlsx` (`-x`) |
+| Step 3: open in browser | `--open` |
 | Step 3: custom title | `--report-title "My Report"` |
 | Re-render from saved JSON | `oxide-sloc report result.json --html-out report.html` |
+| Compare two scans | `oxide-sloc diff baseline.json current.json` |
+| Generate starter config | `oxide-sloc init` |
+| Suppress all non-error output | `--quiet` (`-q`) |
+| Fail pipeline if warnings present | `--fail-on-warnings` |
+| Fail pipeline if code lines low | `--fail-below 10000` |
 | Custom config file | `--config ci/sloc-ci-default.toml` |
 
 ### CI config presets
@@ -486,8 +604,8 @@ The `ci.yml` smoke job runs every analysis variant (plain, per-file, all 4 polic
 To cut a release:
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 Pushing a `v*` tag triggers both `release.yml` (binaries) and `docker.yml` (Docker image) automatically.

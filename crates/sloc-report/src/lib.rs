@@ -1360,3 +1360,644 @@ struct ReportTemplate<'a> {
     logo_text_uri: String,
     small_logo_uri: String,
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CSV export
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn csv_escape(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+/// Write a two-section CSV: language summary followed by per-file detail.
+pub fn write_csv(run: &AnalysisRun, path: &Path) -> Result<()> {
+    let mut out = String::new();
+
+    // ── Section 1: Summary ──────────────────────────────────────────────────
+    out.push_str("# Summary\r\n");
+    out.push_str("Metric,Value\r\n");
+    out.push_str(&format!("Run ID,{}\r\n", csv_escape(&run.tool.run_id)));
+    out.push_str(&format!(
+        "Timestamp,{}\r\n",
+        csv_escape(
+            &run.tool
+                .timestamp_utc
+                .format("%Y-%m-%d %H:%M:%S UTC")
+                .to_string()
+        )
+    ));
+    out.push_str(&format!(
+        "Report Title,{}\r\n",
+        csv_escape(&run.effective_configuration.reporting.report_title)
+    ));
+    out.push_str(&format!(
+        "Files Analyzed,{}\r\n",
+        run.summary_totals.files_analyzed
+    ));
+    out.push_str(&format!(
+        "Files Skipped,{}\r\n",
+        run.summary_totals.files_skipped
+    ));
+    out.push_str(&format!(
+        "Physical Lines,{}\r\n",
+        run.summary_totals.total_physical_lines
+    ));
+    out.push_str(&format!("Code Lines,{}\r\n", run.summary_totals.code_lines));
+    out.push_str(&format!(
+        "Comment Lines,{}\r\n",
+        run.summary_totals.comment_lines
+    ));
+    out.push_str(&format!(
+        "Blank Lines,{}\r\n",
+        run.summary_totals.blank_lines
+    ));
+    out.push_str(&format!(
+        "Mixed Lines (separate),{}\r\n",
+        run.summary_totals.mixed_lines_separate
+    ));
+
+    // ── Section 2: Language breakdown ───────────────────────────────────────
+    out.push_str("\r\n# By Language\r\n");
+    out.push_str(
+        "Language,Files,Physical Lines,Code Lines,Comment Lines,Blank Lines,Mixed Lines\r\n",
+    );
+    for lang in &run.totals_by_language {
+        out.push_str(&format!(
+            "{},{},{},{},{},{},{}\r\n",
+            csv_escape(lang.language.display_name()),
+            lang.files,
+            lang.total_physical_lines,
+            lang.code_lines,
+            lang.comment_lines,
+            lang.blank_lines,
+            lang.mixed_lines_separate,
+        ));
+    }
+
+    // ── Section 3: Per-file detail (if present) ─────────────────────────────
+    if !run.per_file_records.is_empty() {
+        out.push_str("\r\n# Per File\r\n");
+        out.push_str(
+            "Path,Language,Size (bytes),Code Lines,Comment Lines,Blank Lines,Physical Lines,Generated,Minified,Vendor\r\n",
+        );
+        for rec in &run.per_file_records {
+            out.push_str(&format!(
+                "{},{},{},{},{},{},{},{},{},{}\r\n",
+                csv_escape(&rec.relative_path),
+                csv_escape(
+                    &rec.language
+                        .map(|l| l.display_name().to_string())
+                        .unwrap_or_default()
+                ),
+                rec.size_bytes,
+                rec.effective_counts.code_lines,
+                rec.effective_counts.comment_lines,
+                rec.effective_counts.blank_lines,
+                rec.raw_line_categories.total_physical_lines,
+                rec.generated,
+                rec.minified,
+                rec.vendor,
+            ));
+        }
+    }
+
+    fs::write(path, out).with_context(|| format!("failed to write CSV to {}", path.display()))
+}
+
+/// Write a diff/delta as CSV.
+pub fn write_diff_csv(cmp: &sloc_core::ScanComparison, path: &Path) -> Result<()> {
+    let s = &cmp.summary;
+    let mut out = String::new();
+
+    out.push_str("# Diff Summary\r\n");
+    out.push_str("Metric,Value\r\n");
+    out.push_str(&format!(
+        "Baseline Run,{}\r\n",
+        csv_escape(&s.baseline_run_id)
+    ));
+    out.push_str(&format!(
+        "Current Run,{}\r\n",
+        csv_escape(&s.current_run_id)
+    ));
+    out.push_str(&format!("Files Added,{}\r\n", cmp.files_added));
+    out.push_str(&format!("Files Removed,{}\r\n", cmp.files_removed));
+    out.push_str(&format!("Files Modified,{}\r\n", cmp.files_modified));
+    out.push_str(&format!("Files Unchanged,{}\r\n", cmp.files_unchanged));
+    out.push_str(&format!("Code Δ,{}\r\n", s.code_lines_delta));
+    out.push_str(&format!("Comment Δ,{}\r\n", s.comment_lines_delta));
+    out.push_str(&format!("Blank Δ,{}\r\n", s.blank_lines_delta));
+    out.push_str(&format!("Total Δ,{}\r\n", s.total_lines_delta));
+
+    out.push_str("\r\n# File Deltas\r\n");
+    out.push_str("Status,Path,Language,Baseline Code,Current Code,Code Δ,Baseline Comment,Current Comment,Comment Δ,Baseline Blank,Current Blank,Blank Δ,Total Δ\r\n");
+    for f in &cmp.file_deltas {
+        let status = match f.status {
+            sloc_core::FileChangeStatus::Added => "Added",
+            sloc_core::FileChangeStatus::Removed => "Removed",
+            sloc_core::FileChangeStatus::Modified => "Modified",
+            sloc_core::FileChangeStatus::Unchanged => "Unchanged",
+        };
+        out.push_str(&format!(
+            "{},{},{},{},{},{},{},{},{},{},{},{},{}\r\n",
+            status,
+            csv_escape(&f.relative_path),
+            csv_escape(f.language.as_deref().unwrap_or("")),
+            f.baseline_code,
+            f.current_code,
+            f.code_delta,
+            f.baseline_comment,
+            f.current_comment,
+            f.comment_delta,
+            f.baseline_blank,
+            f.current_blank,
+            f.blank_delta,
+            f.total_delta,
+        ));
+    }
+
+    fs::write(path, out).with_context(|| format!("failed to write diff CSV to {}", path.display()))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// XLSX export — self-contained, no external crates required.
+//
+// An .xlsx file is a ZIP archive containing a set of XML files.  We write the
+// ZIP with the STORE (uncompressed) method so we only need a CRC-32 routine
+// and straightforward byte-level framing — both implemented inline below.
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xffff_ffff;
+    for &b in data {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            crc = if crc & 1 == 0 {
+                crc >> 1
+            } else {
+                (crc >> 1) ^ 0xedb8_8320
+            };
+        }
+    }
+    !crc
+}
+
+struct ZipEntry {
+    name: Vec<u8>,
+    data: Vec<u8>,
+    crc: u32,
+    offset: u32,
+}
+
+fn zip_add(entries: &mut Vec<ZipEntry>, buf: &mut Vec<u8>, name: &str, data: Vec<u8>) {
+    let crc = crc32(&data);
+    let offset = buf.len() as u32;
+    let name_bytes = name.as_bytes().to_vec();
+    let size = data.len() as u32;
+
+    // Local file header (signature 0x04034b50)
+    buf.extend_from_slice(&0x04034b50u32.to_le_bytes());
+    buf.extend_from_slice(&20u16.to_le_bytes()); // version needed
+    buf.extend_from_slice(&0u16.to_le_bytes()); // flags
+    buf.extend_from_slice(&0u16.to_le_bytes()); // compression: STORE
+    buf.extend_from_slice(&0u16.to_le_bytes()); // mod time
+    buf.extend_from_slice(&0u16.to_le_bytes()); // mod date
+    buf.extend_from_slice(&crc.to_le_bytes());
+    buf.extend_from_slice(&size.to_le_bytes()); // compressed size
+    buf.extend_from_slice(&size.to_le_bytes()); // uncompressed size
+    buf.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+    buf.extend_from_slice(&0u16.to_le_bytes()); // extra field length
+    buf.extend_from_slice(&name_bytes);
+    buf.extend_from_slice(&data);
+
+    entries.push(ZipEntry {
+        name: name_bytes,
+        data,
+        crc,
+        offset,
+    });
+}
+
+fn zip_finish(mut buf: Vec<u8>, entries: Vec<ZipEntry>) -> Vec<u8> {
+    let central_start = buf.len() as u32;
+
+    for e in &entries {
+        let size = e.data.len() as u32;
+        buf.extend_from_slice(&0x02014b50u32.to_le_bytes()); // central dir sig
+        buf.extend_from_slice(&20u16.to_le_bytes()); // version made by
+        buf.extend_from_slice(&20u16.to_le_bytes()); // version needed
+        buf.extend_from_slice(&0u16.to_le_bytes()); // flags
+        buf.extend_from_slice(&0u16.to_le_bytes()); // compression: STORE
+        buf.extend_from_slice(&0u16.to_le_bytes()); // mod time
+        buf.extend_from_slice(&0u16.to_le_bytes()); // mod date
+        buf.extend_from_slice(&e.crc.to_le_bytes());
+        buf.extend_from_slice(&size.to_le_bytes());
+        buf.extend_from_slice(&size.to_le_bytes());
+        buf.extend_from_slice(&(e.name.len() as u16).to_le_bytes());
+        buf.extend_from_slice(&0u16.to_le_bytes()); // extra
+        buf.extend_from_slice(&0u16.to_le_bytes()); // comment
+        buf.extend_from_slice(&0u16.to_le_bytes()); // disk start
+        buf.extend_from_slice(&0u16.to_le_bytes()); // internal attrs
+        buf.extend_from_slice(&0u32.to_le_bytes()); // external attrs
+        buf.extend_from_slice(&e.offset.to_le_bytes());
+        buf.extend_from_slice(&e.name);
+    }
+
+    let central_size = buf.len() as u32 - central_start;
+    let n = entries.len() as u16;
+
+    // End of central directory record
+    buf.extend_from_slice(&0x06054b50u32.to_le_bytes());
+    buf.extend_from_slice(&0u16.to_le_bytes()); // disk number
+    buf.extend_from_slice(&0u16.to_le_bytes()); // disk with central dir
+    buf.extend_from_slice(&n.to_le_bytes()); // entries on this disk
+    buf.extend_from_slice(&n.to_le_bytes()); // total entries
+    buf.extend_from_slice(&central_size.to_le_bytes());
+    buf.extend_from_slice(&central_start.to_le_bytes());
+    buf.extend_from_slice(&0u16.to_le_bytes()); // comment length
+
+    buf
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+/// Build a worksheet XML with the given header row and data rows.
+/// String cells use `t="inlineStr"` (no shared-strings table needed).
+/// Numeric cells use plain `<v>`.
+fn build_sheet(headers: &[&str], rows: &[Vec<String>], style_header: bool) -> Vec<u8> {
+    fn col_name(idx: usize) -> String {
+        // Convert 0-based column index to Excel column letters (A, B, … Z, AA, …)
+        let mut n = idx + 1;
+        let mut s = String::new();
+        while n > 0 {
+            n -= 1;
+            s.insert(0, char::from(b'A' + (n % 26) as u8));
+            n /= 26;
+        }
+        s
+    }
+
+    let mut xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
+    xml.push_str(
+        "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">\n",
+    );
+    xml.push_str("<sheetData>\n");
+
+    // Header row
+    xml.push_str("<row r=\"1\">");
+    for (ci, &h) in headers.iter().enumerate() {
+        let cell_ref = format!("{}1", col_name(ci));
+        let style = if style_header { " s=\"1\"" } else { "" };
+        xml.push_str(&format!(
+            "<c r=\"{}\" t=\"inlineStr\"{style}><is><t>{}</t></is></c>",
+            cell_ref,
+            xml_escape(h)
+        ));
+    }
+    xml.push_str("</row>\n");
+
+    // Data rows
+    for (ri, row) in rows.iter().enumerate() {
+        let row_num = ri + 2;
+        xml.push_str(&format!("<row r=\"{row_num}\">"));
+        for (ci, cell) in row.iter().enumerate() {
+            let cell_ref = format!("{}{}", col_name(ci), row_num);
+            // Try to detect if the value is purely numeric
+            if cell.parse::<f64>().is_ok() && !cell.is_empty() {
+                xml.push_str(&format!(
+                    "<c r=\"{cell_ref}\"><v>{}</v></c>",
+                    xml_escape(cell)
+                ));
+            } else {
+                xml.push_str(&format!(
+                    "<c r=\"{cell_ref}\" t=\"inlineStr\"><is><t>{}</t></is></c>",
+                    xml_escape(cell)
+                ));
+            }
+        }
+        xml.push_str("</row>\n");
+    }
+
+    xml.push_str("</sheetData>\n</worksheet>");
+    xml.into_bytes()
+}
+
+type SheetDef<'a> = (&'a str, &'a [&'a str], Vec<Vec<String>>);
+
+fn build_xlsx_archive(sheets: &[SheetDef<'_>]) -> Vec<u8> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut entries: Vec<ZipEntry> = Vec::new();
+
+    // ── [Content_Types].xml ─────────────────────────────────────────────────
+    let mut ct = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
+    ct.push_str("<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\n");
+    ct.push_str("  <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\n");
+    ct.push_str("  <Default Extension=\"xml\" ContentType=\"application/xml\"/>\n");
+    ct.push_str("  <Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>\n");
+    ct.push_str("  <Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>\n");
+    for (i, _) in sheets.iter().enumerate() {
+        ct.push_str(&format!(
+            "  <Override PartName=\"/xl/worksheets/sheet{}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>\n",
+            i + 1
+        ));
+    }
+    ct.push_str("</Types>");
+    zip_add(
+        &mut entries,
+        &mut buf,
+        "[Content_Types].xml",
+        ct.into_bytes(),
+    );
+
+    // ── _rels/.rels ─────────────────────────────────────────────────────────
+    let rels = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n\
+<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n\
+  <Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>\n\
+</Relationships>";
+    zip_add(
+        &mut entries,
+        &mut buf,
+        "_rels/.rels",
+        rels.as_bytes().to_vec(),
+    );
+
+    // ── xl/workbook.xml ──────────────────────────────────────────────────────
+    let mut wb = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
+    wb.push_str("<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">\n");
+    wb.push_str("  <sheets>\n");
+    for (i, (name, _, _)) in sheets.iter().enumerate() {
+        wb.push_str(&format!(
+            "    <sheet name=\"{}\" sheetId=\"{}\" r:id=\"rId{}\"/>\n",
+            xml_escape(name),
+            i + 1,
+            i + 1
+        ));
+    }
+    wb.push_str("  </sheets>\n</workbook>");
+    zip_add(&mut entries, &mut buf, "xl/workbook.xml", wb.into_bytes());
+
+    // ── xl/_rels/workbook.xml.rels ───────────────────────────────────────────
+    let mut wbr = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
+    wbr.push_str(
+        "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n",
+    );
+    for (i, _) in sheets.iter().enumerate() {
+        wbr.push_str(&format!(
+            "  <Relationship Id=\"rId{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet{}.xml\"/>\n",
+            i + 1, i + 1
+        ));
+    }
+    wbr.push_str(&format!(
+        "  <Relationship Id=\"rId{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>\n",
+        sheets.len() + 1
+    ));
+    wbr.push_str("</Relationships>");
+    zip_add(
+        &mut entries,
+        &mut buf,
+        "xl/_rels/workbook.xml.rels",
+        wbr.into_bytes(),
+    );
+
+    // ── xl/styles.xml (minimal: normal + bold-header) ───────────────────────
+    let styles = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n\
+<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">\n\
+  <fonts count=\"2\">\n\
+    <font><sz val=\"11\"/><name val=\"Calibri\"/></font>\n\
+    <font><b/><sz val=\"11\"/><name val=\"Calibri\"/></font>\n\
+  </fonts>\n\
+  <fills count=\"2\">\n\
+    <fill><patternFill patternType=\"none\"/></fill>\n\
+    <fill><patternFill patternType=\"gray125\"/></fill>\n\
+  </fills>\n\
+  <borders count=\"1\"><border><left/><right/><top/><bottom/><diagonal/></border></borders>\n\
+  <cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>\n\
+  <cellXfs count=\"2\">\n\
+    <xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/>\n\
+    <xf numFmtId=\"0\" fontId=\"1\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\"/>\n\
+  </cellXfs>\n\
+</styleSheet>";
+    zip_add(
+        &mut entries,
+        &mut buf,
+        "xl/styles.xml",
+        styles.as_bytes().to_vec(),
+    );
+
+    // ── worksheets ───────────────────────────────────────────────────────────
+    for (i, (_, headers, rows)) in sheets.iter().enumerate() {
+        let sheet_xml = build_sheet(headers, rows, true);
+        let name = format!("xl/worksheets/sheet{}.xml", i + 1);
+        zip_add(&mut entries, &mut buf, &name, sheet_xml);
+    }
+
+    zip_finish(buf, entries)
+}
+
+/// Write an analysis run as a multi-sheet Excel workbook.
+pub fn write_xlsx(run: &AnalysisRun, path: &Path) -> Result<()> {
+    // Sheet 1 — Summary
+    let summary_rows: Vec<Vec<String>> = vec![
+        vec!["Run ID".into(), run.tool.run_id.clone()],
+        vec![
+            "Timestamp".into(),
+            run.tool
+                .timestamp_utc
+                .format("%Y-%m-%d %H:%M:%S UTC")
+                .to_string(),
+        ],
+        vec![
+            "Report Title".into(),
+            run.effective_configuration.reporting.report_title.clone(),
+        ],
+        vec![
+            "Files Analyzed".into(),
+            run.summary_totals.files_analyzed.to_string(),
+        ],
+        vec![
+            "Files Skipped".into(),
+            run.summary_totals.files_skipped.to_string(),
+        ],
+        vec![
+            "Physical Lines".into(),
+            run.summary_totals.total_physical_lines.to_string(),
+        ],
+        vec![
+            "Code Lines".into(),
+            run.summary_totals.code_lines.to_string(),
+        ],
+        vec![
+            "Comment Lines".into(),
+            run.summary_totals.comment_lines.to_string(),
+        ],
+        vec![
+            "Blank Lines".into(),
+            run.summary_totals.blank_lines.to_string(),
+        ],
+        vec![
+            "Mixed Lines (separate)".into(),
+            run.summary_totals.mixed_lines_separate.to_string(),
+        ],
+    ];
+
+    // Sheet 2 — By Language
+    let lang_rows: Vec<Vec<String>> = run
+        .totals_by_language
+        .iter()
+        .map(|l| {
+            vec![
+                l.language.display_name().to_string(),
+                l.files.to_string(),
+                l.total_physical_lines.to_string(),
+                l.code_lines.to_string(),
+                l.comment_lines.to_string(),
+                l.blank_lines.to_string(),
+                l.mixed_lines_separate.to_string(),
+            ]
+        })
+        .collect();
+
+    // Sheet 3 — Per File
+    let file_rows: Vec<Vec<String>> = run
+        .per_file_records
+        .iter()
+        .map(|r| {
+            vec![
+                r.relative_path.clone(),
+                r.language
+                    .map(|l| l.display_name().to_string())
+                    .unwrap_or_default(),
+                r.size_bytes.to_string(),
+                r.effective_counts.code_lines.to_string(),
+                r.effective_counts.comment_lines.to_string(),
+                r.effective_counts.blank_lines.to_string(),
+                r.raw_line_categories.total_physical_lines.to_string(),
+                r.generated.to_string(),
+                r.minified.to_string(),
+                r.vendor.to_string(),
+            ]
+        })
+        .collect();
+
+    // Sheet 4 — Skipped Files
+    let skipped_rows: Vec<Vec<String>> = run
+        .skipped_file_records
+        .iter()
+        .map(|r| {
+            vec![
+                r.relative_path.clone(),
+                format!("{:?}", r.status),
+                r.size_bytes.to_string(),
+            ]
+        })
+        .collect();
+
+    let summary_hdrs: &[&str] = &["Metric", "Value"];
+    let lang_hdrs: &[&str] = &[
+        "Language",
+        "Files",
+        "Physical Lines",
+        "Code Lines",
+        "Comments",
+        "Blank",
+        "Mixed",
+    ];
+    let file_hdrs: &[&str] = &[
+        "Path",
+        "Language",
+        "Size (bytes)",
+        "Code Lines",
+        "Comments",
+        "Blank Lines",
+        "Physical Lines",
+        "Generated",
+        "Minified",
+        "Vendor",
+    ];
+    let skipped_hdrs: &[&str] = &["Path", "Status", "Size (bytes)"];
+
+    let sheets: Vec<SheetDef<'_>> = vec![
+        ("Summary", summary_hdrs, summary_rows),
+        ("By Language", lang_hdrs, lang_rows),
+        ("Per File", file_hdrs, file_rows),
+        ("Skipped", skipped_hdrs, skipped_rows),
+    ];
+
+    let bytes = build_xlsx_archive(&sheets);
+    fs::write(path, bytes).with_context(|| format!("failed to write XLSX to {}", path.display()))
+}
+
+/// Write a diff comparison as an Excel workbook.
+pub fn write_diff_xlsx(cmp: &sloc_core::ScanComparison, path: &Path) -> Result<()> {
+    let s = &cmp.summary;
+
+    let summary_rows: Vec<Vec<String>> = vec![
+        vec!["Baseline Run".into(), s.baseline_run_id.clone()],
+        vec!["Current Run".into(), s.current_run_id.clone()],
+        vec!["Files Added".into(), cmp.files_added.to_string()],
+        vec!["Files Removed".into(), cmp.files_removed.to_string()],
+        vec!["Files Modified".into(), cmp.files_modified.to_string()],
+        vec!["Files Unchanged".into(), cmp.files_unchanged.to_string()],
+        vec!["Code Δ".into(), s.code_lines_delta.to_string()],
+        vec!["Comment Δ".into(), s.comment_lines_delta.to_string()],
+        vec!["Blank Δ".into(), s.blank_lines_delta.to_string()],
+        vec!["Total Δ".into(), s.total_lines_delta.to_string()],
+    ];
+
+    let delta_rows: Vec<Vec<String>> = cmp
+        .file_deltas
+        .iter()
+        .map(|f| {
+            let status = match f.status {
+                sloc_core::FileChangeStatus::Added => "Added",
+                sloc_core::FileChangeStatus::Removed => "Removed",
+                sloc_core::FileChangeStatus::Modified => "Modified",
+                sloc_core::FileChangeStatus::Unchanged => "Unchanged",
+            };
+            vec![
+                status.to_string(),
+                f.relative_path.clone(),
+                f.language.clone().unwrap_or_default(),
+                f.baseline_code.to_string(),
+                f.current_code.to_string(),
+                f.code_delta.to_string(),
+                f.baseline_comment.to_string(),
+                f.current_comment.to_string(),
+                f.comment_delta.to_string(),
+                f.total_delta.to_string(),
+            ]
+        })
+        .collect();
+
+    let summary_hdrs: &[&str] = &["Metric", "Value"];
+    let delta_hdrs: &[&str] = &[
+        "Status",
+        "Path",
+        "Language",
+        "Baseline Code",
+        "Current Code",
+        "Code Δ",
+        "Baseline Comment",
+        "Current Comment",
+        "Comment Δ",
+        "Total Δ",
+    ];
+
+    let sheets: Vec<SheetDef<'_>> = vec![
+        ("Diff Summary", summary_hdrs, summary_rows),
+        ("File Deltas", delta_hdrs, delta_rows),
+    ];
+
+    let bytes = build_xlsx_archive(&sheets);
+    fs::write(path, bytes)
+        .with_context(|| format!("failed to write diff XLSX to {}", path.display()))
+}

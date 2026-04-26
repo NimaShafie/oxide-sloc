@@ -20,6 +20,37 @@ pub enum Language {
     Shell,
     PowerShell,
     TypeScript,
+    // --- Extended language support ---
+    Assembly,
+    Clojure,
+    Css,
+    Dart,
+    Dockerfile,
+    Elixir,
+    Erlang,
+    FSharp,
+    Groovy,
+    Haskell,
+    Html,
+    Julia,
+    Kotlin,
+    Lua,
+    Makefile,
+    Nim,
+    ObjectiveC,
+    Ocaml,
+    Perl,
+    Php,
+    R,
+    Ruby,
+    Scala,
+    Scss,
+    Sql,
+    Svelte,
+    Swift,
+    Vue,
+    Xml,
+    Zig,
 }
 
 impl Language {
@@ -36,6 +67,36 @@ impl Language {
             Language::Shell => "Shell",
             Language::PowerShell => "PowerShell",
             Language::TypeScript => "TypeScript",
+            Language::Assembly => "Assembly",
+            Language::Clojure => "Clojure",
+            Language::Css => "CSS",
+            Language::Dart => "Dart",
+            Language::Dockerfile => "Dockerfile",
+            Language::Elixir => "Elixir",
+            Language::Erlang => "Erlang",
+            Language::FSharp => "F#",
+            Language::Groovy => "Groovy",
+            Language::Haskell => "Haskell",
+            Language::Html => "HTML",
+            Language::Julia => "Julia",
+            Language::Kotlin => "Kotlin",
+            Language::Lua => "Lua",
+            Language::Makefile => "Makefile",
+            Language::Nim => "Nim",
+            Language::ObjectiveC => "Objective-C",
+            Language::Ocaml => "OCaml",
+            Language::Perl => "Perl",
+            Language::Php => "PHP",
+            Language::R => "R",
+            Language::Ruby => "Ruby",
+            Language::Scala => "Scala",
+            Language::Scss => "SCSS",
+            Language::Sql => "SQL",
+            Language::Svelte => "Svelte",
+            Language::Swift => "Swift",
+            Language::Vue => "Vue",
+            Language::Xml => "XML",
+            Language::Zig => "Zig",
         }
     }
 
@@ -52,6 +113,36 @@ impl Language {
             Language::Shell => "shell",
             Language::PowerShell => "powershell",
             Language::TypeScript => "typescript",
+            Language::Assembly => "assembly",
+            Language::Clojure => "clojure",
+            Language::Css => "css",
+            Language::Dart => "dart",
+            Language::Dockerfile => "dockerfile",
+            Language::Elixir => "elixir",
+            Language::Erlang => "erlang",
+            Language::FSharp => "fsharp",
+            Language::Groovy => "groovy",
+            Language::Haskell => "haskell",
+            Language::Html => "html",
+            Language::Julia => "julia",
+            Language::Kotlin => "kotlin",
+            Language::Lua => "lua",
+            Language::Makefile => "makefile",
+            Language::Nim => "nim",
+            Language::ObjectiveC => "objectivec",
+            Language::Ocaml => "ocaml",
+            Language::Perl => "perl",
+            Language::Php => "php",
+            Language::R => "r",
+            Language::Ruby => "ruby",
+            Language::Scala => "scala",
+            Language::Scss => "scss",
+            Language::Sql => "sql",
+            Language::Svelte => "svelte",
+            Language::Swift => "swift",
+            Language::Vue => "vue",
+            Language::Xml => "xml",
+            Language::Zig => "zig",
         }
     }
 
@@ -68,6 +159,36 @@ impl Language {
             "shell" | "sh" | "bash" => Some(Language::Shell),
             "powershell" | "pwsh" | "ps" => Some(Language::PowerShell),
             "typescript" | "ts" => Some(Language::TypeScript),
+            "assembly" | "asm" => Some(Language::Assembly),
+            "clojure" | "clj" => Some(Language::Clojure),
+            "css" => Some(Language::Css),
+            "dart" => Some(Language::Dart),
+            "dockerfile" | "docker" => Some(Language::Dockerfile),
+            "elixir" | "ex" => Some(Language::Elixir),
+            "erlang" | "erl" => Some(Language::Erlang),
+            "fsharp" | "f#" | "fs" => Some(Language::FSharp),
+            "groovy" => Some(Language::Groovy),
+            "haskell" | "hs" => Some(Language::Haskell),
+            "html" | "htm" => Some(Language::Html),
+            "julia" | "jl" => Some(Language::Julia),
+            "kotlin" | "kt" => Some(Language::Kotlin),
+            "lua" => Some(Language::Lua),
+            "makefile" | "make" | "mk" => Some(Language::Makefile),
+            "nim" => Some(Language::Nim),
+            "objectivec" | "objc" | "objective-c" => Some(Language::ObjectiveC),
+            "ocaml" | "ml" => Some(Language::Ocaml),
+            "perl" | "pl" => Some(Language::Perl),
+            "php" => Some(Language::Php),
+            "r" => Some(Language::R),
+            "ruby" | "rb" => Some(Language::Ruby),
+            "scala" => Some(Language::Scala),
+            "scss" | "sass" => Some(Language::Scss),
+            "sql" => Some(Language::Sql),
+            "svelte" => Some(Language::Svelte),
+            "swift" => Some(Language::Swift),
+            "vue" => Some(Language::Vue),
+            "xml" => Some(Language::Xml),
+            "zig" => Some(Language::Zig),
             _ => None,
         }
     }
@@ -103,17 +224,47 @@ pub struct RawFileAnalysis {
 
 pub fn supported_languages() -> BTreeSet<Language> {
     [
+        Language::Assembly,
         Language::C,
+        Language::Clojure,
         Language::Cpp,
         Language::CSharp,
+        Language::Css,
+        Language::Dart,
+        Language::Dockerfile,
+        Language::Elixir,
+        Language::Erlang,
+        Language::FSharp,
         Language::Go,
+        Language::Groovy,
+        Language::Haskell,
+        Language::Html,
         Language::Java,
         Language::JavaScript,
-        Language::Python,
-        Language::Rust,
-        Language::Shell,
+        Language::Julia,
+        Language::Kotlin,
+        Language::Lua,
+        Language::Makefile,
+        Language::Nim,
+        Language::ObjectiveC,
+        Language::Ocaml,
+        Language::Perl,
+        Language::Php,
         Language::PowerShell,
+        Language::Python,
+        Language::R,
+        Language::Ruby,
+        Language::Rust,
+        Language::Scala,
+        Language::Scss,
+        Language::Shell,
+        Language::Sql,
+        Language::Svelte,
+        Language::Swift,
         Language::TypeScript,
+        Language::Vue,
+        Language::Xml,
+        Language::Zig,
     ]
     .into_iter()
     .collect()
@@ -130,16 +281,50 @@ pub fn detect_language(
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_ascii_lowercase());
 
+    // Extension override check (user-configured mappings win over everything)
     if let Some(ext) = extension.as_ref() {
-        if let Some(override_name) = extension_overrides.get(ext) {
+        if let Some(override_name) = extension_overrides.get(ext.as_str()) {
             if let Some(lang) = Language::from_name(override_name) {
                 return Some(lang);
             }
         }
     }
 
+    // Filename-based detection for files that have no extension or use exact names
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let filename_lower = filename.to_ascii_lowercase();
+
+    // Dockerfile: exact name or Dockerfile.* variant
+    if filename == "Dockerfile"
+        || filename.starts_with("Dockerfile.")
+        || filename_lower == "dockerfile"
+    {
+        return Some(Language::Dockerfile);
+    }
+
+    // Makefile variants
+    if matches!(
+        filename,
+        "Makefile" | "GNUmakefile" | "makefile" | "BSDmakefile"
+    ) {
+        return Some(Language::Makefile);
+    }
+
+    // Ruby ecosystem files that have no extension
+    if matches!(
+        filename,
+        "Rakefile" | "Gemfile" | "Guardfile" | "Vagrantfile" | "Fastfile" | "Podfile"
+    ) {
+        return Some(Language::Ruby);
+    }
+
+    let _ = stem; // suppress unused warning
+
+    // Extension-based detection
     if let Some(ext) = extension.as_deref() {
         let by_ext = match ext {
+            // --- Original 11 ---
             "c" | "h" => Some(Language::C),
             "cc" | "cp" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => Some(Language::Cpp),
             "cs" => Some(Language::CSharp),
@@ -151,6 +336,36 @@ pub fn detect_language(
             "sh" | "bash" | "zsh" | "ksh" => Some(Language::Shell),
             "ps1" | "psm1" | "psd1" => Some(Language::PowerShell),
             "ts" | "mts" | "cts" => Some(Language::TypeScript),
+            // --- Extended 30 ---
+            "asm" | "s" => Some(Language::Assembly),
+            "clj" | "cljs" | "cljc" | "edn" => Some(Language::Clojure),
+            "css" => Some(Language::Css),
+            "dart" => Some(Language::Dart),
+            "ex" | "exs" => Some(Language::Elixir),
+            "erl" | "hrl" => Some(Language::Erlang),
+            "fs" | "fsi" | "fsx" => Some(Language::FSharp),
+            "groovy" | "gradle" => Some(Language::Groovy),
+            "hs" | "lhs" => Some(Language::Haskell),
+            "html" | "htm" | "xhtml" => Some(Language::Html),
+            "jl" => Some(Language::Julia),
+            "kt" | "kts" => Some(Language::Kotlin),
+            "lua" => Some(Language::Lua),
+            "mk" => Some(Language::Makefile),
+            "nim" | "nims" => Some(Language::Nim),
+            "m" | "mm" => Some(Language::ObjectiveC),
+            "ml" | "mli" => Some(Language::Ocaml),
+            "pl" | "pm" | "t" => Some(Language::Perl),
+            "php" | "php3" | "php4" | "php5" | "php7" | "phtml" => Some(Language::Php),
+            "r" => Some(Language::R),
+            "rb" | "rake" => Some(Language::Ruby),
+            "scala" | "sc" => Some(Language::Scala),
+            "scss" | "sass" => Some(Language::Scss),
+            "sql" => Some(Language::Sql),
+            "svelte" => Some(Language::Svelte),
+            "swift" => Some(Language::Swift),
+            "vue" => Some(Language::Vue),
+            "xml" | "xsd" | "xsl" | "xslt" | "svg" => Some(Language::Xml),
+            "zig" => Some(Language::Zig),
             _ => None,
         };
 
@@ -170,11 +385,23 @@ pub fn detect_language(
                     return Some(Language::PowerShell);
                 }
                 if lower.contains("bash")
-                    || lower.contains("sh")
+                    || lower.contains("/sh")
                     || lower.contains("zsh")
                     || lower.contains("ksh")
                 {
                     return Some(Language::Shell);
+                }
+                if lower.contains("ruby") {
+                    return Some(Language::Ruby);
+                }
+                if lower.contains("perl") {
+                    return Some(Language::Perl);
+                }
+                if lower.contains("php") {
+                    return Some(Language::Php);
+                }
+                if lower.contains("node") || lower.contains("nodejs") {
+                    return Some(Language::JavaScript);
                 }
             }
         }
@@ -338,6 +565,355 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 },
             )
         }
+        // --- Extended language analyzers ---
+        Language::Assembly => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &[";"],
+                block_comment: None,
+                allow_single_quote_strings: false,
+                allow_double_quote_strings: false,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Clojure => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &[";"],
+                block_comment: None,
+                allow_single_quote_strings: false,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Css => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &[],
+                block_comment: Some(("/*", "*/")),
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Dart => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["//"],
+                block_comment: Some(("/*", "*/")),
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Dockerfile => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["#"],
+                block_comment: None,
+                allow_single_quote_strings: false,
+                allow_double_quote_strings: false,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Elixir => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["#"],
+                block_comment: None,
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Erlang => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["%"],
+                block_comment: None,
+                allow_single_quote_strings: false,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::FSharp => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["//"],
+                block_comment: Some(("(*", "*)")),
+                allow_single_quote_strings: false,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Groovy => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["//"],
+                block_comment: Some(("/*", "*/")),
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Haskell => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["--"],
+                block_comment: Some(("{-", "-}")),
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Html | Language::Xml => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &[],
+                block_comment: Some(("<!--", "-->")),
+                allow_single_quote_strings: false,
+                allow_double_quote_strings: false,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Julia => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["#"],
+                block_comment: Some(("#=", "=#")),
+                allow_single_quote_strings: false,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: true,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Kotlin => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["//"],
+                block_comment: Some(("/*", "*/")),
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Lua => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["--"],
+                block_comment: Some(("--[[", "]]")),
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Makefile => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["#"],
+                block_comment: None,
+                allow_single_quote_strings: false,
+                allow_double_quote_strings: false,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Nim => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["#"],
+                block_comment: Some(("#[", "]#")),
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::ObjectiveC => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["//"],
+                block_comment: Some(("/*", "*/")),
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Ocaml => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &[],
+                block_comment: Some(("(*", "*)")),
+                allow_single_quote_strings: false,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Perl => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["#"],
+                block_comment: None,
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Php => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["//", "#"],
+                block_comment: Some(("/*", "*/")),
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::R => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["#"],
+                block_comment: None,
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Ruby => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["#"],
+                block_comment: None,
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Scala => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["//"],
+                block_comment: Some(("/*", "*/")),
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Scss => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["//"],
+                block_comment: Some(("/*", "*/")),
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Sql => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["--"],
+                block_comment: Some(("/*", "*/")),
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: false,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Svelte => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["//"],
+                block_comment: Some(("/*", "*/")),
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Swift => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["//"],
+                block_comment: Some(("/*", "*/")),
+                allow_single_quote_strings: false,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Vue => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["//"],
+                block_comment: Some(("/*", "*/")),
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
+        Language::Zig => analyze_generic(
+            text,
+            ScanConfig {
+                line_comments: &["//"],
+                block_comment: None,
+                allow_single_quote_strings: true,
+                allow_double_quote_strings: true,
+                allow_triple_quote_strings: false,
+                allow_csharp_verbatim_strings: false,
+                skip_lines: HashSet::new(),
+            },
+        ),
     }
 }
 

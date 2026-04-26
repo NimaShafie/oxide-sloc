@@ -21,6 +21,11 @@ jobs:
             artifact: oxide-sloc-linux-x86_64
             binary: oxide-sloc
 
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact: oxide-sloc-linux-arm64
+            binary: oxide-sloc
+
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: oxide-sloc-windows-x86_64.exe
@@ -50,14 +55,20 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Install musl tools (Linux musl target only)
+      - name: Install musl tools (x86_64 Linux musl)
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get install -y musl-tools
+
+      - name: Install arm64 cross-compiler (Linux arm64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Add cross-compilation target
         run: rustup target add ${{ matrix.target }}
 
       - name: Build release binary
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: cargo build --release -p oxide-sloc --target ${{ matrix.target }}
 
       - name: Rename binary
@@ -85,7 +96,6 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           if [[ "$TAG" =~ -(alpha|beta|rc)\. ]] || [[ "$TAG" =~ -(alpha|beta|rc)$ ]]; then
             echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-            # Extract the label (alpha / beta / rc) for the notice
             LABEL=$(echo "$TAG" | grep -oP '(?<=-)(alpha|beta|rc)')
             echo "label=$LABEL" >> "$GITHUB_OUTPUT"
           else
@@ -99,29 +109,64 @@ jobs:
           path: artifacts/
           merge-multiple: true
 
+      - name: Generate SHA-256 checksums
+        shell: bash
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631  # v2.2.2
         with:
-          files: artifacts/*
+          files: |
+            artifacts/*
+            artifacts/SHA256SUMS.txt
           prerelease: ${{ steps.pre.outputs.is_prerelease }}
           generate_release_notes: true
           body: |
-            ${{ steps.pre.outputs.is_prerelease == 'true' && format('> **{0} build** — not production-ready. Intended for testing and feedback only. Breaking changes may occur before a stable release.', steps.pre.outputs.label) || '' }}
+            ${{ steps.pre.outputs.is_prerelease == 'true' && format('> **{0} build** — please test and report issues before the stable release. Core functionality is complete; minor rough edges may remain.', steps.pre.outputs.label) || '' }}
 
-            ## Binaries
+            ## Download
 
-            | Platform | File |
-            |---|---|
-            | Linux x86-64 | `oxide-sloc-linux-x86_64` |
-            | Windows x86-64 | `oxide-sloc-windows-x86_64.exe` |
-            | macOS x86-64 | `oxide-sloc-macos-x86_64` |
-            | macOS Apple Silicon | `oxide-sloc-macos-arm64` |
+            | Platform | File | Notes |
+            |---|---|---|
+            | Linux x86-64 | `oxide-sloc-linux-x86_64` | Static binary (musl) — works on any x86-64 Linux |
+            | Linux arm64 | `oxide-sloc-linux-arm64` | Requires glibc ≥ 2.17 (Raspberry Pi 4, AWS Graviton, Ampere, etc.) |
+            | Windows x86-64 | `oxide-sloc-windows-x86_64.exe` | Windows 10/11 |
+            | macOS x86-64 | `oxide-sloc-macos-x86_64` | Intel Mac |
+            | macOS Apple Silicon | `oxide-sloc-macos-arm64` | M1/M2/M3/M4 Mac |
+
+            Checksums are in `SHA256SUMS.txt`.
+
+            ## Quick install
 
             ```bash
-            # Linux / macOS — make executable and move to PATH
-            chmod +x oxide-sloc-linux-x86_64
-            mv oxide-sloc-linux-x86_64 /usr/local/bin/oxide-sloc
+            # Linux x86-64
+            curl -Lo oxide-sloc https://github.com/NimaShafie/oxide-sloc/releases/download/${{ github.ref_name }}/oxide-sloc-linux-x86_64
+            chmod +x oxide-sloc && sudo mv oxide-sloc /usr/local/bin/
+
+            # Linux arm64
+            curl -Lo oxide-sloc https://github.com/NimaShafie/oxide-sloc/releases/download/${{ github.ref_name }}/oxide-sloc-linux-arm64
+            chmod +x oxide-sloc && sudo mv oxide-sloc /usr/local/bin/
+
+            # macOS (Apple Silicon)
+            curl -Lo oxide-sloc https://github.com/NimaShafie/oxide-sloc/releases/download/${{ github.ref_name }}/oxide-sloc-macos-arm64
+            chmod +x oxide-sloc && sudo mv oxide-sloc /usr/local/bin/
+
+            # macOS (Intel)
+            curl -Lo oxide-sloc https://github.com/NimaShafie/oxide-sloc/releases/download/${{ github.ref_name }}/oxide-sloc-macos-x86_64
+            chmod +x oxide-sloc && sudo mv oxide-sloc /usr/local/bin/
 
             # Windows — rename and add to PATH
             ren oxide-sloc-windows-x86_64.exe oxide-sloc.exe
+
+            # Verify checksum (Linux / macOS)
+            sha256sum --check SHA256SUMS.txt
+            ```
+
+            ## Or build from source (requires Rust 1.95+)
+
+            ```bash
+            cargo install --git https://github.com/NimaShafie/oxide-sloc oxide-sloc
             ```

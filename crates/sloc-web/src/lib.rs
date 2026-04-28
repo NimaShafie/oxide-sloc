@@ -159,8 +159,12 @@ async fn splash() -> impl IntoResponse {
 
 async fn index(Query(query): Query<IndexQuery>) -> impl IntoResponse {
     let prefill_json = if query.prefilled.as_deref() == Some("1") || query.path.is_some() {
-        let policy = query.mixed_line_policy.unwrap_or_else(|| "code_only".to_string());
-        let behavior = query.binary_file_behavior.unwrap_or_else(|| "skip".to_string());
+        let policy = query
+            .mixed_line_policy
+            .unwrap_or_else(|| "code_only".to_string());
+        let behavior = query
+            .binary_file_behavior
+            .unwrap_or_else(|| "skip".to_string());
         let cfg = ScanConfig {
             oxide_sloc_version: env!("CARGO_PKG_VERSION").to_string(),
             path: query.path.unwrap_or_default(),
@@ -173,17 +177,19 @@ async fn index(Query(query): Query<IndexQuery>) -> impl IntoResponse {
                 .as_deref()
                 .map(|v| v != "off")
                 .unwrap_or(true),
-            generated_file_detection: query.generated_file_detection.as_deref()
-                != Some("disabled"),
-            minified_file_detection: query.minified_file_detection.as_deref()
-                != Some("disabled"),
+            generated_file_detection: query.generated_file_detection.as_deref() != Some("disabled"),
+            minified_file_detection: query.minified_file_detection.as_deref() != Some("disabled"),
             vendor_directory_detection: query.vendor_directory_detection.as_deref()
                 != Some("disabled"),
             include_lockfiles: query.include_lockfiles.as_deref() == Some("enabled"),
             binary_file_behavior: behavior,
             output_dir: query.output_dir.unwrap_or_default(),
             report_title: query.report_title.unwrap_or_default(),
-            generate_html: query.generate_html.as_deref().map(|v| v != "off").unwrap_or(true),
+            generate_html: query
+                .generate_html
+                .as_deref()
+                .map(|v| v != "off")
+                .unwrap_or(true),
             generate_pdf: query.generate_pdf.as_deref() == Some("on"),
         };
         serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string())
@@ -897,8 +903,7 @@ async fn analyze_handler(
             submodule_breakdown: form.submodule_breakdown.as_deref() == Some("enabled"),
             mixed_line_policy: policy_str,
             python_docstrings_as_comments: form.python_docstrings_as_comments.is_some(),
-            generated_file_detection: form.generated_file_detection.as_deref()
-                != Some("disabled"),
+            generated_file_detection: form.generated_file_detection.as_deref() != Some("disabled"),
             minified_file_detection: form.minified_file_detection.as_deref() != Some("disabled"),
             vendor_directory_detection: form.vendor_directory_detection.as_deref()
                 != Some("disabled"),
@@ -1156,7 +1161,13 @@ async fn analyze_handler(
 fn build_pdf_filename(report_title: &str, run_id: &str) -> String {
     let slug: String = report_title
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c.to_ascii_lowercase() } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
         .collect::<String>()
         .split('_')
         .filter(|s| !s.is_empty())
@@ -1487,7 +1498,11 @@ fn make_history_rows(reg: &ScanRegistry) -> Vec<HistoryEntryRow> {
                 .to_string(),
             timestamp: fmt_pst(e.timestamp_utc),
             project_label: e.project_label.clone(),
-            project_path: e.input_roots.first().map(|s| sanitize_path_str(s)).unwrap_or_default(),
+            project_path: e
+                .input_roots
+                .first()
+                .map(|s| sanitize_path_str(s))
+                .unwrap_or_default(),
             files_analyzed: e.summary.files_analyzed,
             files_skipped: e.summary.files_skipped,
             code_lines: e.summary.code_lines,

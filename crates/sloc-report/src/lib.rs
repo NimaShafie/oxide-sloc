@@ -111,10 +111,7 @@ fn render_html_inner(run: &AnalysisRun, is_sub_report: bool) -> Result<String> {
                         .replace('"', "\\\"");
                     format!(
                         r#"{{"lang":"{}","code":{},"comments":{},"blanks":{}}}"#,
-                        name,
-                        l.code_lines,
-                        l.comment_lines,
-                        l.blank_lines,
+                        name, l.code_lines, l.comment_lines, l.blank_lines,
                     )
                 })
                 .collect();

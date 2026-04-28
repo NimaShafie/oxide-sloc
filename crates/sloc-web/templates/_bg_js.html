@@ -1,0 +1,62 @@
+// ── Shared background init ── call inside the page's main IIFE ────────────
+// Include with:  {% include "_bg_js.html" %}
+(function randomizeWatermarks() {
+  var wms = Array.prototype.slice.call(document.querySelectorAll('.background-watermarks img'));
+  if (!wms.length) return;
+  var placed = [];
+  function tooClose(top, left) {
+    for (var i = 0; i < placed.length; i++) {
+      var dt = Math.abs(placed[i][0] - top), dl = Math.abs(placed[i][1] - left);
+      if (dt < 16 && dl < 12) return true;
+    }
+    return false;
+  }
+  function pick(leftBand) {
+    for (var attempt = 0; attempt < 50; attempt++) {
+      var top = Math.random() * 88 + 2;
+      var left = leftBand ? Math.random() * 24 + 1 : Math.random() * 24 + 74;
+      if (!tooClose(top, left)) { placed.push([top, left]); return [top, left]; }
+    }
+    var top = Math.random() * 88 + 2;
+    var left = leftBand ? Math.random() * 24 + 1 : Math.random() * 24 + 74;
+    placed.push([top, left]); return [top, left];
+  }
+  var half = Math.floor(wms.length / 2);
+  wms.forEach(function (img, i) {
+    var pos = pick(i < half);
+    var size = Math.floor(Math.random() * 100 + 120);
+    var rot = (Math.random() * 360).toFixed(1);
+    var op = (Math.random() * 0.08 + 0.12).toFixed(2);
+    img.style.cssText = 'width:' + size + 'px;top:' + pos[0].toFixed(1) + '%;left:'
+      + pos[1].toFixed(1) + '%;transform:rotate(' + rot + 'deg);opacity:' + op + ';';
+  });
+})();
+(function spawnCodeParticles() {
+  var container = document.getElementById('code-particles');
+  if (!container) return;
+  var snippets = [
+    '1,247 sloc','fn analyze()','code_lines','0 mixed','blanks: 312',
+    '// comment','pub fn run','use std::fs','Result<()>','let mut n = 0',
+    'git main','#[derive]','impl Scan','3,841 physical','files: 60',
+    '450 comments','cargo build','Ok(run)','Vec<String>','match lang',
+    'fn main() {','.rs .go .py','sloc_core','render_html','2,163 code'
+  ];
+  var count = 38;
+  for (var i = 0; i < count; i++) {
+    (function(idx) {
+      var el = document.createElement('span');
+      el.className = 'code-particle';
+      el.textContent = snippets[idx % snippets.length];
+      var left = Math.random() * 94 + 2;
+      var top = Math.random() * 88 + 6;
+      var dur = (Math.random() * 10 + 9).toFixed(1);
+      var delay = (Math.random() * 18).toFixed(1);
+      var rot = (Math.random() * 26 - 13).toFixed(1);
+      var op = (Math.random() * 0.09 + 0.06).toFixed(3);
+      el.style.cssText = 'left:' + left.toFixed(1) + '%;top:' + top.toFixed(1) + '%;'
+        + '--rot:' + rot + 'deg;--op:' + op + ';'
+        + 'animation-duration:' + dur + 's;animation-delay:-' + delay + 's;';
+      container.appendChild(el);
+    })(i);
+  }
+})();

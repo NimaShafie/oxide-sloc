@@ -30,6 +30,14 @@ launch() {
     "$1"
 }
 
+launch_cargo() {
+    printf '\n  oxide-sloc starting \xe2\x86\x92 http://127.0.0.1:4317\n  Press Ctrl+C to stop.\n\n'
+    cd "$SCRIPT_DIR"
+    export OXIDE_SLOC_ROOT="$SCRIPT_DIR"
+    export CARGO_INCREMENTAL=0
+    cargo run -p oxide-sloc
+}
+
 extract_bundle() {
     echo "Extracting oxide-sloc..."
     if [[ "$PLATFORM" == windows ]]; then
@@ -40,6 +48,12 @@ extract_bundle() {
         tar xzf "$BUNDLE" -C "$SCRIPT_DIR"
     fi
 }
+
+# If cargo is available, always build and run from source so changes are picked up immediately.
+if command -v cargo &>/dev/null && [[ -f "$SCRIPT_DIR/Cargo.toml" ]]; then
+    launch_cargo
+    exit 0
+fi
 
 if   [[ -f "$EXE" ]];       then launch "$EXE";       exit 0
 elif [[ -f "$EXE_DIST" ]];  then launch "$EXE_DIST";  exit 0

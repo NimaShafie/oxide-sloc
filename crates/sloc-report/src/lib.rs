@@ -89,11 +89,37 @@ fn render_html_inner(run: &AnalysisRun, is_sub_report: bool) -> Result<String> {
                 comment_lines: row.comment_lines,
                 blank_lines: row.blank_lines,
                 mixed_lines_separate: row.mixed_lines_separate,
+                functions: row.functions,
+                classes: row.classes,
+                variables: row.variables,
+                imports: row.imports,
             })
             .collect(),
         file_rows: run.per_file_records.iter().map(file_row_view).collect(),
         skipped_rows: run.skipped_file_records.iter().map(file_row_view).collect(),
         config_json,
+        lang_chart_json: {
+            let entries: Vec<String> = run
+                .totals_by_language
+                .iter()
+                .take(12)
+                .map(|l| {
+                    let name = l
+                        .language
+                        .display_name()
+                        .replace('\\', "\\\\")
+                        .replace('"', "\\\"");
+                    format!(
+                        r#"{{"lang":"{}","code":{},"comments":{},"blanks":{}}}"#,
+                        name,
+                        l.code_lines,
+                        l.comment_lines,
+                        l.blank_lines,
+                    )
+                })
+                .collect();
+            format!("[{}]", entries.join(","))
+        },
         has_run_warnings: !run.warnings.is_empty(),
         warning_count: run.warnings.len(),
         warning_summary_rows,
@@ -193,9 +219,10 @@ pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
                 "--hide-scrollbars",
                 "--mute-audio",
                 "--print-to-pdf-no-header",
+                "--no-pdf-header-footer",
                 "--run-all-compositor-stages-before-draw",
-                "--virtual-time-budget=4000",
-                "--window-size=1600,1100",
+                "--virtual-time-budget=8000",
+                "--force-device-scale-factor=1",
                 &format!("--user-data-dir={}", profile_dir.display()),
                 &format!("--print-to-pdf={}", absolute_pdf.display()),
                 &file_url,
@@ -435,6 +462,10 @@ fn file_row_view(file: &FileRecord) -> FileRow {
         comment_lines: file.effective_counts.comment_lines,
         blank_lines: file.effective_counts.blank_lines,
         mixed_lines_separate: file.effective_counts.mixed_lines_separate,
+        functions: file.raw_line_categories.functions,
+        classes: file.raw_line_categories.classes,
+        variables: file.raw_line_categories.variables,
+        imports: file.raw_line_categories.imports,
         status: format!("{:?}", file.status),
         status_class: format!("{:?}", file.status).to_ascii_lowercase(),
         warnings: if file.warnings.is_empty() {
@@ -640,6 +671,10 @@ struct LanguageRow {
     comment_lines: u64,
     blank_lines: u64,
     mixed_lines_separate: u64,
+    functions: u64,
+    classes: u64,
+    variables: u64,
+    imports: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -651,6 +686,10 @@ struct FileRow {
     comment_lines: u64,
     blank_lines: u64,
     mixed_lines_separate: u64,
+    functions: u64,
+    classes: u64,
+    variables: u64,
+    imports: u64,
     status: String,
     status_class: String,
     warnings: String,
@@ -673,7 +712,7 @@ struct WarningOpportunityRow {
 
 #[derive(Template)]
 #[template(
-    source = r#"<!doctype html>
+    source = r##"<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -758,6 +797,12 @@ struct WarningOpportunityRow {
     .nav-status { display:flex; align-items:center; justify-content:flex-end; gap:10px; flex-wrap:wrap; margin-left: auto; }
     .theme-toggle, .header-button { cursor:pointer; background: rgba(255,255,255,0.08); }
     .theme-toggle { width: 38px; justify-content:center; padding:0; }
+    .nav-dropdown-wrap { position: relative; }
+    .nav-dropdown-trigger { }
+    .nav-dropdown-menu { display: none; position: absolute; top: calc(100% + 6px); right: 0; background: var(--nav-2); border: 1px solid rgba(255,255,255,0.15); border-radius: 10px; min-width: 140px; padding: 6px; z-index: 50; box-shadow: 0 8px 24px rgba(0,0,0,0.28); }
+    .nav-dropdown-wrap:hover .nav-dropdown-menu, .nav-dropdown-wrap:focus-within .nav-dropdown-menu { display: flex; flex-direction: column; gap: 2px; }
+    .nav-dropdown-item { display: block; width: 100%; padding: 8px 12px; border: none; border-radius: 7px; background: transparent; color: #fff; font-size: 13px; font-weight: 700; text-align: left; cursor: pointer; }
+    .nav-dropdown-item:hover { background: rgba(255,255,255,0.12); }
     .theme-toggle svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; }
     .theme-toggle .icon-sun { display:none; }
     body.dark-theme .theme-toggle .icon-sun { display:block; }
@@ -776,10 +821,13 @@ struct WarningOpportunityRow {
     .hero { padding: 22px; margin-bottom: 18px; background: linear-gradient(180deg, rgba(255,255,255,0.34), transparent), var(--surface); }
     .hero-top { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; }
     .hero h1 { margin:0 0 8px; font-size: 28px; letter-spacing: -0.04em; }
-    .run-id-row { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
-    .run-id-chip { display:inline-flex; align-items:center; gap:4px; font-size:12px; padding:3px 10px; border-radius:6px; background:var(--surface-2); border:1px solid var(--line); color:var(--text); font-family:ui-monospace,monospace; }
-    .run-id-chip strong { font-weight:700; }
-    .run-id-chip.muted-chip { color:var(--muted); font-style:italic; }
+    .run-id-row { display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:8px; margin-top:12px; }
+    @media(max-width:960px) { .run-id-row { grid-template-columns: 1fr 1fr; } }
+    @media(max-width:560px) { .run-id-row { grid-template-columns: 1fr; } }
+    .run-id-chip { display:flex; flex-direction:column; gap:3px; padding:8px 12px; border-radius:10px; background:var(--surface-2); border:1px solid var(--line); color:var(--text); }
+    .run-id-chip-label { font-size:10px; font-weight:900; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted-2); }
+    .run-id-chip-value { font-family:ui-monospace,monospace; font-size:12px; font-weight:700; word-break:break-all; }
+    .run-id-chip.muted-chip .run-id-chip-value { color:var(--muted); font-style:italic; }
     .subtitle { margin: 10px 0 0; color: var(--muted); font-size: 16px; line-height: 1.65; }
     .meta { display:flex; flex-wrap:wrap; gap:10px; margin: 16px 0 18px; }
     .meta-chip, .soft-chip { display:inline-flex; align-items:center; min-height: 32px; padding: 0 12px; border-radius: 999px; border:1px solid var(--line); background: var(--surface-2); color: var(--text); font-size: 13px; font-weight: 700; }
@@ -797,6 +845,11 @@ struct WarningOpportunityRow {
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
     th, td { text-align: left; padding: 11px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
     th { color: var(--muted); font-weight: 800; background: var(--surface-2); cursor: pointer; position: sticky; top: 0; z-index: 1; }
+    /* Resizable column headers for per-file and skipped tables */
+    .table-resizable { table-layout: fixed; }
+    .table-resizable th { position: sticky; top: 0; z-index: 2; overflow: hidden; white-space: nowrap; resize: horizontal; min-width: 60px; }
+    .table-resizable td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .table-resizable td.mono { max-width: 0; }
     tbody tr:hover { background: rgba(255, 247, 238, 0.6); }
     body.dark-theme tbody tr:hover { background: rgba(255,255,255,0.03); }
     tr:last-child td { border-bottom: none; }
@@ -819,6 +872,7 @@ struct WarningOpportunityRow {
     .tone-warn .count { color: var(--warn-text); }
     .tone-danger .count { color: var(--danger-text); }
     .support-note { color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .support-table th { cursor: default; }
     details { border: 1px solid var(--line); border-radius: 14px; background: var(--surface-2); }
     summary { cursor: pointer; padding: 14px 16px; font-weight: 700; }
     details > div { padding: 0 16px 16px; }
@@ -835,54 +889,164 @@ struct WarningOpportunityRow {
       .hero-top { flex-direction: column; }
       .search { min-width: 100%; width: 100%; }
     }
-    @media print {
-      body { background: white; }
-      .top-nav, .toolbar, .hero-actions { display:none !important; }
-      .hero, .panel, .metric, .table-shell, pre, .warning-card { box-shadow:none; break-inside: avoid; }
-      .table-shell { max-height: none !important; overflow: visible !important; }
-      th { position: static; }
-    }
-  
+    /* ── Print & PDF export ──────────────────────────────────────────── */
     @page {
-      size: Letter landscape;
-      margin: 0.38in;
+      size: A4 landscape;
+      margin: 0.45in 0.5in;
     }
 
     @media print {
-      html, body {
-        background: #ffffff !important;
+      *, *::before, *::after {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
       }
 
-      .page,
-      .panel,
-      .hero,
-      .section,
-      .saved-report-shell,
-      .saved-panel,
-      .report-shell {
+      html, body {
+        background: #f5efe8 !important;
+        min-height: auto !important;
+        width: 100% !important;
+      }
+
+      /* Hide all interactive / UI-chrome elements */
+      .top-nav, .toolbar, .hero-actions,
+      .background-watermarks, .search,
+      .header-button, .theme-toggle,
+      .nav-dropdown-wrap, .config-actions,
+      .warnings-show-link, .warning-console-actions,
+      input[type="search"], button { display: none !important; }
+
+      /* Remove page-level layout constraints */
+      .page {
         max-width: none !important;
-        width: auto !important;
+        width: 100% !important;
+        padding: 0 !important;
+        margin: 0 !important;
+      }
+
+      .panel, .hero, .section,
+      .saved-report-shell, .saved-panel, .report-shell, .stack {
+        max-width: none !important;
+        width: 100% !important;
         box-shadow: none !important;
+        border: 1px solid #ddd !important;
+        border-radius: 10px !important;
+        margin-bottom: 10px !important;
+      }
+
+      /* Force grids to their full-width column counts regardless of viewport */
+      .summary-grid {
+        display: grid !important;
+        grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+        gap: 10px !important;
+      }
+
+      .warning-grid {
+        display: grid !important;
+        grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+        gap: 8px !important;
+      }
+
+      .report-stack {
+        display: grid !important;
+        gap: 12px !important;
+        align-items: start !important;
+      }
+
+      /* Metric cards */
+      .metric {
+        box-shadow: none !important;
+        border: 1px solid #e0d0c0 !important;
+        border-radius: 8px !important;
+        break-inside: avoid !important;
+        padding: 10px 12px !important;
+      }
+
+      .metric-value { font-size: 20px !important; }
+      .metric-label { font-size: 10px !important; }
+
+      /* Page break control — only small cards get break-inside:avoid.
+         Panels and stacks that contain large tables must be allowed to break
+         across pages; giving them break-inside:avoid causes blank pages. */
+      .metric, .warning-card { break-inside: avoid !important; }
+      .hero { break-inside: avoid !important; }
+      .panel, .stack { break-inside: auto !important; }
+      section { break-inside: auto !important; }
+
+      /* Tables */
+      .table-shell {
+        max-height: none !important;
+        overflow: visible !important;
+        width: 100% !important;
       }
 
       table {
         width: 100% !important;
-        table-layout: fixed !important;
-        font-size: 11px !important;
+        table-layout: auto !important;
+        font-size: 10px !important;
+        border-collapse: collapse !important;
       }
 
-      th, td {
+      thead { display: table-header-group; }
+      tr { break-inside: avoid !important; }
+
+      th {
+        position: static !important;
+        font-size: 9px !important;
+        padding: 5px 8px !important;
+        background: rgba(211,122,76,0.12) !important;
+        white-space: nowrap;
+      }
+
+      td {
         white-space: normal !important;
         overflow-wrap: anywhere !important;
         word-break: break-word !important;
-        padding: 7px 8px !important;
+        padding: 5px 8px !important;
+        font-size: 10px !important;
+        border-bottom: 1px solid #e8d8c8 !important;
       }
 
       pre, code {
         white-space: pre-wrap !important;
         overflow-wrap: anywhere !important;
         word-break: break-word !important;
+        font-size: 9px !important;
+        max-height: none !important;
       }
+
+      .warning-card {
+        box-shadow: none !important;
+        border: 1px solid #ddd !important;
+        break-inside: avoid !important;
+        padding: 10px !important;
+      }
+
+      .hero-top { flex-direction: row !important; }
+
+      .run-id-row { flex-wrap: wrap !important; gap: 4px !important; }
+      .run-id-chip { font-size: 9px !important; padding: 2px 6px !important; }
+      .meta { flex-wrap: wrap !important; gap: 4px !important; }
+      .meta-chip { font-size: 9px !important; padding: 2px 7px !important; }
+
+      .report-footer {
+        border-top: 1px solid #ccc !important;
+        margin-top: 12px !important;
+        font-size: 10px !important;
+      }
+
+      /* Keep warning consoles collapsed in print — they are too long and
+         create blank pages when expanded. Show the summary label only. */
+      details { border: 1px solid #ddd !important; border-radius: 8px !important; }
+      details > summary { display: block !important; font-size: 10px !important; }
+      details > div { display: none !important; }
+      .warning-console { display: none !important; }
+      .warning-console-actions { display: none !important; }
+
+      /* Pill badges */
+      .pill { font-size: 9px !important; padding: 2px 6px !important; min-height: auto !important; }
+
+      /* Support opportunities table */
+      .support-table td:first-child { font-weight: 600; font-size: 10px !important; }
     }
 
 
@@ -912,6 +1076,10 @@ struct WarningOpportunityRow {
       font-size: 14px;
       line-height: 1.6;
     }
+    .config-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 10px; }
+    .config-actions { display: flex; gap: 8px; flex-shrink: 0; margin-top: 4px; }
+    .config-pre { background: #16120f; color: #d4f0d0; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; overflow: auto; resize: vertical; max-height: 320px; min-height: 100px; white-space: pre; }
+    body.dark-theme .config-pre { background: #0e0c0a; color: #b8f0b8; }
 
 
     .top-nav,
@@ -954,8 +1122,14 @@ struct WarningOpportunityRow {
         <span class="nav-pill">Saved artifact</span>
         <button type="button" class="header-button" data-copy-link>Copy link</button>
         <button type="button" class="header-button" data-share-report>Share</button>
-        <button type="button" class="header-button" onclick="exportReportCsv()">Export CSV</button>
-        <button type="button" class="header-button" onclick="exportReportXls()">Export Excel</button>
+        <div class="nav-dropdown-wrap">
+          <button type="button" class="header-button nav-dropdown-trigger" aria-haspopup="true">Export ▾</button>
+          <div class="nav-dropdown-menu">
+            <button type="button" class="nav-dropdown-item" onclick="exportReportCsv()">Export CSV</button>
+            <button type="button" class="nav-dropdown-item" onclick="exportReportXls()">Export Excel</button>
+          </div>
+        </div>
+        <a id="nav-view-pdf-btn" href="/runs/{{ run.tool.run_id }}/pdf" target="_blank" rel="noopener" class="header-button" style="text-decoration:none;">View PDF</a>
         <button type="button" class="header-button" data-print-report>Save / Print</button>
         <button type="button" class="theme-toggle" data-theme-toggle aria-label="Toggle theme" title="Toggle theme">
           <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 15.5A8.5 8.5 0 1 1 12.5 4 6.7 6.7 0 0 0 20 15.5Z"></path></svg>
@@ -972,21 +1146,42 @@ struct WarningOpportunityRow {
           <div class="section-kicker">Saved report artifact</div>
           <h1>{{ title }}</h1>
           <div class="run-id-row">
-            <span class="run-id-chip">Run ID <strong>{{ run.tool.run_id }}</strong></span>
+            <span class="run-id-chip">
+              <span class="run-id-chip-label">Run ID</span>
+              <span class="run-id-chip-value">{{ run.tool.run_id }}</span>
+            </span>
             {% if let Some(long_commit) = run.git_commit_long %}
-            <span class="run-id-chip">Git Commit: <strong>{{ long_commit }}</strong></span>
+            <span class="run-id-chip">
+              <span class="run-id-chip-label">Git Commit</span>
+              <span class="run-id-chip-value">{{ long_commit }}</span>
+            </span>
             {% else %}
-            <span class="run-id-chip muted-chip">Git Commit: Not Detected</span>
+            <span class="run-id-chip muted-chip">
+              <span class="run-id-chip-label">Git Commit</span>
+              <span class="run-id-chip-value">Not detected</span>
+            </span>
             {% endif %}
             {% if let Some(branch) = run.git_branch %}
-            <span class="run-id-chip">Branch: <strong>{{ branch }}</strong></span>
+            <span class="run-id-chip">
+              <span class="run-id-chip-label">Branch</span>
+              <span class="run-id-chip-value">{{ branch }}</span>
+            </span>
             {% else %}
-            <span class="run-id-chip muted-chip">Branch: Not Detected</span>
+            <span class="run-id-chip muted-chip">
+              <span class="run-id-chip-label">Branch</span>
+              <span class="run-id-chip-value">Not detected</span>
+            </span>
             {% endif %}
             {% if let Some(author) = run.git_commit_author %}
-            <span class="run-id-chip">Last Commit By: <strong>{{ author }}</strong></span>
+            <span class="run-id-chip">
+              <span class="run-id-chip-label">Last Commit By</span>
+              <span class="run-id-chip-value">{{ author }}</span>
+            </span>
             {% else %}
-            <span class="run-id-chip muted-chip">Last Commit By: Not Detected</span>
+            <span class="run-id-chip muted-chip">
+              <span class="run-id-chip-label">Last Commit By</span>
+              <span class="run-id-chip-value">Not detected</span>
+            </span>
             {% endif %}
           </div>
         </div>
@@ -1007,6 +1202,10 @@ struct WarningOpportunityRow {
         <div class="metric"><div class="metric-tooltip">Lines consisting entirely of comments or inline documentation.</div><div class="metric-label">Comments</div><div class="metric-value">{{ run.summary_totals.comment_lines }}</div></div>
         <div class="metric"><div class="metric-tooltip">Empty or whitespace-only lines used for readability and spacing.</div><div class="metric-label">Blank</div><div class="metric-value">{{ run.summary_totals.blank_lines }}</div></div>
         <div class="metric"><div class="metric-tooltip">Lines that contain both code and a trailing comment, counted separately per the mixed-line policy.</div><div class="metric-label">Mixed separate</div><div class="metric-value">{{ run.summary_totals.mixed_lines_separate }}</div></div>
+        <div class="metric"><div class="metric-tooltip">Best-effort count of function/method definitions detected across all source files.</div><div class="metric-label">Functions</div><div class="metric-value">{{ run.summary_totals.functions }}</div></div>
+        <div class="metric"><div class="metric-tooltip">Best-effort count of class, struct, interface, and type definitions.</div><div class="metric-label">Classes / Types</div><div class="metric-value">{{ run.summary_totals.classes }}</div></div>
+        <div class="metric"><div class="metric-tooltip">Best-effort count of variable and constant declarations.</div><div class="metric-label">Variables</div><div class="metric-value">{{ run.summary_totals.variables }}</div></div>
+        <div class="metric"><div class="metric-tooltip">Best-effort count of import, include, and module-use statements.</div><div class="metric-label">Imports</div><div class="metric-value">{{ run.summary_totals.imports }}</div></div>
       </div>
     </section>
 
@@ -1037,7 +1236,7 @@ struct WarningOpportunityRow {
             <div class="pill good">No unsupported text-format buckets detected.</div>
           {% else %}
           <div class="table-shell">
-            <table>
+            <table class="support-table">
               <thead>
                 <tr><th>Opportunity</th><th>Count</th><th>Recommended next move</th></tr>
               </thead>
@@ -1060,6 +1259,7 @@ struct WarningOpportunityRow {
       <section class="panel stack">
         <div>
           <div class="toolbar"><div class="toolbar-left"><h2>Language breakdown</h2></div><div class="pill-row"><span class="pill good">Click any column header to sort</span></div></div>
+          <div id="lang-overview-charts" style="margin:0 0 16px;"></div>
           <div class="table-shell">
             <table data-sort-table>
               <thead>
@@ -1071,6 +1271,10 @@ struct WarningOpportunityRow {
                   <th data-sort-type="number">Comments</th>
                   <th data-sort-type="number">Blank</th>
                   <th data-sort-type="number">Mixed separate</th>
+                  <th data-sort-type="number">Functions</th>
+                  <th data-sort-type="number">Classes</th>
+                  <th data-sort-type="number">Variables</th>
+                  <th data-sort-type="number">Imports</th>
                 </tr>
               </thead>
               <tbody>
@@ -1083,6 +1287,10 @@ struct WarningOpportunityRow {
                   <td>{{ row.comment_lines }}</td>
                   <td>{{ row.blank_lines }}</td>
                   <td>{{ row.mixed_lines_separate }}</td>
+                  <td>{{ row.functions }}</td>
+                  <td>{{ row.classes }}</td>
+                  <td>{{ row.variables }}</td>
+                  <td>{{ row.imports }}</td>
                 </tr>
                 {% endfor %}
               </tbody>
@@ -1094,16 +1302,20 @@ struct WarningOpportunityRow {
       <section class="panel stack">
         <div class="toolbar"><div class="toolbar-left"><h2>Per-file detail</h2><input class="search" type="search" placeholder="Filter files, languages, status, warnings..." data-table-filter="per-file-table" /></div><div class="pill-row"><span class="pill good">Counts shown as analyzed by the selected policy</span><div class="export-group"><button class="export-btn" onclick="exportReportCsv()">&#8595; CSV</button><button class="export-btn" onclick="exportReportXls()">&#8595; Excel</button></div></div></div>
         <div class="table-shell">
-          <table id="per-file-table" data-sort-table>
+          <table id="per-file-table" data-sort-table class="table-resizable">
             <thead>
               <tr>
-                <th data-sort-type="text">File</th>
+                <th data-sort-type="text" style="width:35%">File</th>
                 <th data-sort-type="text">Language</th>
                 <th data-sort-type="number">Physical</th>
                 <th data-sort-type="number">Code</th>
                 <th data-sort-type="number">Comments</th>
                 <th data-sort-type="number">Blank</th>
                 <th data-sort-type="number">Mixed separate</th>
+                <th data-sort-type="number">Functions</th>
+                <th data-sort-type="number">Classes</th>
+                <th data-sort-type="number">Variables</th>
+                <th data-sort-type="number">Imports</th>
               </tr>
             </thead>
             <tbody>
@@ -1116,6 +1328,10 @@ struct WarningOpportunityRow {
                 <td>{{ row.comment_lines }}</td>
                 <td>{{ row.blank_lines }}</td>
                 <td>{{ row.mixed_lines_separate }}</td>
+                <td>{{ row.functions }}</td>
+                <td>{{ row.classes }}</td>
+                <td>{{ row.variables }}</td>
+                <td>{{ row.imports }}</td>
               </tr>
               {% endfor %}
             </tbody>
@@ -1125,12 +1341,12 @@ struct WarningOpportunityRow {
 
       <section class="panel stack">
         <div class="toolbar"><div class="toolbar-left"><h2>Skipped files</h2><input class="search" type="search" placeholder="Filter skipped files, reasons, warnings..." data-table-filter="skipped-table" /></div></div>
-        <div class="table-shell">
-          <table id="skipped-table" data-sort-table>
+        <div class="table-shell" style="margin-top:6px;">
+          <table id="skipped-table" data-sort-table class="table-resizable">
             <thead>
               <tr>
-                <th data-sort-type="text">File</th>
-                <th data-sort-type="text">Status</th>
+                <th data-sort-type="text" style="width:55%">File</th>
+                <th data-sort-type="text" style="width:18%">Status</th>
                 <th data-sort-type="text">Warnings</th>
               </tr>
             </thead>
@@ -1148,11 +1364,16 @@ struct WarningOpportunityRow {
       </section>
 
       <section class="panel stack">
+        <div>
+          <h2>Diagnostics &amp; Configuration</h2>
+          <p class="effective-config-note">This section contains the raw diagnostic output from the analysis run and the exact configuration that was in effect. Use this to reproduce results, debug unexpected counts, or audit what settings were applied.</p>
+        </div>
         {% if !is_sub_report %}
         <div>
           <details>
             <summary>Detailed run warnings ({{ warning_count }})</summary>
             <div>
+              <p style="font-size:13px;color:var(--muted);margin:0 0 10px;">These are the raw warning messages emitted during the scan — file-level parse issues, encoding fallbacks, binary detections, and unsupported-language notices. High counts typically indicate large numbers of non-code assets (JSON configs, docs, lockfiles) in the target directory.</p>
               {% if !has_run_warnings %}
                 <div class="pill good">No top-level warnings.</div>
               {% else %}
@@ -1170,14 +1391,31 @@ struct WarningOpportunityRow {
         {% endif %}
 
         <div>
-          <h2>Effective configuration</h2>
-          <pre>{{ config_json }}</pre>
+          <div class="config-header">
+            <div>
+              <h2 style="margin:0 0 4px;">Effective configuration</h2>
+              <p style="margin:0;font-size:13px;color:var(--muted);">The merged, fully-resolved configuration snapshot used for this scan — includes all CLI overrides applied on top of the base config file. Use this to replay the exact run or verify what settings were active.</p>
+            </div>
+            <div class="config-actions">
+              <button type="button" class="header-button" data-copy-config>Copy</button>
+              <button type="button" class="header-button" data-download-config>Download</button>
+            </div>
+          </div>
+          <pre class="config-pre" id="config-json-block">{{ config_json }}</pre>
         </div>
       </section>
     </div>
   </div>
 
   <script>
+    // Hide "View PDF" button when the report is opened as a local file (not from web server)
+    (function () {
+      var pdfBtn = document.getElementById('nav-view-pdf-btn');
+      if (pdfBtn && window.location.protocol === 'file:') {
+        pdfBtn.style.display = 'none';
+      }
+    })();
+
     (function () {
       var body = document.body;
       var storageKey = 'oxide-sloc-theme';
@@ -1246,6 +1484,28 @@ struct WarningOpportunityRow {
           if (preview) preview.classList.add('hidden');
           if (full) full.classList.remove('hidden');
           expandWarningsButton.classList.add('hidden');
+        });
+      }
+
+      var copyConfigBtn = document.querySelector('[data-copy-config]');
+      var downloadConfigBtn = document.querySelector('[data-download-config]');
+      var configBlock = document.getElementById('config-json-block');
+      if (copyConfigBtn && configBlock) {
+        copyConfigBtn.addEventListener('click', function () {
+          copyText(configBlock.textContent);
+          copyConfigBtn.textContent = 'Copied!';
+          setTimeout(function () { copyConfigBtn.textContent = 'Copy'; }, 1600);
+        });
+      }
+      if (downloadConfigBtn && configBlock) {
+        downloadConfigBtn.addEventListener('click', function () {
+          var blob = new Blob([configBlock.textContent], { type: 'application/json' });
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url; a.download = 'effective-config.json';
+          document.body.appendChild(a); a.click();
+          document.body.removeChild(a);
+          setTimeout(function () { URL.revokeObjectURL(url); }, 200);
         });
       }
 
@@ -1327,14 +1587,71 @@ struct WarningOpportunityRow {
     function slocDownload(data,name,mime){var b=new Blob([data],{type:mime});var u=URL.createObjectURL(b);var a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(u);},200);}
     function slocCsv(fname,hdrs,rows){slocDownload([hdrs.map(slocEscCsv).join(',')].concat(rows.map(function(r){return r.map(slocEscCsv).join(',');})).join('\r\n'),fname,'text/csv;charset=utf-8;');}
     function slocXls(fname,sheet,hdrs,rows){var hcells=hdrs.map(function(h){return'<Cell><Data ss:Type="String">'+slocEscXml(h)+'</Data></Cell>';}).join('');var rrows=rows.map(function(r){var cells=r.map(function(v){var n=String(v);var isNum=n!==''&&!isNaN(Number(n));return'<Cell><Data ss:Type="'+(isNum?'Number':'String')+'">'+slocEscXml(v)+'</Data></Cell>';}).join('');return'<Row>'+cells+'</Row>';}).join('');var x='<?xml version="1.0"?><?mso-application progid="Excel.Sheet"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="'+slocEscXml(sheet)+'"><Table><Row>'+hcells+'</Row>'+rrows+'</Table></Worksheet></Workbook>';slocDownload(x,fname,'application/vnd.ms-excel');}
-    var _rh=['File','Language','Physical Lines','Code Lines','Comments','Blank','Mixed Separate'];
-    function getReportExportRows(){var r=[];document.querySelectorAll('#per-file-table tbody tr').forEach(function(tr){var tds=tr.querySelectorAll('td');if(tds.length<7)return;r.push([tds[0].textContent.trim(),tds[1].textContent.trim(),tds[2].textContent.trim(),tds[3].textContent.trim(),tds[4].textContent.trim(),tds[5].textContent.trim(),tds[6].textContent.trim()]);});return r;}
+    var _rh=['File','Language','Physical Lines','Code Lines','Comments','Blank','Mixed Separate','Functions','Classes','Variables','Imports'];
+    function getReportExportRows(){var r=[];document.querySelectorAll('#per-file-table tbody tr').forEach(function(tr){var tds=tr.querySelectorAll('td');if(tds.length<11)return;r.push([tds[0].textContent.trim(),tds[1].textContent.trim(),tds[2].textContent.trim(),tds[3].textContent.trim(),tds[4].textContent.trim(),tds[5].textContent.trim(),tds[6].textContent.trim(),tds[7].textContent.trim(),tds[8].textContent.trim(),tds[9].textContent.trim(),tds[10].textContent.trim()]);});return r;}
     window.exportReportCsv=function(){slocCsv('report-per-file.csv',_rh,getReportExportRows());};
     window.exportReportXls=function(){slocXls('report-per-file.xls','Per-File Detail',_rh,getReportExportRows());};
+    // ── Language overview charts ─────────────────────────────────────────────
+    (function(){
+      var D={{ lang_chart_json|safe }};
+      if(!D||!D.length)return;
+      var el=document.getElementById('lang-overview-charts');
+      if(!el)return;
+      var OX='#C45C10',GN='#2A6846',GY='#BBBBBB';
+      var COLS=['#C45C10','#2A6846','#4472C4','#805099','#D4A017','#B23030','#2E75B6','#70AD47','#FF9900','#9E480E','#636363','#156082'];
+      function fmt(n){return Number(n).toLocaleString();}
+      function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+      function px(n){return Math.round(n);}
+      // Code lines donut
+      var tot=D.reduce(function(a,d){return a+d.code;},0)||1;
+      var cx=90,cy=90,Ro=70,Ri=38,DW=280,DH=Math.max(190,14+D.length*18);
+      var ds='<svg viewBox="0 0 '+DW+' '+DH+'" width="100%" style="max-width:'+DW+'px;" xmlns="http://www.w3.org/2000/svg">';
+      var ang=-Math.PI/2;
+      D.forEach(function(d,i){
+        var sw=Math.min(d.code/tot*2*Math.PI,2*Math.PI-0.001),a2=ang+sw;
+        var x1=cx+Ro*Math.cos(ang),y1=cy+Ro*Math.sin(ang);
+        var x2=cx+Ro*Math.cos(a2),y2=cy+Ro*Math.sin(a2);
+        var xi1=cx+Ri*Math.cos(a2),yi1=cy+Ri*Math.sin(a2);
+        var xi2=cx+Ri*Math.cos(ang),yi2=cy+Ri*Math.sin(ang);
+        ds+='<path d="M'+px(x1)+','+px(y1)+' A'+Ro+','+Ro+' 0 '+(sw>Math.PI?1:0)+',1 '+px(x2)+','+px(y2)+' L'+px(xi1)+','+px(yi1)+' A'+Ri+','+Ri+' 0 '+(sw>Math.PI?1:0)+',0 '+px(xi2)+','+px(yi2)+' Z" fill="'+(COLS[i%COLS.length])+'" stroke="white" stroke-width="2"/>';
+        ang+=sw;
+      });
+      ds+='<text x="'+cx+'" y="'+(cy-4)+'" text-anchor="middle" font-family="Calibri,Arial" font-size="18" font-weight="bold" fill="#333">'+fmt(tot)+'</text>';
+      ds+='<text x="'+cx+'" y="'+(cy+14)+'" text-anchor="middle" font-family="Calibri,Arial" font-size="9" fill="#888">code lines</text>';
+      D.forEach(function(d,i){
+        var ly=10+i*18;
+        if(ly+14>DH)return;
+        ds+='<rect x="'+(cx+Ro+10)+'" y="'+ly+'" width="10" height="10" fill="'+(COLS[i%COLS.length])+'" rx="1"/>';
+        ds+='<text x="'+(cx+Ro+23)+'" y="'+(ly+9)+'" font-family="Calibri,Arial" font-size="10" fill="#333">'+esc(d.lang)+'</text>';
+      });
+      ds+='</svg>';
+      // Per-language stacked bar
+      var maxT=Math.max.apply(null,D.map(function(d){return d.code+d.comments+d.blanks;}))||1;
+      var LW=82,BW=220,rHb=26,bH=20,SH=D.length*rHb+28;
+      var bs='<svg viewBox="0 0 '+(LW+BW+54)+' '+SH+'" width="100%" style="max-width:'+(LW+BW+54)+'px;" xmlns="http://www.w3.org/2000/svg">';
+      D.forEach(function(d,i){
+        var y=10+i*rHb,x=LW;
+        var cW=d.code/maxT*BW,cmW=d.comments/maxT*BW,blW=d.blanks/maxT*BW;
+        bs+='<text x="'+(LW-4)+'" y="'+(y+bH/2+4)+'" text-anchor="end" font-family="Calibri,Arial" font-size="10" fill="#333">'+esc(d.lang)+'</text>';
+        if(cW>0)bs+='<rect x="'+px(x)+'" y="'+y+'" width="'+px(cW)+'" height="'+bH+'" fill="'+OX+'"/>';x+=cW;
+        if(cmW>0)bs+='<rect x="'+px(x)+'" y="'+y+'" width="'+px(cmW)+'" height="'+bH+'" fill="'+GN+'"/>';x+=cmW;
+        if(blW>0)bs+='<rect x="'+px(x)+'" y="'+y+'" width="'+px(blW)+'" height="'+bH+'" fill="'+GY+'"/>';
+        bs+='<text x="'+(LW+BW+3)+'" y="'+(y+bH/2+4)+'" font-family="Calibri,Arial" font-size="9" fill="#666">'+fmt(d.code+d.comments+d.blanks)+'</text>';
+      });
+      var ly=SH-14;
+      bs+='<rect x="'+LW+'" y="'+ly+'" width="9" height="9" fill="'+OX+'"/><text x="'+(LW+12)+'" y="'+(ly+9)+'" font-family="Calibri,Arial" font-size="9" font-weight="600" fill="#555">Code</text>';
+      bs+='<rect x="'+(LW+48)+'" y="'+ly+'" width="9" height="9" fill="'+GN+'"/><text x="'+(LW+60)+'" y="'+(ly+9)+'" font-family="Calibri,Arial" font-size="9" font-weight="600" fill="#555">Comments</text>';
+      bs+='<rect x="'+(LW+130)+'" y="'+ly+'" width="9" height="9" fill="'+GY+'"/><text x="'+(LW+142)+'" y="'+(ly+9)+'" font-family="Calibri,Arial" font-size="9" font-weight="600" fill="#555">Blanks</text>';
+      bs+='</svg>';
+      el.innerHTML='<div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start;">'+
+        '<div style="flex:0 0 auto;"><p style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#AAA;margin:0 0 8px;">Code Lines by Language</p>'+ds+'</div>'+
+        '<div style="flex:1;min-width:260px;"><p style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#AAA;margin:0 0 8px;">Line Mix per Language</p>'+bs+'</div>'+
+        '</div>';
+    })();
   </script>
   <footer class="report-footer">oxide-sloc v{{ tool_version }}</footer>
 </body>
-</html>"#,
+</html>"##,
     ext = "html"
 )]
 struct ReportTemplate<'a> {
@@ -1350,6 +1667,7 @@ struct ReportTemplate<'a> {
     file_rows: Vec<FileRow>,
     skipped_rows: Vec<FileRow>,
     config_json: String,
+    lang_chart_json: String,
     has_run_warnings: bool,
     warning_count: usize,
     warning_summary_rows: Vec<WarningSummaryRow>,

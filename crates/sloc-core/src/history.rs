@@ -17,6 +17,14 @@ pub struct ScanSummarySnapshot {
     pub code_lines: u64,
     pub comment_lines: u64,
     pub blank_lines: u64,
+    #[serde(default)]
+    pub functions: u64,
+    #[serde(default)]
+    pub classes: u64,
+    #[serde(default)]
+    pub variables: u64,
+    #[serde(default)]
+    pub imports: u64,
 }
 
 /// One entry in the scan registry — one per completed analysis run.

@@ -205,6 +205,18 @@ pub struct RawLineCounts {
     pub mixed_code_multi_comment_lines: u64,
     pub docstring_comment_lines: u64,
     pub skipped_unknown_lines: u64,
+    /// Best-effort count of function/method definition lines detected lexically.
+    #[serde(default)]
+    pub functions: u64,
+    /// Best-effort count of class/struct/trait/type definition lines detected lexically.
+    #[serde(default)]
+    pub classes: u64,
+    /// Best-effort count of variable declaration lines detected lexically.
+    #[serde(default)]
+    pub variables: u64,
+    /// Best-effort count of import/use/include statement lines detected lexically.
+    #[serde(default)]
+    pub imports: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -427,6 +439,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                     allow_triple_quote_strings: false,
                     allow_csharp_verbatim_strings: false,
                     skip_lines: HashSet::new(),
+                    symbol_patterns: SP_C,
                 },
             )
         }
@@ -446,6 +459,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                     allow_triple_quote_strings: false,
                     allow_csharp_verbatim_strings: false,
                     skip_lines: HashSet::new(),
+                    symbol_patterns: SP_CPP,
                 },
             )
         }
@@ -459,6 +473,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: true,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_CSHARP,
             },
         ),
         Language::Go => analyze_generic(
@@ -471,6 +486,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_GO,
             },
         ),
         Language::Java => analyze_generic(
@@ -483,6 +499,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_JAVA,
             },
         ),
         Language::JavaScript => analyze_generic(
@@ -495,6 +512,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_JS,
             },
         ),
         Language::Rust => analyze_generic(
@@ -508,6 +526,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_RUST,
             },
         ),
         Language::Shell => analyze_generic(
@@ -520,6 +539,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_SHELL,
             },
         ),
         Language::PowerShell => analyze_generic(
@@ -532,6 +552,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_POWERSHELL,
             },
         ),
         Language::TypeScript => analyze_generic(
@@ -544,6 +565,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_TS,
             },
         ),
         Language::Python => {
@@ -562,6 +584,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                     allow_triple_quote_strings: true,
                     allow_csharp_verbatim_strings: false,
                     skip_lines: docstring_lines,
+                    symbol_patterns: SP_PYTHON,
                 },
             )
         }
@@ -576,6 +599,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_ASSEMBLY,
             },
         ),
         Language::Clojure => analyze_generic(
@@ -588,6 +612,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_CLOJURE,
             },
         ),
         Language::Css => analyze_generic(
@@ -600,6 +625,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_NONE,
             },
         ),
         Language::Dart => analyze_generic(
@@ -612,6 +638,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_DART,
             },
         ),
         Language::Dockerfile => analyze_generic(
@@ -624,6 +651,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_NONE,
             },
         ),
         Language::Elixir => analyze_generic(
@@ -636,6 +664,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_ELIXIR,
             },
         ),
         Language::Erlang => analyze_generic(
@@ -648,6 +677,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_ERLANG,
             },
         ),
         Language::FSharp => analyze_generic(
@@ -660,6 +690,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_FSHARP,
             },
         ),
         Language::Groovy => analyze_generic(
@@ -672,6 +703,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_GROOVY,
             },
         ),
         Language::Haskell => analyze_generic(
@@ -684,6 +716,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_HASKELL,
             },
         ),
         Language::Html | Language::Xml => analyze_generic(
@@ -696,6 +729,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_NONE,
             },
         ),
         Language::Julia => analyze_generic(
@@ -708,6 +742,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: true,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_JULIA,
             },
         ),
         Language::Kotlin => analyze_generic(
@@ -720,6 +755,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_KOTLIN,
             },
         ),
         Language::Lua => analyze_generic(
@@ -732,6 +768,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_LUA,
             },
         ),
         Language::Makefile => analyze_generic(
@@ -744,6 +781,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_NONE,
             },
         ),
         Language::Nim => analyze_generic(
@@ -756,6 +794,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_NIM,
             },
         ),
         Language::ObjectiveC => analyze_generic(
@@ -768,6 +807,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_OBJECTIVEC,
             },
         ),
         Language::Ocaml => analyze_generic(
@@ -780,6 +820,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_OCAML,
             },
         ),
         Language::Perl => analyze_generic(
@@ -792,6 +833,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_PERL,
             },
         ),
         Language::Php => analyze_generic(
@@ -804,6 +846,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_PHP,
             },
         ),
         Language::R => analyze_generic(
@@ -816,6 +859,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_R,
             },
         ),
         Language::Ruby => analyze_generic(
@@ -828,6 +872,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_RUBY,
             },
         ),
         Language::Scala => analyze_generic(
@@ -840,6 +885,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_SCALA,
             },
         ),
         Language::Scss => analyze_generic(
@@ -852,6 +898,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_NONE,
             },
         ),
         Language::Sql => analyze_generic(
@@ -864,6 +911,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_SQL,
             },
         ),
         Language::Svelte => analyze_generic(
@@ -876,6 +924,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_JS,
             },
         ),
         Language::Swift => analyze_generic(
@@ -888,6 +937,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_SWIFT,
             },
         ),
         Language::Vue => analyze_generic(
@@ -900,6 +950,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_JS,
             },
         ),
         Language::Zig => analyze_generic(
@@ -912,10 +963,332 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 allow_triple_quote_strings: false,
                 allow_csharp_verbatim_strings: false,
                 skip_lines: HashSet::new(),
+                symbol_patterns: SP_ZIG,
             },
         ),
     }
 }
+
+/// Per-language keyword prefixes used for best-effort structural symbol detection.
+/// Each slice lists line prefixes (after leading whitespace is stripped) that indicate
+/// a definition of that category. Empty slice = detection disabled for that category.
+#[derive(Debug, Clone, Copy)]
+struct SymbolPatterns {
+    functions: &'static [&'static str],
+    classes: &'static [&'static str],
+    variables: &'static [&'static str],
+    imports: &'static [&'static str],
+}
+
+impl SymbolPatterns {
+    const fn none() -> Self {
+        Self { functions: &[], classes: &[], variables: &[], imports: &[] }
+    }
+}
+
+const SP_NONE: SymbolPatterns = SymbolPatterns::none();
+
+const SP_RUST: SymbolPatterns = SymbolPatterns {
+    functions: &[
+        "fn ", "pub fn ", "pub(crate) fn ", "pub(super) fn ",
+        "async fn ", "pub async fn ", "pub(crate) async fn ",
+        "unsafe fn ", "pub unsafe fn ", "pub(crate) unsafe fn ",
+        "const fn ", "pub const fn ", "pub(crate) const fn ",
+        "extern fn ", "pub extern fn ",
+    ],
+    classes: &[
+        "struct ", "pub struct ", "pub(crate) struct ",
+        "enum ", "pub enum ", "pub(crate) enum ",
+        "trait ", "pub trait ", "pub(crate) trait ",
+        "impl ", "impl<",
+        "type ", "pub type ", "pub(crate) type ",
+    ],
+    variables: &["let ", "let mut "],
+    imports: &["use ", "pub use ", "pub(crate) use ", "extern crate "],
+};
+
+const SP_PYTHON: SymbolPatterns = SymbolPatterns {
+    functions: &["def ", "async def "],
+    classes: &["class "],
+    variables: &[],
+    imports: &["import ", "from "],
+};
+
+const SP_JS: SymbolPatterns = SymbolPatterns {
+    functions: &[
+        "function ", "async function ",
+        "export function ", "export async function ",
+        "export default function ",
+    ],
+    classes: &["class ", "export class ", "export default class "],
+    variables: &["var ", "let ", "const ", "export var ", "export let ", "export const "],
+    imports: &["import "],
+};
+
+const SP_TS: SymbolPatterns = SymbolPatterns {
+    functions: &[
+        "function ", "async function ",
+        "export function ", "export async function ",
+        "export default function ",
+    ],
+    classes: &[
+        "class ", "export class ", "export default class ",
+        "abstract class ", "export abstract class ",
+        "interface ", "export interface ",
+        "declare class ", "declare interface ",
+    ],
+    variables: &["var ", "let ", "const ", "export var ", "export let ", "export const "],
+    imports: &["import "],
+};
+
+const SP_GO: SymbolPatterns = SymbolPatterns {
+    functions: &["func "],
+    classes: &["type "],
+    variables: &["var "],
+    imports: &["import "],
+};
+
+const SP_JAVA: SymbolPatterns = SymbolPatterns {
+    functions: &[],
+    classes: &[
+        "class ", "public class ", "private class ", "protected class ",
+        "abstract class ", "final class ", "public abstract class ", "public final class ",
+        "interface ", "public interface ",
+        "enum ", "public enum ",
+        "record ", "public record ",
+        "@interface ",
+    ],
+    variables: &[],
+    imports: &["import "],
+};
+
+const SP_CSHARP: SymbolPatterns = SymbolPatterns {
+    functions: &[],
+    classes: &[
+        "class ", "public class ", "private class ", "protected class ", "internal class ",
+        "abstract class ", "sealed class ", "static class ", "partial class ",
+        "public abstract class ", "public sealed class ", "public static class ",
+        "interface ", "public interface ", "internal interface ",
+        "enum ", "public enum ",
+        "struct ", "public struct ",
+        "record ", "public record ",
+    ],
+    variables: &["var "],
+    imports: &["using "],
+};
+
+const SP_C: SymbolPatterns = SymbolPatterns {
+    functions: &[],
+    classes: &["struct ", "typedef struct ", "union ", "typedef union ", "typedef enum "],
+    variables: &[],
+    imports: &["#include "],
+};
+
+const SP_CPP: SymbolPatterns = SymbolPatterns {
+    functions: &[],
+    classes: &["class ", "struct ", "namespace ", "template "],
+    variables: &[],
+    imports: &["#include "],
+};
+
+const SP_SHELL: SymbolPatterns = SymbolPatterns {
+    functions: &["function "],
+    classes: &[],
+    variables: &["declare ", "local ", "export "],
+    imports: &["source ", ". "],
+};
+
+const SP_POWERSHELL: SymbolPatterns = SymbolPatterns {
+    functions: &["function ", "Function "],
+    classes: &["class "],
+    variables: &[],
+    imports: &["Import-Module ", "using "],
+};
+
+const SP_KOTLIN: SymbolPatterns = SymbolPatterns {
+    functions: &[
+        "fun ", "private fun ", "public fun ", "protected fun ", "internal fun ",
+        "override fun ", "suspend fun ", "abstract fun ", "open fun ",
+        "private suspend fun ", "public suspend fun ",
+    ],
+    classes: &[
+        "class ", "data class ", "sealed class ", "abstract class ", "open class ",
+        "object ", "companion object",
+        "interface ", "enum class ", "annotation class ",
+    ],
+    variables: &["val ", "var ", "private val ", "private var ", "const val "],
+    imports: &["import "],
+};
+
+const SP_SWIFT: SymbolPatterns = SymbolPatterns {
+    functions: &[
+        "func ", "private func ", "public func ", "internal func ",
+        "override func ", "open func ", "static func ", "class func ", "mutating func ",
+        "private static func ", "public static func ",
+    ],
+    classes: &[
+        "class ", "struct ", "protocol ", "enum ", "extension ", "actor ",
+        "public class ", "private class ", "open class ", "final class ",
+        "public struct ", "private struct ", "public protocol ",
+    ],
+    variables: &["var ", "let ", "private var ", "private let ", "static var ", "static let "],
+    imports: &["import "],
+};
+
+const SP_RUBY: SymbolPatterns = SymbolPatterns {
+    functions: &["def ", "private def ", "protected def "],
+    classes: &["class ", "module "],
+    variables: &[],
+    imports: &["require ", "require_relative "],
+};
+
+const SP_SCALA: SymbolPatterns = SymbolPatterns {
+    functions: &["def ", "private def ", "protected def ", "override def "],
+    classes: &[
+        "class ", "case class ", "abstract class ", "sealed class ",
+        "object ", "trait ",
+    ],
+    variables: &["val ", "var ", "lazy val "],
+    imports: &["import "],
+};
+
+const SP_PHP: SymbolPatterns = SymbolPatterns {
+    functions: &[
+        "function ", "public function ", "private function ", "protected function ",
+        "static function ", "abstract function ", "final function ",
+        "public static function ", "private static function ", "protected static function ",
+    ],
+    classes: &["class ", "abstract class ", "final class ", "interface ", "trait ", "enum "],
+    variables: &[],
+    imports: &["use ", "require ", "require_once ", "include ", "include_once "],
+};
+
+const SP_ELIXIR: SymbolPatterns = SymbolPatterns {
+    functions: &["def ", "defp ", "defmacro ", "defmacrop ", "defguard ", "defguardp "],
+    classes: &["defmodule ", "defprotocol ", "defimpl "],
+    variables: &[],
+    imports: &["import ", "alias ", "use ", "require "],
+};
+
+const SP_ERLANG: SymbolPatterns = SymbolPatterns {
+    functions: &[],
+    classes: &["-module("],
+    variables: &[],
+    imports: &["-import(", "-include(", "-include_lib("],
+};
+
+const SP_FSHARP: SymbolPatterns = SymbolPatterns {
+    functions: &["let ", "let rec ", "member ", "override ", "abstract member "],
+    classes: &["type "],
+    variables: &["let mutable "],
+    imports: &["open "],
+};
+
+const SP_GROOVY: SymbolPatterns = SymbolPatterns {
+    functions: &["def ", "private def ", "public def ", "protected def "],
+    classes: &["class ", "abstract class ", "interface ", "enum ", "trait "],
+    variables: &[],
+    imports: &["import "],
+};
+
+const SP_HASKELL: SymbolPatterns = SymbolPatterns {
+    functions: &[],
+    classes: &["class ", "data ", "newtype ", "type "],
+    variables: &[],
+    imports: &["import "],
+};
+
+const SP_LUA: SymbolPatterns = SymbolPatterns {
+    functions: &["function ", "local function "],
+    classes: &[],
+    variables: &["local "],
+    imports: &[],
+};
+
+const SP_NIM: SymbolPatterns = SymbolPatterns {
+    functions: &["proc ", "func ", "method ", "iterator ", "converter ", "template ", "macro "],
+    classes: &["type "],
+    variables: &["var ", "let ", "const "],
+    imports: &["import ", "from "],
+};
+
+const SP_OBJECTIVEC: SymbolPatterns = SymbolPatterns {
+    functions: &["- (", "+ ("],
+    classes: &["@interface ", "@implementation ", "@protocol "],
+    variables: &[],
+    imports: &["#import ", "#include "],
+};
+
+const SP_OCAML: SymbolPatterns = SymbolPatterns {
+    functions: &["let ", "let rec "],
+    classes: &["type ", "module ", "class "],
+    variables: &[],
+    imports: &["open "],
+};
+
+const SP_PERL: SymbolPatterns = SymbolPatterns {
+    functions: &["sub "],
+    classes: &["package "],
+    variables: &["my ", "our ", "local "],
+    imports: &["use ", "require "],
+};
+
+const SP_CLOJURE: SymbolPatterns = SymbolPatterns {
+    functions: &["(defn ", "(defn- ", "(defmacro ", "(defmulti "],
+    classes: &["(defrecord ", "(defprotocol ", "(deftype ", "(definterface "],
+    variables: &["(def ", "(defonce "],
+    imports: &["(ns ", "(require "],
+};
+
+const SP_JULIA: SymbolPatterns = SymbolPatterns {
+    functions: &["function ", "macro "],
+    classes: &["struct ", "mutable struct ", "abstract type ", "primitive type "],
+    variables: &["const "],
+    imports: &["import ", "using "],
+};
+
+const SP_DART: SymbolPatterns = SymbolPatterns {
+    functions: &[],
+    classes: &["class ", "abstract class ", "mixin ", "extension ", "enum "],
+    variables: &["var ", "final ", "const ", "late "],
+    imports: &["import "],
+};
+
+const SP_R: SymbolPatterns = SymbolPatterns {
+    functions: &[],
+    classes: &[],
+    variables: &[],
+    imports: &["library(", "source("],
+};
+
+const SP_SQL: SymbolPatterns = SymbolPatterns {
+    functions: &[
+        "create function ", "create or replace function ",
+        "create procedure ", "create or replace procedure ",
+        "CREATE FUNCTION ", "CREATE OR REPLACE FUNCTION ",
+        "CREATE PROCEDURE ", "CREATE OR REPLACE PROCEDURE ",
+    ],
+    classes: &[
+        "create table ", "create view ", "create schema ",
+        "CREATE TABLE ", "CREATE VIEW ", "CREATE SCHEMA ",
+    ],
+    variables: &["declare ", "DECLARE "],
+    imports: &[],
+};
+
+const SP_ASSEMBLY: SymbolPatterns = SymbolPatterns {
+    functions: &["proc ", "PROC "],
+    classes: &[],
+    variables: &[],
+    imports: &["include ", "INCLUDE ", "%include "],
+};
+
+const SP_ZIG: SymbolPatterns = SymbolPatterns {
+    functions: &["fn ", "pub fn ", "export fn ", "inline fn ", "pub inline fn "],
+    classes: &[],
+    variables: &["var ", "pub var "],
+    imports: &[],
+};
 
 #[derive(Debug, Clone)]
 struct ScanConfig {
@@ -926,6 +1299,7 @@ struct ScanConfig {
     allow_triple_quote_strings: bool,
     allow_csharp_verbatim_strings: bool,
     skip_lines: HashSet<usize>,
+    symbol_patterns: SymbolPatterns,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1121,6 +1495,14 @@ fn analyze_generic(text: &str, config: ScanConfig) -> RawFileAnalysis {
         } else {
             raw.skipped_unknown_lines += 1;
         }
+
+        if facts.has_code {
+            let (f, c, v, i) = count_symbols(&config.symbol_patterns, trimmed);
+            raw.functions += f;
+            raw.classes += c;
+            raw.variables += v;
+            raw.imports += i;
+        }
     }
 
     if in_block_comment {
@@ -1139,6 +1521,11 @@ fn analyze_generic(text: &str, config: ScanConfig) -> RawFileAnalysis {
         },
         warnings,
     }
+}
+
+fn count_symbols(patterns: &SymbolPatterns, trimmed: &str) -> (u64, u64, u64, u64) {
+    let hit = |pats: &[&str]| pats.iter().any(|p| trimmed.starts_with(p)) as u64;
+    (hit(patterns.functions), hit(patterns.classes), hit(patterns.variables), hit(patterns.imports))
 }
 
 fn starts_with(chars: &[char], index: usize, needle: &str) -> bool {

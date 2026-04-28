@@ -982,7 +982,12 @@ struct SymbolPatterns {
 
 impl SymbolPatterns {
     const fn none() -> Self {
-        Self { functions: &[], classes: &[], variables: &[], imports: &[] }
+        Self {
+            functions: &[],
+            classes: &[],
+            variables: &[],
+            imports: &[],
+        }
     }
 }
 
@@ -990,18 +995,37 @@ const SP_NONE: SymbolPatterns = SymbolPatterns::none();
 
 const SP_RUST: SymbolPatterns = SymbolPatterns {
     functions: &[
-        "fn ", "pub fn ", "pub(crate) fn ", "pub(super) fn ",
-        "async fn ", "pub async fn ", "pub(crate) async fn ",
-        "unsafe fn ", "pub unsafe fn ", "pub(crate) unsafe fn ",
-        "const fn ", "pub const fn ", "pub(crate) const fn ",
-        "extern fn ", "pub extern fn ",
+        "fn ",
+        "pub fn ",
+        "pub(crate) fn ",
+        "pub(super) fn ",
+        "async fn ",
+        "pub async fn ",
+        "pub(crate) async fn ",
+        "unsafe fn ",
+        "pub unsafe fn ",
+        "pub(crate) unsafe fn ",
+        "const fn ",
+        "pub const fn ",
+        "pub(crate) const fn ",
+        "extern fn ",
+        "pub extern fn ",
     ],
     classes: &[
-        "struct ", "pub struct ", "pub(crate) struct ",
-        "enum ", "pub enum ", "pub(crate) enum ",
-        "trait ", "pub trait ", "pub(crate) trait ",
-        "impl ", "impl<",
-        "type ", "pub type ", "pub(crate) type ",
+        "struct ",
+        "pub struct ",
+        "pub(crate) struct ",
+        "enum ",
+        "pub enum ",
+        "pub(crate) enum ",
+        "trait ",
+        "pub trait ",
+        "pub(crate) trait ",
+        "impl ",
+        "impl<",
+        "type ",
+        "pub type ",
+        "pub(crate) type ",
     ],
     variables: &["let ", "let mut "],
     imports: &["use ", "pub use ", "pub(crate) use ", "extern crate "],
@@ -1016,28 +1040,51 @@ const SP_PYTHON: SymbolPatterns = SymbolPatterns {
 
 const SP_JS: SymbolPatterns = SymbolPatterns {
     functions: &[
-        "function ", "async function ",
-        "export function ", "export async function ",
+        "function ",
+        "async function ",
+        "export function ",
+        "export async function ",
         "export default function ",
     ],
     classes: &["class ", "export class ", "export default class "],
-    variables: &["var ", "let ", "const ", "export var ", "export let ", "export const "],
+    variables: &[
+        "var ",
+        "let ",
+        "const ",
+        "export var ",
+        "export let ",
+        "export const ",
+    ],
     imports: &["import "],
 };
 
 const SP_TS: SymbolPatterns = SymbolPatterns {
     functions: &[
-        "function ", "async function ",
-        "export function ", "export async function ",
+        "function ",
+        "async function ",
+        "export function ",
+        "export async function ",
         "export default function ",
     ],
     classes: &[
-        "class ", "export class ", "export default class ",
-        "abstract class ", "export abstract class ",
-        "interface ", "export interface ",
-        "declare class ", "declare interface ",
+        "class ",
+        "export class ",
+        "export default class ",
+        "abstract class ",
+        "export abstract class ",
+        "interface ",
+        "export interface ",
+        "declare class ",
+        "declare interface ",
     ],
-    variables: &["var ", "let ", "const ", "export var ", "export let ", "export const "],
+    variables: &[
+        "var ",
+        "let ",
+        "const ",
+        "export var ",
+        "export let ",
+        "export const ",
+    ],
     imports: &["import "],
 };
 
@@ -1051,11 +1098,20 @@ const SP_GO: SymbolPatterns = SymbolPatterns {
 const SP_JAVA: SymbolPatterns = SymbolPatterns {
     functions: &[],
     classes: &[
-        "class ", "public class ", "private class ", "protected class ",
-        "abstract class ", "final class ", "public abstract class ", "public final class ",
-        "interface ", "public interface ",
-        "enum ", "public enum ",
-        "record ", "public record ",
+        "class ",
+        "public class ",
+        "private class ",
+        "protected class ",
+        "abstract class ",
+        "final class ",
+        "public abstract class ",
+        "public final class ",
+        "interface ",
+        "public interface ",
+        "enum ",
+        "public enum ",
+        "record ",
+        "public record ",
         "@interface ",
     ],
     variables: &[],
@@ -1065,13 +1121,27 @@ const SP_JAVA: SymbolPatterns = SymbolPatterns {
 const SP_CSHARP: SymbolPatterns = SymbolPatterns {
     functions: &[],
     classes: &[
-        "class ", "public class ", "private class ", "protected class ", "internal class ",
-        "abstract class ", "sealed class ", "static class ", "partial class ",
-        "public abstract class ", "public sealed class ", "public static class ",
-        "interface ", "public interface ", "internal interface ",
-        "enum ", "public enum ",
-        "struct ", "public struct ",
-        "record ", "public record ",
+        "class ",
+        "public class ",
+        "private class ",
+        "protected class ",
+        "internal class ",
+        "abstract class ",
+        "sealed class ",
+        "static class ",
+        "partial class ",
+        "public abstract class ",
+        "public sealed class ",
+        "public static class ",
+        "interface ",
+        "public interface ",
+        "internal interface ",
+        "enum ",
+        "public enum ",
+        "struct ",
+        "public struct ",
+        "record ",
+        "public record ",
     ],
     variables: &["var "],
     imports: &["using "],
@@ -1079,7 +1149,13 @@ const SP_CSHARP: SymbolPatterns = SymbolPatterns {
 
 const SP_C: SymbolPatterns = SymbolPatterns {
     functions: &[],
-    classes: &["struct ", "typedef struct ", "union ", "typedef union ", "typedef enum "],
+    classes: &[
+        "struct ",
+        "typedef struct ",
+        "union ",
+        "typedef union ",
+        "typedef enum ",
+    ],
     variables: &[],
     imports: &["#include "],
 };
@@ -1107,14 +1183,29 @@ const SP_POWERSHELL: SymbolPatterns = SymbolPatterns {
 
 const SP_KOTLIN: SymbolPatterns = SymbolPatterns {
     functions: &[
-        "fun ", "private fun ", "public fun ", "protected fun ", "internal fun ",
-        "override fun ", "suspend fun ", "abstract fun ", "open fun ",
-        "private suspend fun ", "public suspend fun ",
+        "fun ",
+        "private fun ",
+        "public fun ",
+        "protected fun ",
+        "internal fun ",
+        "override fun ",
+        "suspend fun ",
+        "abstract fun ",
+        "open fun ",
+        "private suspend fun ",
+        "public suspend fun ",
     ],
     classes: &[
-        "class ", "data class ", "sealed class ", "abstract class ", "open class ",
-        "object ", "companion object",
-        "interface ", "enum class ", "annotation class ",
+        "class ",
+        "data class ",
+        "sealed class ",
+        "abstract class ",
+        "open class ",
+        "object ",
+        "companion object",
+        "interface ",
+        "enum class ",
+        "annotation class ",
     ],
     variables: &["val ", "var ", "private val ", "private var ", "const val "],
     imports: &["import "],
@@ -1122,16 +1213,41 @@ const SP_KOTLIN: SymbolPatterns = SymbolPatterns {
 
 const SP_SWIFT: SymbolPatterns = SymbolPatterns {
     functions: &[
-        "func ", "private func ", "public func ", "internal func ",
-        "override func ", "open func ", "static func ", "class func ", "mutating func ",
-        "private static func ", "public static func ",
+        "func ",
+        "private func ",
+        "public func ",
+        "internal func ",
+        "override func ",
+        "open func ",
+        "static func ",
+        "class func ",
+        "mutating func ",
+        "private static func ",
+        "public static func ",
     ],
     classes: &[
-        "class ", "struct ", "protocol ", "enum ", "extension ", "actor ",
-        "public class ", "private class ", "open class ", "final class ",
-        "public struct ", "private struct ", "public protocol ",
+        "class ",
+        "struct ",
+        "protocol ",
+        "enum ",
+        "extension ",
+        "actor ",
+        "public class ",
+        "private class ",
+        "open class ",
+        "final class ",
+        "public struct ",
+        "private struct ",
+        "public protocol ",
     ],
-    variables: &["var ", "let ", "private var ", "private let ", "static var ", "static let "],
+    variables: &[
+        "var ",
+        "let ",
+        "private var ",
+        "private let ",
+        "static var ",
+        "static let ",
+    ],
     imports: &["import "],
 };
 
@@ -1145,8 +1261,12 @@ const SP_RUBY: SymbolPatterns = SymbolPatterns {
 const SP_SCALA: SymbolPatterns = SymbolPatterns {
     functions: &["def ", "private def ", "protected def ", "override def "],
     classes: &[
-        "class ", "case class ", "abstract class ", "sealed class ",
-        "object ", "trait ",
+        "class ",
+        "case class ",
+        "abstract class ",
+        "sealed class ",
+        "object ",
+        "trait ",
     ],
     variables: &["val ", "var ", "lazy val "],
     imports: &["import "],
@@ -1154,17 +1274,44 @@ const SP_SCALA: SymbolPatterns = SymbolPatterns {
 
 const SP_PHP: SymbolPatterns = SymbolPatterns {
     functions: &[
-        "function ", "public function ", "private function ", "protected function ",
-        "static function ", "abstract function ", "final function ",
-        "public static function ", "private static function ", "protected static function ",
+        "function ",
+        "public function ",
+        "private function ",
+        "protected function ",
+        "static function ",
+        "abstract function ",
+        "final function ",
+        "public static function ",
+        "private static function ",
+        "protected static function ",
     ],
-    classes: &["class ", "abstract class ", "final class ", "interface ", "trait ", "enum "],
+    classes: &[
+        "class ",
+        "abstract class ",
+        "final class ",
+        "interface ",
+        "trait ",
+        "enum ",
+    ],
     variables: &[],
-    imports: &["use ", "require ", "require_once ", "include ", "include_once "],
+    imports: &[
+        "use ",
+        "require ",
+        "require_once ",
+        "include ",
+        "include_once ",
+    ],
 };
 
 const SP_ELIXIR: SymbolPatterns = SymbolPatterns {
-    functions: &["def ", "defp ", "defmacro ", "defmacrop ", "defguard ", "defguardp "],
+    functions: &[
+        "def ",
+        "defp ",
+        "defmacro ",
+        "defmacrop ",
+        "defguard ",
+        "defguardp ",
+    ],
     classes: &["defmodule ", "defprotocol ", "defimpl "],
     variables: &[],
     imports: &["import ", "alias ", "use ", "require "],
@@ -1178,7 +1325,13 @@ const SP_ERLANG: SymbolPatterns = SymbolPatterns {
 };
 
 const SP_FSHARP: SymbolPatterns = SymbolPatterns {
-    functions: &["let ", "let rec ", "member ", "override ", "abstract member "],
+    functions: &[
+        "let ",
+        "let rec ",
+        "member ",
+        "override ",
+        "abstract member ",
+    ],
     classes: &["type "],
     variables: &["let mutable "],
     imports: &["open "],
@@ -1206,7 +1359,15 @@ const SP_LUA: SymbolPatterns = SymbolPatterns {
 };
 
 const SP_NIM: SymbolPatterns = SymbolPatterns {
-    functions: &["proc ", "func ", "method ", "iterator ", "converter ", "template ", "macro "],
+    functions: &[
+        "proc ",
+        "func ",
+        "method ",
+        "iterator ",
+        "converter ",
+        "template ",
+        "macro ",
+    ],
     classes: &["type "],
     variables: &["var ", "let ", "const "],
     imports: &["import ", "from "],
@@ -1235,14 +1396,24 @@ const SP_PERL: SymbolPatterns = SymbolPatterns {
 
 const SP_CLOJURE: SymbolPatterns = SymbolPatterns {
     functions: &["(defn ", "(defn- ", "(defmacro ", "(defmulti "],
-    classes: &["(defrecord ", "(defprotocol ", "(deftype ", "(definterface "],
+    classes: &[
+        "(defrecord ",
+        "(defprotocol ",
+        "(deftype ",
+        "(definterface ",
+    ],
     variables: &["(def ", "(defonce "],
     imports: &["(ns ", "(require "],
 };
 
 const SP_JULIA: SymbolPatterns = SymbolPatterns {
     functions: &["function ", "macro "],
-    classes: &["struct ", "mutable struct ", "abstract type ", "primitive type "],
+    classes: &[
+        "struct ",
+        "mutable struct ",
+        "abstract type ",
+        "primitive type ",
+    ],
     variables: &["const "],
     imports: &["import ", "using "],
 };
@@ -1263,14 +1434,22 @@ const SP_R: SymbolPatterns = SymbolPatterns {
 
 const SP_SQL: SymbolPatterns = SymbolPatterns {
     functions: &[
-        "create function ", "create or replace function ",
-        "create procedure ", "create or replace procedure ",
-        "CREATE FUNCTION ", "CREATE OR REPLACE FUNCTION ",
-        "CREATE PROCEDURE ", "CREATE OR REPLACE PROCEDURE ",
+        "create function ",
+        "create or replace function ",
+        "create procedure ",
+        "create or replace procedure ",
+        "CREATE FUNCTION ",
+        "CREATE OR REPLACE FUNCTION ",
+        "CREATE PROCEDURE ",
+        "CREATE OR REPLACE PROCEDURE ",
     ],
     classes: &[
-        "create table ", "create view ", "create schema ",
-        "CREATE TABLE ", "CREATE VIEW ", "CREATE SCHEMA ",
+        "create table ",
+        "create view ",
+        "create schema ",
+        "CREATE TABLE ",
+        "CREATE VIEW ",
+        "CREATE SCHEMA ",
     ],
     variables: &["declare ", "DECLARE "],
     imports: &[],
@@ -1284,7 +1463,13 @@ const SP_ASSEMBLY: SymbolPatterns = SymbolPatterns {
 };
 
 const SP_ZIG: SymbolPatterns = SymbolPatterns {
-    functions: &["fn ", "pub fn ", "export fn ", "inline fn ", "pub inline fn "],
+    functions: &[
+        "fn ",
+        "pub fn ",
+        "export fn ",
+        "inline fn ",
+        "pub inline fn ",
+    ],
     classes: &[],
     variables: &["var ", "pub var "],
     imports: &[],
@@ -1525,7 +1710,12 @@ fn analyze_generic(text: &str, config: ScanConfig) -> RawFileAnalysis {
 
 fn count_symbols(patterns: &SymbolPatterns, trimmed: &str) -> (u64, u64, u64, u64) {
     let hit = |pats: &[&str]| pats.iter().any(|p| trimmed.starts_with(p)) as u64;
-    (hit(patterns.functions), hit(patterns.classes), hit(patterns.variables), hit(patterns.imports))
+    (
+        hit(patterns.functions),
+        hit(patterns.classes),
+        hit(patterns.variables),
+        hit(patterns.imports),
+    )
 }
 
 fn starts_with(chars: &[char], index: usize, needle: &str) -> bool {

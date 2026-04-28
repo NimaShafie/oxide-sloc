@@ -1,0 +1,7 @@
+/* ── Shared background layer (watermarks + floating code particles) ──────────
+   Include in every page's <style> block:  {% include "_bg_css.html" %}       */
+.background-watermarks{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
+.background-watermarks img{position:absolute;opacity:0.16;filter:blur(0.3px);user-select:none;max-width:none;}
+.code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
+.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
+@keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}

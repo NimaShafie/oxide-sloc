@@ -70,6 +70,14 @@ pub struct SummaryTotals {
     pub comment_lines: u64,
     pub blank_lines: u64,
     pub mixed_lines_separate: u64,
+    #[serde(default)]
+    pub functions: u64,
+    #[serde(default)]
+    pub classes: u64,
+    #[serde(default)]
+    pub variables: u64,
+    #[serde(default)]
+    pub imports: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +89,14 @@ pub struct LanguageSummary {
     pub comment_lines: u64,
     pub blank_lines: u64,
     pub mixed_lines_separate: u64,
+    #[serde(default)]
+    pub functions: u64,
+    #[serde(default)]
+    pub classes: u64,
+    #[serde(default)]
+    pub variables: u64,
+    #[serde(default)]
+    pub imports: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -654,6 +670,10 @@ fn build_summary(analyzed: &[FileRecord], skipped: &[FileRecord]) -> SummaryTota
         summary.comment_lines += record.effective_counts.comment_lines;
         summary.blank_lines += record.effective_counts.blank_lines;
         summary.mixed_lines_separate += record.effective_counts.mixed_lines_separate;
+        summary.functions += record.raw_line_categories.functions;
+        summary.classes += record.raw_line_categories.classes;
+        summary.variables += record.raw_line_categories.variables;
+        summary.imports += record.raw_line_categories.imports;
     }
 
     summary
@@ -673,6 +693,10 @@ fn build_language_summaries(analyzed: &[FileRecord]) -> Vec<LanguageSummary> {
             comment_lines: 0,
             blank_lines: 0,
             mixed_lines_separate: 0,
+            functions: 0,
+            classes: 0,
+            variables: 0,
+            imports: 0,
         });
         entry.files += 1;
         entry.total_physical_lines += record.raw_line_categories.total_physical_lines;
@@ -680,6 +704,10 @@ fn build_language_summaries(analyzed: &[FileRecord]) -> Vec<LanguageSummary> {
         entry.comment_lines += record.effective_counts.comment_lines;
         entry.blank_lines += record.effective_counts.blank_lines;
         entry.mixed_lines_separate += record.effective_counts.mixed_lines_separate;
+        entry.functions += record.raw_line_categories.functions;
+        entry.classes += record.raw_line_categories.classes;
+        entry.variables += record.raw_line_categories.variables;
+        entry.imports += record.raw_line_categories.imports;
     }
 
     by_language.into_values().collect()
@@ -809,6 +837,10 @@ fn build_language_summaries_from_slice(files: &[&FileRecord]) -> Vec<LanguageSum
                     comment_lines: 0,
                     blank_lines: 0,
                     mixed_lines_separate: 0,
+                    functions: 0,
+                    classes: 0,
+                    variables: 0,
+                    imports: 0,
                 });
             entry.files += 1;
             let r = &file.raw_line_categories;

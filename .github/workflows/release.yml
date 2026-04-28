@@ -76,6 +76,44 @@ jobs:
         run: |
           cp target/${{ matrix.target }}/release/${{ matrix.binary }} ${{ matrix.artifact }}
 
+      - name: Check for signing certificate
+        id: cert
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          if [ -n "$CERT" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          CERT: ${{ secrets.WINDOWS_CERTIFICATE }}
+
+      - name: Sign Windows binary
+        if: matrix.os == 'windows-latest' && steps.cert.outputs.available == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $certBytes = [System.Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
+          $certPath = Join-Path $env:RUNNER_TEMP "signing.pfx"
+          [System.IO.File]::WriteAllBytes($certPath, $certBytes)
+
+          & signtool sign `
+            /f $certPath `
+            /p $env:WINDOWS_CERTIFICATE_PASSWORD `
+            /tr http://timestamp.digicert.com `
+            /td sha256 `
+            /fd sha256 `
+            /d "OxideSLOC" `
+            /du "https://github.com/NimaShafie/oxide-sloc" `
+            "${{ matrix.artifact }}"
+
+          Remove-Item -Force $certPath
+
+          & signtool verify /pa /v "${{ matrix.artifact }}"
+
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:

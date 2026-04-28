@@ -227,9 +227,11 @@ struct DiffArgs {
 
 #[derive(Debug, Args)]
 struct ServeArgs {
+    /// Load configuration from a TOML file
     #[arg(long)]
     config: Option<PathBuf>,
-    #[arg(long)]
+    /// Override the bind address (e.g. 0.0.0.0:4317)
+    #[arg(long, value_name = "ADDR")]
     bind: Option<String>,
     /// Bind to 0.0.0.0, suppress browser auto-open, disable desktop-only routes
     #[arg(long)]
@@ -253,7 +255,8 @@ struct InitArgs {
 
 #[derive(Debug, Args)]
 struct ValidateArgs {
-    #[arg(long)]
+    /// Path to the golden corpus directory
+    #[arg(long, value_name = "PATH")]
     corpus: Option<PathBuf>,
 }
 

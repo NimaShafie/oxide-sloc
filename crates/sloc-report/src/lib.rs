@@ -195,6 +195,15 @@ pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
     })?;
     eprintln!("[oxide-sloc][pdf] profile = {}", profile_dir.display());
 
+    // --no-sandbox is required in Docker (and other rootless environments) where
+    // the Linux kernel namespacing that Chrome's sandbox relies on is unavailable.
+    // It is NOT enabled by default because it disables security isolation.
+    // Set SLOC_BROWSER_NOSANDBOX=1 when running inside a container.
+    let no_sandbox = std::env::var("SLOC_BROWSER_NOSANDBOX").as_deref() == Ok("1");
+    if no_sandbox {
+        eprintln!("[oxide-sloc][pdf] --no-sandbox enabled via SLOC_BROWSER_NOSANDBOX=1");
+    }
+
     let run_once = |headless_flag: &str| -> Result<()> {
         eprintln!("[oxide-sloc][pdf] launching {}", headless_flag);
 
@@ -202,28 +211,37 @@ pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
             let _ = fs::remove_file(&absolute_pdf);
         }
 
+        let user_data_arg = format!("--user-data-dir={}", profile_dir.display());
+        let print_to_pdf_arg = format!("--print-to-pdf={}", absolute_pdf.display());
+        let mut args: Vec<&str> = vec![
+            headless_flag,
+            "--disable-gpu",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-sync",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-default-apps",
+            "--hide-scrollbars",
+            "--mute-audio",
+            "--print-to-pdf-no-header",
+            "--no-pdf-header-footer",
+            "--run-all-compositor-stages-before-draw",
+            "--virtual-time-budget=8000",
+            "--force-device-scale-factor=1",
+            &user_data_arg,
+            &print_to_pdf_arg,
+            &file_url,
+        ];
+        if no_sandbox {
+            args.push("--no-sandbox");
+        }
+
         let mut child = Command::new(&browser)
             .current_dir(&html_parent)
-            .args([
-                headless_flag,
-                "--disable-gpu",
-                "--disable-extensions",
-                "--disable-background-networking",
-                "--disable-sync",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-default-apps",
-                "--hide-scrollbars",
-                "--mute-audio",
-                "--print-to-pdf-no-header",
-                "--no-pdf-header-footer",
-                "--run-all-compositor-stages-before-draw",
-                "--virtual-time-budget=8000",
-                "--force-device-scale-factor=1",
-                &format!("--user-data-dir={}", profile_dir.display()),
-                &format!("--print-to-pdf={}", absolute_pdf.display()),
-                &file_url,
-            ])
+            .args(&args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn()
             .with_context(|| format!("failed to launch browser {}", browser.display()))?;
 

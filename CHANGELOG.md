@@ -6,6 +6,51 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.2.0] — 2026-04-29
+
+### Added
+
+**IEEE 1045-1992 physical SLOC compliance**
+- The counting engine now implements all configurable parameters defined in IEEE Std 1045-1992 *Software Productivity Metrics*:
+  - `continuation_line_policy` / `--continuation-line-policy` (`each-physical-line` | `collapse-to-logical`) — IEEE §3: optionally collapse backslash-continued C macro / shell / Makefile lines into a single logical line count instead of counting each physical line
+  - `blank_in_block_comment_policy` / `--blank-in-block-comment-policy` (`count-as-comment` | `count-as-blank`) — IEEE §4: blank lines inside `/* ... */` blocks are classified as comment lines by default (IEEE aligned); `count-as-blank` restores legacy behaviour if needed
+  - `count_compiler_directives` / `--no-count-compiler-directives` — IEEE §4.2: `#include`, `#define`, `#ifdef`, and other C/C++/Objective-C preprocessor directive lines are now tracked separately as `compiler_directive_lines` in the raw JSON output; passing `--no-count-compiler-directives` (or setting `count_compiler_directives = false`) excludes them from effective code SLOC while keeping the raw count intact
+  - All three parameters are settable in `.oxide-sloc.toml` under `[analysis]` and via CLI flags on `analyze`
+
+**Web server security hardening**
+- IP-based sliding-window rate limiter (60 requests / 60 seconds per client IP) across all routes — no external crate required; uses only `std` + `Instant`
+- Bearer-token authentication via `SLOC_API_KEY` env var — when set, all requests must supply a matching `Authorization: Bearer <key>` or `X-API-Key: <key>` header; startup warning logged when running in server mode without a key
+- Native TLS termination via `SLOC_TLS_CERT` / `SLOC_TLS_KEY` PEM env vars (powered by `tokio-rustls` + `rustls`); startup warning logged when `--server` is used without TLS configured
+- CORS headers via `tower-http::CorsLayer`
+- Security response headers middleware (X-Content-Type-Options, X-Frame-Options, Referrer-Policy, etc.)
+- Graceful shutdown on `Ctrl+C` (both local and server modes)
+
+**New web routes**
+- `GET /view-reports` — scan history browser
+- `GET /compare-scans` — side-by-side scan comparison UI
+- `GET /embed/summary` — embeddable summary widget (iframe-friendly)
+
+**Webhook security**
+- `validate_webhook_url()` now enforces HTTPS and blocks SSRF targets (loopback, RFC-1918 private ranges, link-local, cloud metadata endpoints: `169.254.169.254`, `metadata.google.internal`, `*.local`)
+
+**SMTP credential safety**
+- `--smtp-pass` on the `send` command now emits a visible warning when used directly; use `SLOC_SMTP_PASS` env var instead to keep credentials out of process listings
+
+**CI/CD hardening**
+- Docker builder and runtime images pinned to SHA-256 digests (`rust:slim@sha256:…`, `debian:bookworm-slim@sha256:…`) — prevents silent base-image substitution
+- GitLab CI pipeline switched from curl-piped rustup to the official `rust:slim` pinned image
+- `vendor.tar.xz` integrity verified via `sha256sum -c vendor.tar.xz.sha256` before extraction in Dockerfile, GitLab CI, and Jenkinsfile
+- Docker image signed with `cosign` (keyless OIDC) and SBOM attached via `docker/build-push-action`; `id-token: write` permission added to `docker.yml`
+- Jenkins parameter injection hardening: `SCAN_PATH`, `REPORT_TITLE`, `MIXED_LINE_POLICY` passed through `withEnv` (shell variables, not Groovy interpolation); allowlist validation added for choice and free-text parameters (`MIXED_LINE_POLICY`, `CI_PRESET`, `OUTPUT_SUBDIR`, glob patterns, language names)
+- Jenkins CSP relaxation rationale documented inline; alternative of serving HTML from a separate origin noted for high-assurance environments
+
+**Docker**
+- `HEALTHCHECK` instruction added — polls `GET /healthz` every 30 s; 5 s timeout; 3 retries
+- `SLOC_BROWSER_NOSANDBOX=1` env var added to Docker image — bypasses Chromium kernel-namespace sandbox (required in most container runtimes without `SYS_ADMIN`); documented with guidance on when to disable it
+- `wget` added to runtime image (required by `HEALTHCHECK`)
+
+---
+
 ## [1.0.0-rc.1] — 2026-04-25
 
 > Release candidate for 1.0.0. Core feature set is complete. Please test and

@@ -37,7 +37,14 @@ All crate dependencies live in `vendor.tar.xz` (22 MB, xz-compressed) rather tha
 tar -xJf vendor.tar.xz   # one-time per workspace; vendor/ is then reusable
 ```
 
-The pipeline files shipped in this repo already include this step. If you are adapting a snippet for your own pipeline, add this line before the first `cargo` command.
+The pipeline files shipped in this repo already include this step. If you are adapting a snippet for your own pipeline, add these lines before the first `cargo` command:
+
+```bash
+sha256sum -c vendor.tar.xz.sha256   # verify archive integrity first
+tar -xJf vendor.tar.xz
+```
+
+The SHA-256 checksum file (`vendor.tar.xz.sha256`) is committed alongside the archive and is checked automatically by the Dockerfile, GitLab CI pipeline, and Jenkinsfile.
 
 The JSON output (`result.json`) is machine-readable and stable across versions — use it to feed dashboards, Confluence, Slack webhooks, or custom tooling. The HTML report is a self-contained single-file document suitable for artifact storage and browser viewing.
 
@@ -400,16 +407,19 @@ Store credentials in **Settings → CI/CD → Variables** as `CONFLUENCE_USER` a
 
 ## Environment variables reference
 
-| Variable            | Used by     | Purpose                                                                |
-|---------------------|-------------|------------------------------------------------------------------------|
-| `RUST_LOG`          | All modes   | Tracing output level: `error`, `warn`, `info`, `debug`, `trace`        |
-| `SLOC_BROWSER`      | PDF export  | Override Chromium-based browser path (e.g. `/usr/bin/chromium`)        |
-| `SLOC_API_KEY`      | Web UI      | When set, all requests must supply a matching `X-API-Key` header       |
-| `SKIP_WEB_CHECK`    | Jenkins     | Skip the web UI health-check stage; set to any non-empty value         |
-| `SLOC_SMTP_HOST`    | `send`      | SMTP host (alternative to `--smtp-host`)                               |
-| `SLOC_SMTP_USER`    | `send`      | SMTP username (alternative to `--smtp-user`)                           |
-| `SLOC_SMTP_PASS`    | `send`      | SMTP password (alternative to `--smtp-pass`)                           |
-| `SLOC_WEBHOOK_TOKEN`| `send`      | Bearer token for webhook delivery (alternative to `--webhook-token`)   |
+| Variable              | Used by     | Purpose                                                                |
+|-----------------------|-------------|------------------------------------------------------------------------|
+| `RUST_LOG`            | All modes   | Tracing output level: `error`, `warn`, `info`, `debug`, `trace`        |
+| `SLOC_BROWSER`        | PDF export  | Override Chromium-based browser path (e.g. `/usr/bin/chromium`)        |
+| `SLOC_BROWSER_NOSANDBOX` | PDF export | Set to `1` to pass `--no-sandbox` to Chromium (required in Docker) |
+| `SLOC_API_KEY`        | Web UI      | When set, all requests must supply `Authorization: Bearer <key>` or `X-API-Key: <key>` |
+| `SLOC_TLS_CERT`       | Web UI      | Path to PEM certificate for native TLS termination                     |
+| `SLOC_TLS_KEY`        | Web UI      | Path to PEM private key for native TLS termination                     |
+| `SKIP_WEB_CHECK`      | Jenkins     | Skip the web UI health-check stage; set to any non-empty value         |
+| `SLOC_SMTP_HOST`      | `send`      | SMTP host (alternative to `--smtp-host`)                               |
+| `SLOC_SMTP_USER`      | `send`      | SMTP username (alternative to `--smtp-user`)                           |
+| `SLOC_SMTP_PASS`      | `send`      | SMTP password — prefer this over `--smtp-pass` to keep creds out of process listings |
+| `SLOC_WEBHOOK_TOKEN`  | `send`      | Bearer token for webhook delivery (alternative to `--webhook-token`)   |
 
 ---
 

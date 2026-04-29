@@ -2,25 +2,29 @@
 // Copyright (C) 2026 Nima Shafie <nimzshafie@gmail.com>
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs,
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
 use askama::Template;
 use axum::{
+    body::Body,
     extract::{DefaultBodyLimit, Form, Path as AxumPath, Query, State},
-    http::{header, StatusCode},
+    http::{header, HeaderValue, Request, StatusCode},
+    middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+use tower_http::cors::CorsLayer;
 
 use sloc_config::{AppConfig, BinaryFileBehavior, MixedLinePolicy};
 
@@ -33,6 +37,39 @@ use sloc_core::{
 use sloc_report::{render_html, render_sub_report_html, write_pdf_from_html};
 const MAX_CONCURRENT_ANALYSES: usize = 4;
 
+/// Sliding-window rate limiter keyed by client IP.
+/// Uses only std primitives — no external crate required.
+struct IpRateLimiter {
+    window: Duration,
+    max_requests: usize,
+    state: std::sync::Mutex<HashMap<IpAddr, VecDeque<Instant>>>,
+}
+
+impl IpRateLimiter {
+    fn new(window: Duration, max_requests: usize) -> Self {
+        Self {
+            window,
+            max_requests,
+            state: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn is_allowed(&self, ip: IpAddr) -> bool {
+        let now = Instant::now();
+        let cutoff = now.checked_sub(self.window).unwrap_or(now);
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let bucket = state.entry(ip).or_default();
+        while bucket.front().map(|t| *t <= cutoff).unwrap_or(false) {
+            bucket.pop_front();
+        }
+        if bucket.len() >= self.max_requests {
+            return false;
+        }
+        bucket.push_back(now);
+        true
+    }
+}
+
 #[derive(Clone)]
 struct AppState {
     base_config: AppConfig,
@@ -41,6 +78,9 @@ struct AppState {
     registry_path: PathBuf,
     analyze_semaphore: Arc<tokio::sync::Semaphore>,
     server_mode: bool,
+    tls_enabled: bool,
+    api_key: Option<String>,
+    rate_limiter: Arc<IpRateLimiter>,
 }
 
 type PendingPdf = Option<(PathBuf, PathBuf, bool)>;
@@ -66,6 +106,29 @@ pub async fn serve(config: AppConfig) -> Result<()> {
     registry.prune_stale();
     let _ = registry.save(&registry_path);
 
+    let api_key = std::env::var("SLOC_API_KEY").ok().filter(|k| !k.is_empty());
+    if server_mode && api_key.is_none() {
+        println!(
+            "WARNING: SLOC_API_KEY is not set. All web endpoints are unauthenticated. \
+             Set SLOC_API_KEY to enable bearer-token authentication."
+        );
+    }
+
+    // FIND-012: warn when TLS is not configured in server mode.
+    let tls_cert = std::env::var("SLOC_TLS_CERT").ok();
+    let tls_key = std::env::var("SLOC_TLS_KEY").ok();
+    let tls_enabled = tls_cert.is_some() && tls_key.is_some();
+    if server_mode && !tls_enabled {
+        println!(
+            "WARNING: TLS is not configured. Traffic is cleartext. \
+             Set SLOC_TLS_CERT and SLOC_TLS_KEY for HTTPS, \
+             or terminate TLS at a reverse proxy (nginx, caddy)."
+        );
+    }
+
+    // FIND-010: 60 req/min per IP across all routes.
+    let rate_limiter = Arc::new(IpRateLimiter::new(Duration::from_secs(60), 60));
+
     let state = AppState {
         base_config: config,
         artifacts: Arc::new(Mutex::new(HashMap::new())),
@@ -73,6 +136,9 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         registry_path,
         analyze_semaphore: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_ANALYSES)),
         server_mode,
+        tls_enabled,
+        api_key,
+        rate_limiter,
     };
 
     let protected = Router::new()
@@ -85,20 +151,30 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         .route("/open-path", get(open_path_handler))
         .route("/pick-file", get(pick_file_handler))
         .route("/locate-report", post(locate_report_handler))
-        .route("/history", get(history_handler))
-        .route("/compare-select", get(compare_select_handler))
+        .route("/view-reports", get(history_handler))
+        .route("/compare-scans", get(compare_select_handler))
         .route("/compare", get(compare_handler))
         .route("/images/:folder/:file", get(image_handler))
         .route("/runs/:run_id/:artifact", get(artifact_handler))
         .route("/api/metrics/latest", get(api_metrics_latest_handler))
         .route("/api/metrics/:run_id", get(api_metrics_run_handler))
         .route("/api/project-history", get(project_history_handler))
-        .route("/embed/summary", get(embed_handler));
+        .route("/embed/summary", get(embed_handler))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_api_key,
+        ));
 
     let app = protected
         .route("/healthz", get(healthz))
         .route("/badge/:metric", get(badge_handler))
         .route("/static/chart.js", get(chart_js_handler))
+        .layer(middleware::from_fn_with_state(state.clone(), rate_limit))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            add_security_headers,
+        ))
+        .layer(CorsLayer::new())
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state.clone());
 
@@ -106,7 +182,26 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         .await
         .with_context(|| format!("failed to bind local web UI on {bind_address}"))?;
 
-    let url = format!("http://{bind_address}/");
+    let addr: SocketAddr = bind_address
+        .parse()
+        .unwrap_or_else(|_| listener.local_addr().expect("listener has a local address"));
+
+    if tls_enabled {
+        let cert_path = tls_cert.expect("tls_enabled guarantees SLOC_TLS_CERT is Some");
+        let key_path = tls_key.expect("tls_enabled guarantees SLOC_TLS_KEY is Some");
+        let tls_config = build_tls_config(&cert_path, &key_path)
+            .context("failed to load TLS certificate/key")?;
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls_config));
+
+        let url = format!("https://{addr}/");
+        println!("OxideSLOC server running at {url} (TLS)");
+        println!("Use Ctrl+C to stop.");
+
+        return serve_tls(listener, app, acceptor, server_mode).await;
+    }
+
+    let scheme = "http";
+    let url = format!("{scheme}://{addr}/");
     if server_mode {
         println!("OxideSLOC server running at {url}");
         println!("Use Ctrl+C to stop.");
@@ -136,16 +231,220 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         });
     }
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            if tokio::signal::ctrl_c().await.is_ok() {
-                println!();
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            println!();
+            if server_mode {
+                println!("Shutting down OxideSLOC server...");
+            } else {
                 println!("Shutting down OxideSLOC local web UI...");
-                println!("Server stopped cleanly.");
             }
+            println!("Server stopped cleanly.");
+        }
+    })
+    .await
+    .context("web server terminated unexpectedly")
+}
+
+/// Load a rustls ServerConfig from PEM certificate and key files.
+fn build_tls_config(cert_path: &str, key_path: &str) -> Result<rustls::ServerConfig> {
+    use rustls_pemfile::{certs, private_key};
+    use std::io::BufReader;
+
+    let cert_bytes =
+        fs::read(cert_path).with_context(|| format!("failed to read TLS cert: {cert_path}"))?;
+    let key_bytes =
+        fs::read(key_path).with_context(|| format!("failed to read TLS key: {key_path}"))?;
+
+    let cert_chain: Vec<_> = certs(&mut BufReader::new(cert_bytes.as_slice()))
+        .collect::<std::result::Result<_, _>>()
+        .context("failed to parse TLS certificates")?;
+
+    let key = private_key(&mut BufReader::new(key_bytes.as_slice()))
+        .context("failed to parse TLS private key")?
+        .ok_or_else(|| anyhow::anyhow!("no private key found in {key_path}"))?;
+
+    rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(cert_chain, key)
+        .context("failed to build TLS server config")
+}
+
+/// Accept loop with TLS termination using tokio-rustls + hyper-util.
+async fn serve_tls(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    acceptor: tokio_rustls::TlsAcceptor,
+    server_mode: bool,
+) -> Result<()> {
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+    use hyper_util::server::conn::auto::Builder as ConnBuilder;
+    use hyper_util::service::TowerToHyperService;
+    use tower::{Service, ServiceExt};
+
+    let make_svc = app.into_make_service_with_connect_info::<SocketAddr>();
+
+    loop {
+        tokio::select! {
+            biased;
+            _ = tokio::signal::ctrl_c() => {
+                println!();
+                if server_mode {
+                    println!("Shutting down OxideSLOC server...");
+                } else {
+                    println!("Shutting down OxideSLOC local web UI...");
+                }
+                println!("Server stopped cleanly.");
+                return Ok(());
+            }
+            result = listener.accept() => {
+                let (tcp, peer_addr) = result.context("TLS accept failed")?;
+                let acceptor = acceptor.clone();
+                let mut factory = make_svc.clone();
+
+                tokio::spawn(async move {
+                    let tls = match acceptor.accept(tcp).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("[sloc-web] TLS handshake from {peer_addr}: {e}");
+                            return;
+                        }
+                    };
+                    let svc = match ServiceExt::<SocketAddr>::ready(&mut factory).await {
+                        Ok(f) => match Service::call(f, peer_addr).await {
+                            Ok(s) => s,
+                            Err(_) => return,
+                        },
+                        Err(_) => return,
+                    };
+                    let io = TokioIo::new(tls);
+                    if let Err(e) = ConnBuilder::new(TokioExecutor::new())
+                        .serve_connection(io, TowerToHyperService::new(svc))
+                        .await
+                    {
+                        eprintln!("[sloc-web] connection error from {peer_addr}: {e}");
+                    }
+                });
+            }
+        }
+    }
+}
+
+async fn require_api_key(
+    State(state): State<AppState>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    if let Some(ref expected) = state.api_key {
+        let provided = req
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .or_else(|| req.headers().get("X-API-Key").and_then(|v| v.to_str().ok()));
+        if provided.map(|k| ct_eq(k, expected)).unwrap_or(false) {
+            return next.run(req).await;
+        }
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(header::WWW_AUTHENTICATE, "Bearer realm=\"oxide-sloc\"")],
+            "401 Unauthorized\n",
+        )
+            .into_response();
+    }
+    next.run(req).await
+}
+
+fn ct_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.bytes()
+        .zip(b.bytes())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
+}
+
+async fn add_security_headers(
+    State(state): State<AppState>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let mut resp = next.run(req).await;
+    let h = resp.headers_mut();
+    h.insert("X-Frame-Options", HeaderValue::from_static("DENY"));
+    h.insert(
+        "X-Content-Type-Options",
+        HeaderValue::from_static("nosniff"),
+    );
+    h.insert(
+        "Referrer-Policy",
+        HeaderValue::from_static("strict-origin-when-cross-origin"),
+    );
+    h.insert(
+        "Content-Security-Policy",
+        HeaderValue::from_static(
+            "default-src 'self'; \
+             style-src 'self' 'unsafe-inline'; \
+             img-src 'self' data: blob:; \
+             script-src 'self' 'unsafe-inline'; \
+             font-src 'self' data:; \
+             object-src 'none'; \
+             frame-ancestors 'none'",
+        ),
+    );
+    h.insert(
+        "X-Permitted-Cross-Domain-Policies",
+        HeaderValue::from_static("none"),
+    );
+    h.insert(
+        "Permissions-Policy",
+        HeaderValue::from_static("camera=(), microphone=(), geolocation=(), payment=()"),
+    );
+    h.insert(
+        "Cross-Origin-Opener-Policy",
+        HeaderValue::from_static("same-origin"),
+    );
+    h.insert(
+        "Cross-Origin-Resource-Policy",
+        HeaderValue::from_static("same-origin"),
+    );
+    if state.tls_enabled {
+        h.insert(
+            "Strict-Transport-Security",
+            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        );
+    }
+    resp
+}
+
+async fn rate_limit(State(state): State<AppState>, req: Request<Body>, next: Next) -> Response {
+    let ip = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        .map(|c| c.0.ip())
+        .or_else(|| {
+            req.headers()
+                .get("X-Forwarded-For")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.split(',').next())
+                .and_then(|s| s.trim().parse::<IpAddr>().ok())
         })
-        .await
-        .context("web server terminated unexpectedly")
+        .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+
+    if !state.rate_limiter.is_allowed(ip) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, "60")],
+            "429 Too Many Requests\n",
+        )
+            .into_response();
+    }
+    next.run(req).await
 }
 
 async fn splash() -> impl IntoResponse {
@@ -403,12 +702,28 @@ async fn locate_report_handler(
     State(state): State<AppState>,
     Form(form): Form<LocateReportForm>,
 ) -> impl IntoResponse {
+    let file_ext = Path::new(&form.file_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if file_ext != "html" {
+        let html = ErrorTemplate {
+            message: "Only .html report files can be located via this form.".to_string(),
+            last_report_url: Some("/view-reports".to_string()),
+            last_report_label: Some("View Reports".to_string()),
+        }
+        .render()
+        .unwrap_or_else(|_| "<pre>Invalid file type.</pre>".to_string());
+        return Html(html).into_response();
+    }
     let html_path = match fs::canonicalize(PathBuf::from(&form.file_path)) {
-        Ok(p) => p,
+        Ok(p) => strip_unc_prefix(p),
         Err(_) => {
             let html = ErrorTemplate {
                 message: "Report file not found or path is invalid.".to_string(),
-                last_report_url: Some("/history".to_string()),
+                last_report_url: Some("/view-reports".to_string()),
+                last_report_label: Some("View Reports".to_string()),
             }
             .render()
             .unwrap_or_else(|_| "<pre>Invalid path.</pre>".to_string());
@@ -422,7 +737,8 @@ async fn locate_report_handler(
         if !html_path.starts_with(&canonical_root) {
             let html = ErrorTemplate {
                 message: "Report file must be within the configured output directory.".to_string(),
-                last_report_url: Some("/history".to_string()),
+                last_report_url: Some("/view-reports".to_string()),
+                last_report_label: Some("View Reports".to_string()),
             }
             .render()
             .unwrap_or_else(|_| "<pre>Invalid path.</pre>".to_string());
@@ -434,7 +750,8 @@ async fn locate_report_handler(
         None => {
             let html = ErrorTemplate {
                 message: "Report file has no parent directory.".to_string(),
-                last_report_url: Some("/history".to_string()),
+                last_report_url: Some("/view-reports".to_string()),
+                last_report_label: Some("View Reports".to_string()),
             }
             .render()
             .unwrap_or_else(|_| "<pre>Invalid path.</pre>".to_string());
@@ -462,53 +779,79 @@ async fn locate_report_handler(
     if let Some(idx) = entry_idx {
         reg.entries[idx].html_path = Some(html_path);
         let _ = reg.save(&state.registry_path);
-        return axum::response::Redirect::to("/history?linked=1").into_response();
+        return axum::response::Redirect::to("/view-reports?linked=1").into_response();
     }
     // No match — attempt to build an entry from an adjacent result.json.
     if json_candidate.exists() {
-        if let Ok(run) = read_json(&json_candidate) {
-            let project_label = run
-                .input_roots
-                .first()
-                .map(|r| sanitize_project_label(r))
-                .unwrap_or_else(|| "Unknown Project".to_string());
-            let entry = RegistryEntry {
-                run_id: run.tool.run_id.clone(),
-                timestamp_utc: run.tool.timestamp_utc,
-                project_label,
-                input_roots: run.input_roots.clone(),
-                json_path: Some(json_candidate),
-                html_path: Some(html_path),
-                pdf_path: None,
-                summary: ScanSummarySnapshot {
-                    files_analyzed: run.summary_totals.files_analyzed,
-                    files_skipped: run.summary_totals.files_skipped,
-                    total_physical_lines: run.summary_totals.total_physical_lines,
-                    code_lines: run.summary_totals.code_lines,
-                    comment_lines: run.summary_totals.comment_lines,
-                    blank_lines: run.summary_totals.blank_lines,
-                    functions: run.summary_totals.functions,
-                    classes: run.summary_totals.classes,
-                    variables: run.summary_totals.variables,
-                    imports: run.summary_totals.imports,
-                },
-                git_branch: None,
-                git_commit: None,
-                git_author: None,
-                git_tags: None,
-            };
-            reg.add_entry(entry);
-            let _ = reg.save(&state.registry_path);
-            return axum::response::Redirect::to("/history?linked=1").into_response();
+        match read_json(&json_candidate) {
+            Ok(run) => {
+                let project_label = run
+                    .input_roots
+                    .first()
+                    .map(|r| sanitize_project_label(r))
+                    .unwrap_or_else(|| "Unknown Project".to_string());
+                let entry = RegistryEntry {
+                    run_id: run.tool.run_id.clone(),
+                    timestamp_utc: run.tool.timestamp_utc,
+                    project_label,
+                    input_roots: run.input_roots.clone(),
+                    json_path: Some(json_candidate),
+                    html_path: Some(html_path),
+                    pdf_path: None,
+                    summary: ScanSummarySnapshot {
+                        files_analyzed: run.summary_totals.files_analyzed,
+                        files_skipped: run.summary_totals.files_skipped,
+                        total_physical_lines: run.summary_totals.total_physical_lines,
+                        code_lines: run.summary_totals.code_lines,
+                        comment_lines: run.summary_totals.comment_lines,
+                        blank_lines: run.summary_totals.blank_lines,
+                        functions: run.summary_totals.functions,
+                        classes: run.summary_totals.classes,
+                        variables: run.summary_totals.variables,
+                        imports: run.summary_totals.imports,
+                    },
+                    git_branch: None,
+                    git_commit: None,
+                    git_author: None,
+                    git_tags: None,
+                };
+                reg.add_entry(entry);
+                let _ = reg.save(&state.registry_path);
+                return axum::response::Redirect::to("/view-reports?linked=1").into_response();
+            }
+            Err(e) => {
+                let file_hint = if state.server_mode {
+                    String::new()
+                } else {
+                    format!("\n\nFile: {}\n\nError: {e}", json_candidate.display())
+                };
+                let html = ErrorTemplate {
+                    message: format!(
+                        "Could not link this report.\n\nA 'result.json' was found but could not \
+                         be parsed — it may have been saved by an older version of OxideSLOC. \
+                         Re-running the analysis will create a fresh, compatible record.{file_hint}"
+                    ),
+                    last_report_url: Some("/view-reports".to_string()),
+                    last_report_label: Some("View Reports".to_string()),
+                }
+                .render()
+                .unwrap_or_else(|_| "<pre>Link failed.</pre>".to_string());
+                return Html(html).into_response();
+            }
         }
     }
+    let file_hint = if state.server_mode {
+        String::new()
+    } else {
+        format!("\n\nFile: {}", html_path.display())
+    };
     let html = ErrorTemplate {
         message: format!(
             "Could not link this report.\n\nNo matching scan record was found, and no \
-             'result.json' was found in the same folder.\n\nFile: {}",
-            html_path.display()
+             'result.json' was found in the same folder.{file_hint}"
         ),
-        last_report_url: Some("/history".to_string()),
+        last_report_url: Some("/view-reports".to_string()),
+        last_report_label: Some("View Reports".to_string()),
     }
     .render()
     .unwrap_or_else(|_| "<pre>Link failed.</pre>".to_string());
@@ -611,9 +954,34 @@ async fn image_handler(AxumPath((folder, file)): AxumPath<(String, String)>) -> 
     }
 }
 
-async fn preview_handler(Query(query): Query<PreviewQuery>) -> impl IntoResponse {
+async fn preview_handler(
+    State(state): State<AppState>,
+    Query(query): Query<PreviewQuery>,
+) -> impl IntoResponse {
     let raw_path = query.path.unwrap_or_else(|| "samples/basic".to_string());
     let resolved = resolve_input_path(&raw_path);
+
+    if state.server_mode {
+        let config = &state.base_config;
+        if config.discovery.allowed_scan_roots.is_empty() {
+            return Html(
+                r#"<div class="preview-error">Preview rejected: no allowed_scan_roots configured.</div>"#.to_string()
+            );
+        }
+        let canonical = fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
+        let allowed = config.discovery.allowed_scan_roots.iter().any(|root| {
+            fs::canonicalize(root)
+                .ok()
+                .map(|r| canonical.starts_with(&r))
+                .unwrap_or(false)
+        });
+        if !allowed {
+            return Html(
+                r#"<div class="preview-error">Preview rejected: path is not within an allowed scan directory.</div>"#.to_string()
+            );
+        }
+    }
+
     let include_patterns = split_patterns(query.include_globs.as_deref());
     let exclude_patterns = split_patterns(query.exclude_globs.as_deref());
 
@@ -638,6 +1006,7 @@ async fn analyze_handler(
                     "Server is busy — too many concurrent analyses. Please try again in a moment."
                         .to_string(),
                 last_report_url: None,
+                last_report_label: None,
             };
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -654,7 +1023,25 @@ async fn analyze_handler(
     let mut config = state.base_config.clone();
     let resolved_path = resolve_input_path(&form.path);
 
-    if state.server_mode && !config.discovery.allowed_scan_roots.is_empty() {
+    if state.server_mode {
+        if config.discovery.allowed_scan_roots.is_empty() {
+            let template = ErrorTemplate {
+                message: "Scan path rejected: no allowed_scan_roots configured on this server. \
+                          Set allowed_scan_roots in the server config to permit scanning."
+                    .to_string(),
+                last_report_url: None,
+                last_report_label: None,
+            };
+            return (
+                StatusCode::FORBIDDEN,
+                Html(
+                    template
+                        .render()
+                        .unwrap_or_else(|_| "<pre>Forbidden.</pre>".to_string()),
+                ),
+            )
+                .into_response();
+        }
         let canonical = fs::canonicalize(&resolved_path).unwrap_or_else(|_| resolved_path.clone());
         let allowed = config.discovery.allowed_scan_roots.iter().any(|root| {
             fs::canonicalize(root)
@@ -666,13 +1053,17 @@ async fn analyze_handler(
             let template = ErrorTemplate {
                 message: "The requested path is not within an allowed scan directory.".to_string(),
                 last_report_url: None,
+                last_report_label: None,
             };
-            return Html(
-                template
-                    .render()
-                    .unwrap_or_else(|_| "<pre>Path not allowed.</pre>".to_string()),
+            return (
+                StatusCode::FORBIDDEN,
+                Html(
+                    template
+                        .render()
+                        .unwrap_or_else(|_| "<pre>Path not allowed.</pre>".to_string()),
+                ),
             )
-            .into_response();
+                .into_response();
         }
     }
     config.discovery.root_paths = vec![resolved_path];
@@ -755,6 +1146,7 @@ async fn analyze_handler(
             let template = ErrorTemplate {
                 message: "Analysis failed. Check that the path exists and is readable.".to_string(),
                 last_report_url: None,
+                last_report_label: None,
             };
             return Html(
                 template
@@ -806,6 +1198,7 @@ async fn analyze_handler(
                 message: "Could not create output directory. Check the output path setting."
                     .to_string(),
                 last_report_url: None,
+                last_report_label: None,
             };
             return Html(
                 template
@@ -836,6 +1229,7 @@ async fn analyze_handler(
             let template = ErrorTemplate {
                 message: "Failed to save report artifacts. Check available disk space.".to_string(),
                 last_report_url: None,
+                last_report_label: None,
             };
             return Html(
                 template
@@ -1234,7 +1628,8 @@ async fn artifact_handler(
                              before the scan registry was introduced.",
                             &run_id[..run_id.len().min(8)]
                         ),
-                        last_report_url: None,
+                        last_report_url: Some("/view-reports".to_string()),
+                        last_report_label: Some("View Reports".to_string()),
                     }
                     .render()
                     .unwrap_or_else(|_| "<pre>Report not found.</pre>".to_string());
@@ -1286,7 +1681,8 @@ async fn artifact_handler(
                     );
                     let html = ErrorTemplate {
                         message: msg,
-                        last_report_url: None,
+                        last_report_url: Some("/view-reports".to_string()),
+                        last_report_label: Some("View Reports".to_string()),
                     }
                     .render()
                     .unwrap_or_else(|_| "<pre>File not found.</pre>".to_string());
@@ -1301,7 +1697,8 @@ async fn artifact_handler(
                     .to_string();
                 let html = ErrorTemplate {
                     message: msg,
-                    last_report_url: None,
+                    last_report_url: Some("/view-reports".to_string()),
+                    last_report_label: Some("View Reports".to_string()),
                 }
                 .render()
                 .unwrap_or_else(|_| "<pre>PDF not available.</pre>".to_string());
@@ -1338,7 +1735,8 @@ async fn artifact_handler(
                     );
                     let html = ErrorTemplate {
                         message: msg,
-                        last_report_url: None,
+                        last_report_url: Some("/view-reports".to_string()),
+                        last_report_label: Some("View Reports".to_string()),
                     }
                     .render()
                     .unwrap_or_else(|_| "<pre>File not found.</pre>".to_string());
@@ -1353,7 +1751,8 @@ async fn artifact_handler(
                     .to_string();
                 let html = ErrorTemplate {
                     message: msg,
-                    last_report_url: None,
+                    last_report_url: Some("/view-reports".to_string()),
+                    last_report_label: Some("View Reports".to_string()),
                 }
                 .render()
                 .unwrap_or_else(|_| "<pre>JSON not available.</pre>".to_string());
@@ -1395,7 +1794,8 @@ async fn artifact_handler(
                     );
                     let html = ErrorTemplate {
                         message: msg,
-                        last_report_url: None,
+                        last_report_url: Some("/view-reports".to_string()),
+                        last_report_label: Some("View Reports".to_string()),
                     }
                     .render()
                     .unwrap_or_else(|_| "<pre>File not found.</pre>".to_string());
@@ -1443,7 +1843,8 @@ async fn artifact_handler(
                              and HTML output enabled.",
                             artifact
                         ),
-                        last_report_url: None,
+                        last_report_url: Some("/view-reports".to_string()),
+                        last_report_label: Some("View Reports".to_string()),
                     }
                     .render()
                     .unwrap_or_else(|_| "<pre>Sub-report not found.</pre>".to_string());
@@ -1480,7 +1881,7 @@ struct HistoryEntryRow {
 }
 
 fn fmt_pst(dt: chrono::DateTime<chrono::Utc>) -> String {
-    dt.with_timezone(&chrono::FixedOffset::west_opt(8 * 3600).unwrap())
+    dt.with_timezone(&chrono::FixedOffset::west_opt(8 * 3600).expect("PST offset is always valid"))
         .format("%Y-%m-%d %H:%M PST")
         .to_string()
 }
@@ -1495,7 +1896,9 @@ fn make_history_rows(reg: &ScanRegistry) -> Vec<HistoryEntryRow> {
                 .split('-')
                 .next_back()
                 .unwrap_or(&e.run_id)
-                .to_string(),
+                .chars()
+                .take(7)
+                .collect(),
             timestamp: fmt_pst(e.timestamp_utc),
             project_label: e.project_label.clone(),
             project_path: e
@@ -1628,7 +2031,7 @@ async fn compare_handler(
     // redirect to the history page where the user can select two runs.
     let (run_id_a, run_id_b) = match (query.a.as_deref(), query.b.as_deref()) {
         (Some(a), Some(b)) => (a.to_string(), b.to_string()),
-        _ => return axum::response::Redirect::to("/compare-select").into_response(),
+        _ => return axum::response::Redirect::to("/compare-scans").into_response(),
     };
 
     let (maybe_a, maybe_b) = {
@@ -1644,7 +2047,8 @@ async fn compare_handler(
             message: "One or both run IDs were not found in scan history. \
                       The runs may have been deleted or the registry may have been reset."
                 .to_string(),
-            last_report_url: None,
+            last_report_url: Some("/compare-scans".to_string()),
+            last_report_label: Some("Compare Scans".to_string()),
         }
         .render()
         .unwrap_or_else(|_| "<pre>Run not found.</pre>".to_string());
@@ -1678,7 +2082,8 @@ async fn compare_handler(
                       both of these runs. JSON is now always saved for new scans — re-run the \
                       affected projects to enable comparisons."
                 .to_string(),
-            last_report_url: None,
+            last_report_url: Some("/compare-scans".to_string()),
+            last_report_label: Some("Compare Scans".to_string()),
         }
         .render()
         .unwrap_or_else(|_| "<pre>JSON data missing.</pre>".to_string());
@@ -1688,14 +2093,22 @@ async fn compare_handler(
     let baseline_run = match read_json(base_json) {
         Ok(r) => r,
         Err(e) => {
-            let html = ErrorTemplate {
-                message: format!(
+            let message = if state.server_mode {
+                "Could not load baseline scan data. The scan output folder may have been moved, \
+                 renamed, or deleted. Re-running the analysis will create fresh comparison data."
+                    .to_string()
+            } else {
+                format!(
                     "Could not load baseline scan data.\n\nPath: {}\n\nError: {e}\n\n\
                      The scan output folder may have been moved, renamed, or deleted. \
                      Re-running the analysis for this project will create fresh comparison data.",
                     base_json.display()
-                ),
-                last_report_url: Some("/compare-select".to_string()),
+                )
+            };
+            let html = ErrorTemplate {
+                message,
+                last_report_url: Some("/compare-scans".to_string()),
+                last_report_label: Some("Compare Scans".to_string()),
             }
             .render()
             .unwrap_or_else(|_| "<pre>Baseline load failed.</pre>".to_string());
@@ -1705,14 +2118,22 @@ async fn compare_handler(
     let current_run = match read_json(curr_json) {
         Ok(r) => r,
         Err(e) => {
-            let html = ErrorTemplate {
-                message: format!(
+            let message = if state.server_mode {
+                "Could not load current scan data. The scan output folder may have been moved, \
+                 renamed, or deleted. Re-running the analysis will create fresh comparison data."
+                    .to_string()
+            } else {
+                format!(
                     "Could not load current scan data.\n\nPath: {}\n\nError: {e}\n\n\
                      The scan output folder may have been moved, renamed, or deleted. \
                      Re-running the analysis for this project will create fresh comparison data.",
                     curr_json.display()
-                ),
-                last_report_url: Some("/compare-select".to_string()),
+                )
+            };
+            let html = ErrorTemplate {
+                message,
+                last_report_url: Some("/compare-scans".to_string()),
+                last_report_label: Some("Compare Scans".to_string()),
             }
             .render()
             .unwrap_or_else(|_| "<pre>Current load failed.</pre>".to_string());
@@ -2076,7 +2497,7 @@ async fn project_history_handler(
 ) -> Response {
     let path = query.path.unwrap_or_default();
     let resolved = resolve_input_path(&path);
-    let root_str = resolved.to_string_lossy().into_owned();
+    let root_str = resolved.to_string_lossy().replace('\\', "/");
 
     let reg = state.registry.lock().await;
     let entries: Vec<_> = reg
@@ -2411,6 +2832,19 @@ fn sanitize_project_label(raw: &str) -> String {
     }
 }
 
+/// Strip the Windows extended-length prefix (`\\?\`) from a canonicalized path so that
+/// comparisons with non-canonicalized stored paths work correctly.
+fn strip_unc_prefix(path: PathBuf) -> PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    path
+}
+
 fn display_path(path: &Path) -> String {
     let s = path.to_string_lossy();
     // Strip Windows extended-length prefix for display only; the underlying
@@ -2490,7 +2924,10 @@ fn resolve_input_path(raw: &str) -> PathBuf {
         }
     };
 
-    fs::canonicalize(&resolved).unwrap_or(resolved)
+    // fs::canonicalize on Windows returns \\?\-prefixed extended-length paths;
+    // strip that prefix so stored paths and the displayed "Project path" are clean.
+    let canonical = fs::canonicalize(&resolved).unwrap_or(resolved);
+    PathBuf::from(display_path(&canonical))
 }
 
 fn build_preview_html(
@@ -3088,7 +3525,7 @@ struct SubmoduleRow {
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Oxide-SLOC | samples/basic</title>
+  <title>OxideSLOC | samples/basic</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
   <style>
     :root {
@@ -3176,10 +3613,10 @@ struct SubmoduleRow {
     .server-status-wrap{position:relative;display:inline-flex;}.server-online-pill{cursor:default;}.server-status-tip{display:none;position:absolute;top:calc(100% + 10px);right:0;z-index:100;background:rgba(20,12,8,0.97);color:rgba(255,255,255,0.92);border-radius:10px;padding:10px 14px;font-size:12px;font-weight:500;line-height:1.55;white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,0.32);pointer-events:none;border:1px solid rgba(255,255,255,0.10);}.server-status-tip::before{content:'';position:absolute;bottom:100%;right:18px;border:6px solid transparent;border-bottom-color:rgba(20,12,8,0.97);}.server-status-wrap:hover .server-status-tip,.server-status-wrap:focus-within .server-status-tip{display:block;}
     .page { max-width: 1720px; margin: 0 auto; padding: 18px 24px 40px; }
     .summary-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }
-    .workbench-strip { display:flex; align-items:stretch; gap:16px; margin-bottom: 18px; flex-wrap: wrap; overflow: visible; }
+    .workbench-strip { display:flex; align-items:stretch; gap:16px; margin-bottom: 18px; flex-wrap: nowrap; overflow: visible; }
     .workbench-box { border: 1px solid var(--line-strong); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
     body.dark-theme .workbench-box { background: var(--surface); box-shadow: var(--shadow); }
-    .wb-stats { flex: 5 1 0; display:flex; flex-direction:column; overflow: visible; min-width: 0; }
+    .wb-stats { flex: 4 1 0; display:flex; flex-direction:column; overflow: visible; min-width: 0; }
     .wb-stats-header { padding: 10px 24px 0; }
     .wb-stats-title { font-size: 9px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted-2); }
     .ws-left { display:flex; align-items:center; gap:12px; flex:1 1 auto; flex-wrap:wrap; padding: 14px 20px 18px; overflow: visible; }
@@ -3199,10 +3636,10 @@ struct SubmoduleRow {
     .ws-path-link { background:none; border:none; padding:0; font:inherit; font-size:13px; font-weight:700; color:var(--oxide-2); cursor:pointer; text-decoration:underline; text-decoration-style:dotted; }
     .ws-path-link:hover { color:var(--oxide); }
     body.dark-theme .ws-path-link { color:var(--oxide); }
-    .ws-history-group { display:flex; flex-direction:column; justify-content:center; padding: 16px 28px; flex: 2 1 0; min-width: 360px; }
+    .ws-history-group { display:flex; flex-direction:column; justify-content:center; padding: 16px 28px; flex: 3 1 0; min-width: 0; }
     .ws-history-label { font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted-2); margin-bottom: 10px; }
-    .ws-history-inner { display:flex; align-items:center; gap: 18px; }
-    .ws-mini-box { display:flex; flex-direction:column; gap: 6px; padding: 12px 18px; border-radius: 10px; background: rgba(184,93,51,0.06); border: 1px solid rgba(184,93,51,0.15); min-width: 130px; }
+    .ws-history-inner { display:flex; align-items:center; gap: 14px; flex-wrap: nowrap; }
+    .ws-mini-box { display:flex; flex-direction:column; gap: 6px; padding: 12px 14px; border-radius: 10px; background: rgba(184,93,51,0.06); border: 1px solid rgba(184,93,51,0.15); min-width: 0; flex: 1 1 0; }
     body.dark-theme .ws-mini-box { background: rgba(211,122,76,0.08); border-color: rgba(211,122,76,0.20); }
     .ws-mini-label { font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.10em; color: var(--muted-2); }
     .ws-mini-value { font-size: 17px; font-weight: 800; color: var(--text); }
@@ -3269,12 +3706,12 @@ struct SubmoduleRow {
     input[type="text"]:focus, textarea:focus, select:focus { outline:none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.13); transform: translateY(-1px); }
     textarea { min-height: 128px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .hint { margin-top: 8px; color: var(--muted); font-size: 13px; line-height: 1.55; }
-    .path-history-badge { margin-top: 8px; padding: 8px 12px; border-radius: 8px; font-size: 13px; line-height: 1.5; }
+    .path-history-badge { margin-top: 8px; padding: 8px 12px; border-radius: 8px; font-size: 13px; line-height: 1.5; display: inline-block; max-width: 100%; }
     .path-history-badge.found { background: var(--info-bg, #eef3ff); color: var(--info-text, #4467d8); border: 1px solid rgba(100,130,220,0.25); }
     .path-history-badge.new   { background: var(--success-bg, #e8f5ed); color: var(--success-text, #1a8f47); border: 1px solid rgba(30,143,71,0.2); }
     .input-group { display:grid; grid-template-columns: 1fr auto auto auto; gap: 8px; align-items:center; }
     .input-group.compact { grid-template-columns: 1fr auto auto; }
-    .path-row-grid { display:grid; grid-template-columns: minmax(0, 0.6fr) minmax(220px, 0.4fr); gap: 18px; align-items:start; }
+    .path-row-grid { display:grid; grid-template-columns: minmax(0, 0.6fr) minmax(220px, 0.4fr); gap: 18px; align-items:end; }
     .path-info-card { padding: 16px 18px; border-radius: 14px; border: 1px solid var(--line); background: linear-gradient(135deg, var(--surface-2), rgba(184,93,51,0.03)); }
     .path-info-card-label { font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.10em; color: var(--muted-2); margin-bottom: 10px; }
     .path-info-row { display:flex; justify-content:space-between; align-items:baseline; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--line); }
@@ -3302,7 +3739,7 @@ struct SubmoduleRow {
     .output-field-aside { padding: 16px 18px; border-radius: 14px; border: 1px solid var(--line); background: var(--surface-2); font-size: 14px; color: var(--muted); line-height: 1.6; }
     .output-field-aside strong { display:block; font-size: 13px; font-weight: 800; letter-spacing: 0.04em; color: var(--text); margin-bottom: 6px; }
     .step3-subtitle { margin-bottom: 28px; }
-    .counting-intro { margin-bottom: 22px; }
+    .counting-intro { margin-bottom: 22px; max-width: none; }
     .counting-top-grid { gap: 20px; margin-top: 12px; align-items: start; }
     .counting-top-grid .field { padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
     .counting-top-grid .hint { margin-top: 14px; padding: 12px 14px; border-left: 4px solid var(--oxide); background: linear-gradient(180deg, rgba(184,93,51,0.06), transparent), var(--surface-2); border-radius: 10px; }
@@ -3322,6 +3759,10 @@ struct SubmoduleRow {
     .toggle-card { border:1px solid var(--line); border-radius: 12px; background: var(--surface-2); padding: 16px; }
     .checkbox { display:flex; align-items:flex-start; gap: 10px; font-size: 15px; font-weight:700; }
     .checkbox input { width: 16px; height: 16px; margin-top: 3px; accent-color: var(--accent); }
+    .scan-rules-grid { display:grid; gap: 0; margin-top: 4px; }
+    .scan-rules-grid .preset-inline-row { margin-bottom: 0; align-items: start; padding: 22px 0; border-bottom: 1px solid var(--line); }
+    .scan-rules-grid .preset-inline-row:first-child { padding-top: 0; }
+    .scan-rules-grid .preset-inline-row:last-child { padding-bottom: 0; border-bottom: none; }
     .advanced-rule-table { display:grid; gap: 12px; margin-top: 18px; }
     .advanced-rule-row { display:grid; grid-template-columns: 220px 220px minmax(0, 1fr); gap: 14px; align-items:center; padding: 16px; border:1px solid var(--line); border-radius: 14px; background: var(--surface-2); }
     .advanced-rule-row.static-note { grid-template-columns: 220px minmax(0, 1fr); }
@@ -3484,8 +3925,8 @@ struct SubmoduleRow {
       </div>
       <div class="nav-status">
         <a class="nav-pill" href="/">Home</a>
-        <a class="nav-pill" href="/history">View Reports</a>
-        <a class="nav-pill" href="/compare-select">Compare Scans</a>
+        <a class="nav-pill" href="/view-reports">View Reports</a>
+        <a class="nav-pill" href="/compare-scans">Compare Scans</a>
         <div class="server-status-wrap">
           <div class="nav-pill server-online-pill"><span class="status-dot"></span>Server online</div>
           <div class="server-status-tip">OxideSLOC is running as a local server in your terminal.<br>Close the terminal window to stop the server.</div>
@@ -3593,9 +4034,10 @@ struct SubmoduleRow {
             <div class="ws-mini-label">Last Scan</div>
             <div class="ws-mini-value" id="ws-last-scan">—</div>
           </div>
-          <a class="ws-action-link" href="/history">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>History
-          </a>
+          <div class="ws-mini-box">
+            <div class="ws-mini-label">Branch</div>
+            <div class="ws-mini-value" id="ws-branch">—</div>
+          </div>
         </div>
       </div>
     </div>
@@ -3674,36 +4116,28 @@ struct SubmoduleRow {
                 <div class="section-kicker">Step 1</div>
                 <h2>Select project and preview scope</h2>
                 <p class="card-subtitle">Choose the target folder, apply include and exclude filters, and preview what the current build is likely to scan.</p>
-                <div class="path-row-grid" style="margin-top:10px;">
-                  <div class="field" style="margin:0;">
-                    <label for="path">Project path</label>
-                    <div class="input-group">
+                <div class="field" style="margin:10px 0 0;">
+                  <label for="path">Project path</label>
+                  <div style="display:flex;align-items:center;gap:14px;">
+                    <div class="input-group" style="flex:1;min-width:0;">
                       <input id="path" name="path" type="text" value="samples/basic" placeholder="/path/to/repository" required />
                       <button type="button" class="mini-button oxide" id="browse-path">Browse</button>
                       <button type="button" class="mini-button" id="use-sample-path">Use sample</button>
                     </div>
-                    <div class="hint">Browse opens the native folder picker through the Rust backend, so you do not need to type local paths manually.</div>
-                    <div class="hint" style="margin-top:5px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;flex-shrink:0;font-size:13px;">
                       <span style="font-weight:800;color:var(--text);">Scope legend:</span>
                       <span class="badge badge-scan" data-tooltip="Files with a supported language analyzer — counted in SLOC totals.">supported</span>
                       <span class="badge badge-skip" data-tooltip="Files excluded by a policy rule such as vendor, generated, or minified detection.">skipped by policy</span>
                       <span class="badge badge-unsupported" data-tooltip="Files outside the supported language set — listed but not counted.">unsupported</span>
                     </div>
-                    <div id="path-history-badge" class="path-history-badge" style="display:none"></div>
                   </div>
-                  <div>
-                    <p class="hint" style="margin:0 0 8px;">Scan history for the selected path — populated once you enter or browse to a folder.</p>
-                    <div class="path-info-card" id="path-info-panel">
-                      <div class="path-info-card-label">Project info</div>
-                      <div class="path-info-row"><span class="path-info-key">Previous scans</span><span class="path-info-val" id="pi-scan-count">—</span></div>
-                      <div class="path-info-row"><span class="path-info-key">Last scan</span><span class="path-info-val" id="pi-last-scan">—</span></div>
-                      <div class="path-info-row"><span class="path-info-key">Last code lines</span><span class="path-info-val" id="pi-code-lines">—</span></div>
-                      <div class="path-info-row"><span class="path-info-key">Last branch</span><span class="path-info-val" id="pi-branch">—</span></div>
-                    </div>
-                  </div>
+                  <div class="hint">Browse opens the native folder picker through the Rust backend, so you do not need to type local paths manually.</div>
+                  <div id="path-history-badge" class="path-history-badge" style="display:none"></div>
                 </div>
 
-                <div id="preview-panel" style="margin-top:8px;">
+                <div style="height:1px;background:var(--line);margin:28px 0;"></div>
+
+                <div id="preview-panel" style="margin-top:0;">
                   <div class="preview-error">Loading preview...</div>
                 </div>
               </div>
@@ -3738,14 +4172,29 @@ struct SubmoduleRow {
               </div>
 
               <div class="section" style="margin-top:14px;">
-                <div class="toggle-card">
-                  <label class="checkbox">
-                    <input type="checkbox" name="submodule_breakdown" value="enabled" id="submodule_breakdown" checked />
-                    <div>
-                      <span>Detect and separate git submodules</span>
-                      <div class="hint" style="margin-top:4px;">When enabled, oxide-sloc reads <code>.gitmodules</code> in the project root and produces a per-submodule breakdown alongside the overall totals. Useful for super-repositories with many nested sub-projects.</div>
-                    </div>
-                  </label>
+                <div class="preset-inline-row">
+                  <div class="toggle-card" style="margin:0;">
+                    <div class="field-help-title" style="margin-bottom:10px;">Git integration</div>
+                    <h4 style="margin:0 0 12px;font-size:16px;">Submodule breakdown</h4>
+                    <label class="checkbox">
+                      <input type="checkbox" name="submodule_breakdown" value="enabled" id="submodule_breakdown" checked />
+                      <div>
+                        <span>Detect and separate git submodules</span>
+                        <div class="hint" style="margin-top:4px;">Reads <code>.gitmodules</code> and produces a per-submodule breakdown alongside the overall totals.</div>
+                      </div>
+                    </label>
+                  </div>
+                  <div class="explainer-card prominent" style="margin:0;">
+                    <div class="field-help-title" style="margin-bottom:8px;">What this does</div>
+                    <div class="advanced-rule-description"><strong>Purpose:</strong> Group each git submodule&#39;s files into its own section in the report so you can see per-submodule SLOC totals alongside overall figures.<br /><strong>Good default when:</strong> your repository contains nested sub-projects managed as git submodules.<br /><strong>Turn it off when:</strong> the repository has no submodules, or you only need aggregate totals across the whole tree.</div>
+                    <div class="code-sample" style="margin-top:10px;">[submodule "libs/core"]
+    path = libs/core
+    url  = https://github.com/org/core.git
+
+[submodule "libs/ui"]
+    path = libs/ui
+    url  = https://github.com/org/ui.git</div>
+                  </div>
                 </div>
               </div>
 
@@ -3761,7 +4210,7 @@ struct SubmoduleRow {
               <div class="section">
                 <div class="section-kicker">Step 2</div>
                 <h2>Choose counting behavior</h2>
-                <p class="card-subtitle counting-intro">These settings decide how mixed code-plus-comment lines and Python docstrings are classified. Pure comment lines, block comments, physical lines, and blank lines are still tracked by supported analyzers even when they do not share a line with executable code.</p>
+                <p class="card-subtitle counting-intro">These settings decide how mixed code-plus-comment lines and Python docstrings are classified. Pure comment lines, block comments, physical lines, and blank lines are still tracked by supported analyzers even when they do not share a line with executable code. Counting methodology follows IEEE Std 1045-1992 physical SLOC.</p>
                 <div class="subsection-bar">Primary line classification</div>
                 <div class="preset-inline-row">
                   <div class="field" style="margin:0;">
@@ -3783,71 +4232,88 @@ struct SubmoduleRow {
               </div>
 
               <div class="subsection-bar">Additional scan rules</div>
-              <div class="advanced-rule-table">
-                <div class="advanced-rule-row">
-                  <div class="advanced-rule-head"><div class="field-help-title">Generated files</div><h4>Generated-file detection</h4></div>
-                  <select name="generated_file_detection" id="generated_file_detection"><option value="enabled" selected>Enabled</option><option value="disabled">Disabled</option></select>
-                  <div>
+              <div class="scan-rules-grid">
+                <div class="preset-inline-row">
+                  <div class="toggle-card" style="margin:0;">
+                    <div class="field-help-title">Generated files</div>
+                    <h4 style="margin:6px 0 12px;font-size:16px;">Generated-file detection</h4>
+                    <select name="generated_file_detection" id="generated_file_detection"><option value="enabled" selected>Enabled</option><option value="disabled">Disabled</option></select>
+                  </div>
+                  <div class="explainer-card prominent" style="margin:0;">
                     <div class="advanced-rule-description"><strong>Purpose:</strong> Keep generated code and assets out of SLOC totals so counts reflect authored source.<br /><strong>Good default when:</strong> you want implementation-only totals.<br /><strong>Turn it off when:</strong> you intentionally want generated SDKs, compiled templates, or codegen output included.</div>
-                    <div class="code-sample" style="margin-top:8px;font-size:12px;"># generated_file_detection = "enabled"
+                    <div class="code-sample" style="margin-top:10px;font-size:12px;"># generated_file_detection = "enabled"
 # Files matching codegen patterns are excluded:
 #   *.generated.cs  *.pb.go  *.g.dart</div>
                   </div>
                 </div>
-                <div class="advanced-rule-row">
-                  <div class="advanced-rule-head"><div class="field-help-title">Minified files</div><h4>Minified-file detection</h4></div>
-                  <select name="minified_file_detection" id="minified_file_detection"><option value="enabled" selected>Enabled</option><option value="disabled">Disabled</option></select>
-                  <div>
+                <div class="preset-inline-row">
+                  <div class="toggle-card" style="margin:0;">
+                    <div class="field-help-title">Minified files</div>
+                    <h4 style="margin:6px 0 12px;font-size:16px;">Minified-file detection</h4>
+                    <select name="minified_file_detection" id="minified_file_detection"><option value="enabled" selected>Enabled</option><option value="disabled">Disabled</option></select>
+                  </div>
+                  <div class="explainer-card prominent" style="margin:0;">
                     <div class="advanced-rule-description"><strong>Purpose:</strong> Prevent compressed assets from distorting file and line counts.<br /><strong>Good default when:</strong> your repo includes built JavaScript or bundled web assets.<br /><strong>Turn it off when:</strong> minified files are the actual subject of the review.</div>
-                    <div class="code-sample" style="margin-top:8px;font-size:12px;"># minified_file_detection = "enabled"
+                    <div class="code-sample" style="margin-top:10px;font-size:12px;"># minified_file_detection = "enabled"
 # Heuristic: very long lines + low whitespace ratio
 #   jquery.min.js  bundle.min.css  → skipped</div>
                   </div>
                 </div>
-                <div class="advanced-rule-row">
-                  <div class="advanced-rule-head"><div class="field-help-title">Vendor directories</div><h4>Vendor-directory detection</h4></div>
-                  <select name="vendor_directory_detection" id="vendor_directory_detection"><option value="enabled" selected>Enabled</option><option value="disabled">Disabled</option></select>
-                  <div>
+                <div class="preset-inline-row">
+                  <div class="toggle-card" style="margin:0;">
+                    <div class="field-help-title">Vendor directories</div>
+                    <h4 style="margin:6px 0 12px;font-size:16px;">Vendor-directory detection</h4>
+                    <select name="vendor_directory_detection" id="vendor_directory_detection"><option value="enabled" selected>Enabled</option><option value="disabled">Disabled</option></select>
+                  </div>
+                  <div class="explainer-card prominent" style="margin:0;">
                     <div class="advanced-rule-description"><strong>Purpose:</strong> Skip bundled third-party dependencies so totals reflect your first-party code.<br /><strong>Good default when:</strong> you only want authored source in the report.<br /><strong>Turn it off when:</strong> vendored code is part of what you need to measure.</div>
-                    <div class="code-sample" style="margin-top:8px;font-size:12px;"># vendor_directory_detection = "enabled"
+                    <div class="code-sample" style="margin-top:10px;font-size:12px;"># vendor_directory_detection = "enabled"
 # Directories named vendor/ node_modules/ third_party/
 #   → entire subtree is excluded from totals</div>
                   </div>
                 </div>
-                <div class="advanced-rule-row">
-                  <div class="advanced-rule-head"><div class="field-help-title">Lockfiles and manifests</div><h4>Include lockfiles</h4></div>
-                  <select name="include_lockfiles" id="include_lockfiles"><option value="disabled" selected>Disabled</option><option value="enabled">Enabled</option></select>
-                  <div>
+                <div class="preset-inline-row">
+                  <div class="toggle-card" style="margin:0;">
+                    <div class="field-help-title">Lockfiles and manifests</div>
+                    <h4 style="margin:6px 0 12px;font-size:16px;">Include lockfiles</h4>
+                    <select name="include_lockfiles" id="include_lockfiles"><option value="disabled" selected>Disabled</option><option value="enabled">Enabled</option></select>
+                  </div>
+                  <div class="explainer-card prominent" style="margin:0;">
                     <div class="advanced-rule-description"><strong>Purpose:</strong> Decide whether package lockfiles and generated manifests belong in the scan scope.<br /><strong>Good default when:</strong> you want implementation-focused totals.<br /><strong>Turn it off when:</strong> your review needs to include dependency metadata or footprint accounting.</div>
-                    <div class="code-sample" style="margin-top:8px;font-size:12px;"># include_lockfiles = false  (default)
+                    <div class="code-sample" style="margin-top:10px;font-size:12px;"># include_lockfiles = false  (default)
 # Files like package-lock.json  Cargo.lock  yarn.lock
 #   → skipped unless this is enabled</div>
                   </div>
                 </div>
-                <div class="advanced-rule-row">
-                  <div class="advanced-rule-head"><div class="field-help-title">Binary handling</div><h4>Binary file behavior</h4></div>
-                  <select name="binary_file_behavior" id="binary_file_behavior"><option value="skip" selected>Skip binary files</option><option value="fail">Fail on binary files</option></select>
-                  <div>
+                <div class="preset-inline-row">
+                  <div class="toggle-card" style="margin:0;">
+                    <div class="field-help-title">Binary handling</div>
+                    <h4 style="margin:6px 0 12px;font-size:16px;">Binary file behavior</h4>
+                    <select name="binary_file_behavior" id="binary_file_behavior"><option value="skip" selected>Skip binary files</option><option value="fail">Fail on binary files</option></select>
+                  </div>
+                  <div class="explainer-card prominent" style="margin:0;">
                     <div class="advanced-rule-description"><strong>Purpose:</strong> Control how the scan reacts when binaries are found inside the selected scope.<br /><strong>Good default when:</strong> your repo has images, fonts, or other assets alongside source.<br /><strong>Turn it off when:</strong> you want the run to fail-fast and force cleanup of binary assets in the path.</div>
-                    <div class="code-sample" style="margin-top:8px;font-size:12px;"># binary_file_behavior = "skip"  (default)
+                    <div class="code-sample" style="margin-top:10px;font-size:12px;"># binary_file_behavior = "skip"  (default)
 # Detected via long lines + low whitespace heuristic
 #   .png  .exe  .so  → skipped silently</div>
                   </div>
                 </div>
-                <div class="advanced-rule-row python-docstring-wrap" id="python-docstring-wrap">
-                  <div class="advanced-rule-head"><div class="field-help-title">Python docstrings</div><h4>Docstring counting</h4></div>
-                  <div class="toggle-card compact">
+                <div class="preset-inline-row python-docstring-wrap" id="python-docstring-wrap">
+                  <div class="toggle-card" style="margin:0;">
+                    <div class="field-help-title">Python docstrings</div>
+                    <h4 style="margin:6px 0 12px;font-size:16px;">Docstring counting</h4>
                     <label class="checkbox">
                       <input id="python_docstrings_as_comments" name="python_docstrings_as_comments" type="checkbox" checked />
                       <span>Count as comment-style lines</span>
                     </label>
                   </div>
-                  <div>
+                  <div class="explainer-card prominent" style="margin:0;">
                     <div class="advanced-rule-description" id="python-docstring-live-help">Enabled: docstrings contribute to comment-style totals. Disable to count only inline comments and explicit comment lines.</div>
-                    <div class="code-sample" id="python-docstring-example" style="margin-top:8px;font-size:12px;white-space:pre;"></div>
+                    <div class="code-sample" id="python-docstring-example" style="margin-top:10px;font-size:12px;white-space:pre;"></div>
                   </div>
                 </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:4px;">
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;">
                   <div class="always-tracked-tip">
                     <div class="always-tracked-tip-icon">ℹ</div>
                     <div class="always-tracked-tip-body">
@@ -3865,7 +4331,6 @@ struct SubmoduleRow {
                     </div>
                   </div>
                 </div>
-              </div>
 
               <div class="wizard-actions">
                 <div class="left">
@@ -4255,7 +4720,7 @@ struct SubmoduleRow {
         var title = reportTitleInput.value || inferred;
         if (liveReportTitle) liveReportTitle.textContent = title;
         if (reportTitlePreview) reportTitlePreview.textContent = title;
-        document.title = "Oxide-SLOC | " + title;
+        document.title = "OxideSLOC | " + title;
 
         var projectPath = (pathInput.value || "").trim();
         if (navProjectPill && navProjectTitle) {
@@ -4827,19 +5292,13 @@ struct SubmoduleRow {
         updateReview();
       }
 
-      var piScanCount = document.getElementById("pi-scan-count");
-      var piLastScan  = document.getElementById("pi-last-scan");
-      var piCodeLines = document.getElementById("pi-code-lines");
-      var piBranch    = document.getElementById("pi-branch");
+      var wsBranch = document.getElementById("ws-branch");
 
       function fetchProjectHistory(projectPath) {
         if (!projectPath || !projectPath.trim()) {
           if (wsScanCount) wsScanCount.textContent = "—";
           if (wsLastScan)  wsLastScan.textContent  = "—";
-          if (piScanCount) piScanCount.textContent = "—";
-          if (piLastScan)  piLastScan.textContent  = "—";
-          if (piCodeLines) piCodeLines.textContent = "—";
-          if (piBranch)    piBranch.textContent    = "—";
+          if (wsBranch)    wsBranch.textContent    = "—";
           if (historyBadge) historyBadge.style.display = "none";
           return;
         }
@@ -4855,12 +5314,7 @@ struct SubmoduleRow {
               : "—";
             if (wsScanCount) wsScanCount.textContent = countStr;
             if (wsLastScan)  wsLastScan.textContent  = tsStr;
-            if (piScanCount) piScanCount.textContent = countStr;
-            if (piLastScan)  piLastScan.textContent  = tsStr;
-            if (piCodeLines) piCodeLines.textContent = data.last_scan_code_lines
-              ? Number(data.last_scan_code_lines).toLocaleString()
-              : "—";
-            if (piBranch) piBranch.textContent = data.last_git_branch || "—";
+            if (wsBranch)    wsBranch.textContent    = data.last_git_branch || "—";
             if (data.scan_count > 0) {
               if (historyBadge) {
                 var branch = data.last_git_branch ? " on " + data.last_git_branch : "";
@@ -5152,8 +5606,9 @@ struct IndexTemplate {
     body.dark-theme .action-card.compare .action-card-cta{color:#a78bfa;}
     .action-card:hover .action-card-cta{gap:12px;}
     .divider{height:1px;background:var(--line);margin:40px 0;}
-    .info-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;}
-    @media(max-width:720px){.info-strip{grid-template-columns:repeat(2,1fr);}}
+    .info-strip{display:grid;grid-template-columns:repeat(5,1fr);gap:16px;}
+    @media(max-width:960px){.info-strip{grid-template-columns:repeat(3,1fr);}}
+    @media(max-width:600px){.info-strip{grid-template-columns:repeat(2,1fr);}}
     .info-chip{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 20px;text-align:center;position:relative;cursor:default;
       transition:transform 0.22s cubic-bezier(.34,1.56,.64,1),box-shadow 0.18s ease,border-color 0.18s ease;}
     .info-chip:hover{transform:translateY(-5px) scale(1.04);box-shadow:var(--shadow-strong);border-color:var(--oxide-2);}
@@ -5189,8 +5644,8 @@ struct IndexTemplate {
       </a>
       <div class="nav-right">
         <a class="nav-pill" href="/">Home</a>
-        <a class="nav-pill" href="/history">View Reports</a>
-        <a class="nav-pill" href="/compare-select">Compare Scans</a>
+        <a class="nav-pill" href="/view-reports">View Reports</a>
+        <a class="nav-pill" href="/compare-scans">Compare Scans</a>
         <div class="server-status-wrap">
           <div class="nav-pill server-online-pill"><span class="status-dot"></span>Server online</div>
           <div class="server-status-tip">OxideSLOC is running as a local server in your terminal.<br>Close the terminal window to stop the server.</div>
@@ -5220,7 +5675,7 @@ struct IndexTemplate {
         <span class="action-card-cta">Start scanning <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="9 18 15 12 9 6"></polyline></svg></span>
       </a>
 
-      <a class="action-card view" href="/history">
+      <a class="action-card view" href="/view-reports">
         <div class="action-card-icon">
           <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
         </div>
@@ -5229,7 +5684,7 @@ struct IndexTemplate {
         <span class="action-card-cta">Open reports <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="9 18 15 12 9 6"></polyline></svg></span>
       </a>
 
-      <a class="action-card compare" href="/compare-select">
+      <a class="action-card compare" href="/compare-scans">
         <div class="action-card-icon">
           <svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
         </div>
@@ -5261,6 +5716,11 @@ struct IndexTemplate {
         <div class="info-chip-tip">Detects .gitmodules and produces<br>per-submodule breakdowns automatically</div>
         <div class="info-chip-val">Git</div>
         <div class="info-chip-label">Submodule support</div>
+      </div>
+      <div class="info-chip">
+        <div class="info-chip-tip">Physical SLOC counted per<br>IEEE Std 1045-1992 Software Productivity Metrics</div>
+        <div class="info-chip-val">IEEE</div>
+        <div class="info-chip-label">1045-1992</div>
       </div>
     </div>
   </div>
@@ -5473,8 +5933,8 @@ struct SplashTemplate {}
       </a>
       <div class="nav-right">
         <a class="nav-pill" href="/">Home</a>
-        <a class="nav-pill" href="/history">View Reports</a>
-        <a class="nav-pill" href="/compare-select">Compare Scans</a>
+        <a class="nav-pill" href="/view-reports">View Reports</a>
+        <a class="nav-pill" href="/compare-scans">Compare Scans</a>
         <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
           <svg class="icon-moon" viewBox="0 0 24 24"><path d="M20 15.5A8.5 8.5 0 1 1 12.5 4 6.7 6.7 0 0 0 20 15.5Z"></path></svg>
           <svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"></circle><path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.9 5.1l-1.6 1.6M6.7 17.3l-1.6 1.6M18.9 18.9l-1.6-1.6M6.7 6.7 5.1 5.1"></path></svg>
@@ -5511,6 +5971,7 @@ struct SplashTemplate {}
                 <li>Live project scope preview before you run</li>
                 <li>4 line-counting modes with interactive examples</li>
                 <li>HTML, PDF, and JSON output — your choice</li>
+                <li>IEEE 1045-1992 compliant physical SLOC counting</li>
               </ul>
             </div>
           </div>
@@ -5712,7 +6173,7 @@ struct ScanSetupTemplate {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Oxide-SLOC | {{ report_title }} | Report</title>
+  <title>OxideSLOC | {{ report_title }} | Report</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
   <style>
     :root {
@@ -5816,7 +6277,7 @@ struct ScanSetupTemplate {
     .compare-ts { font-size:13px; color:var(--muted); }
     .compare-banner-stats { display:flex; align-items:center; gap:10px; font-size:14px; flex-wrap:wrap; }
     .compare-arrow { color: var(--muted); }
-    .action-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 18px; }
+    .action-grid { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 18px; }
     .action-card { padding: 16px; border-radius: 16px; border: 1px solid var(--line); background: var(--surface-2); }
     .action-card h3 { margin:0 0 10px; font-size: 16px; }
     .action-buttons { display:flex; flex-wrap:wrap; gap: 10px; }
@@ -5924,8 +6385,8 @@ struct ScanSetupTemplate {
       </div>
       <div class="nav-status">
         <a class="nav-pill" href="/" style="text-decoration:none;">Home</a>
-        <a class="nav-pill" href="/history" style="text-decoration:none;">View Reports</a>
-        <a class="nav-pill" href="/compare-select" style="text-decoration:none;">Compare Scans</a>
+        <a class="nav-pill" href="/view-reports" style="text-decoration:none;">View Reports</a>
+        <a class="nav-pill" href="/compare-scans" style="text-decoration:none;">Compare Scans</a>
         <div class="server-status-wrap">
           <div class="nav-pill server-online-pill"><span class="status-dot"></span>Server online</div>
           <div class="server-status-tip">OxideSLOC is running as a local server in your terminal.<br>Close the terminal window to stop the server.</div>
@@ -6590,8 +7051,8 @@ struct ResultTemplate {
       </a>
       <div class="nav-right">
         <a class="nav-pill" href="/">Home</a>
-        <a class="nav-pill" href="/history">View Reports</a>
-        <a class="nav-pill" href="/compare-select">Compare Scans</a>
+        <a class="nav-pill" href="/view-reports">View Reports</a>
+        <a class="nav-pill" href="/compare-scans">Compare Scans</a>
         <div class="server-status-wrap">
           <div class="nav-pill server-online-pill"><span class="status-dot"></span>Server online</div>
           <div class="server-status-tip">OxideSLOC is running as a local server in your terminal.<br>Close the terminal window to stop the server.</div>
@@ -6611,9 +7072,9 @@ struct ResultTemplate {
       <div class="actions">
         <a class="btn-primary" href="/scan">Back to setup</a>
         {% if let Some(report_url) = last_report_url %}
-        <a class="btn-secondary" href="{{ report_url }}">View last report</a>
+        <a class="btn-secondary" href="{{ report_url }}">{% if let Some(label) = last_report_label %}{{ label }}{% else %}View last report{% endif %}</a>
         {% endif %}
-        <a class="btn-secondary" href="/history">Scan history</a>
+        <a class="btn-secondary" href="/view-reports">View Reports</a>
       </div>
     </div>
   </div>
@@ -6647,8 +7108,10 @@ struct ResultTemplate {
 )]
 struct ErrorTemplate {
     message: String,
-    /// URL of the most recent successful report, if known.
+    /// URL for the secondary action button (e.g. "/view-reports", "/compare-scans").
     last_report_url: Option<String>,
+    /// Label for the secondary action button; defaults to "View last report" when None.
+    last_report_label: Option<String>,
 }
 
 // ── HistoryTemplate (View Reports) ────────────────────────────────────────────
@@ -6773,8 +7236,8 @@ struct ErrorTemplate {
       </a>
       <div class="nav-right">
         <a class="nav-pill" href="/">Home</a>
-        <a class="nav-pill" href="/history">View Reports</a>
-        <a class="nav-pill" href="/compare-select">Compare Scans</a>
+        <a class="nav-pill" href="/view-reports">View Reports</a>
+        <a class="nav-pill" href="/compare-scans">Compare Scans</a>
         <div class="server-status-wrap">
           <div class="nav-pill server-online-pill"><span class="status-dot"></span>Server online</div>
           <div class="server-status-tip">OxideSLOC is running as a local server in your terminal.<br>Close the terminal window to stop the server.</div>
@@ -6827,8 +7290,17 @@ struct ErrorTemplate {
         </div>
       </div>
 
-      <div class="locate-bar">
-        <span class="locate-label">Have a saved report on disk? Browse to link it here.</span>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;flex-wrap:wrap;">
+        <span class="locate-label" style="white-space:nowrap;">Have a saved report on disk? Browse to link it here.</span>
+        {% if !entries.is_empty() %}
+        <div style="margin-left:auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <input class="filter-input" id="project-filter" type="text" placeholder="Filter by project…" oninput="applyFilters()">
+          <select class="filter-select" id="branch-filter" onchange="applyFilters()"><option value="">All branches</option></select>
+          <button type="button" class="btn" onclick="resetView()">&#8635; Reset view</button>
+        </div>
+        {% endif %}
+      </div>
+      <div style="margin-bottom:14px;">
         <button type="button" class="btn" onclick="browseReport()">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
           Browse for Report…
@@ -6841,11 +7313,6 @@ struct ErrorTemplate {
         Run a new analysis from the <a href="/scan">scan page</a>, or use the browse button above to link an existing report.
       </div>
       {% else %}
-      <div class="filter-bar">
-        <input class="filter-input" id="project-filter" type="text" placeholder="Filter by project…" oninput="applyFilters()">
-        <select class="filter-select" id="branch-filter" onchange="applyFilters()"><option value="">All branches</option></select>
-        <button type="button" class="btn" onclick="resetView()">&#8635; Reset view</button>
-      </div>
       <div class="table-wrap">
         <table id="history-table">
           <colgroup>
@@ -7214,10 +7681,8 @@ struct HistoryTemplate {
     .page{max-width:1720px;margin:0 auto;padding:18px 24px 40px;position:relative;z-index:1;}
     .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:22px;margin-bottom:18px;}
     .panel-header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:18px;flex-wrap:wrap;}
-    .panel-header h1{margin:0 0 4px;font-size:24px;font-weight:850;letter-spacing:-0.03em;}
+    .panel-header h1{margin:0 0 6px;font-size:24px;font-weight:850;letter-spacing:-0.03em;}
     .panel-meta{font-size:13px;color:var(--muted);margin:0;}
-    .instruction-bar{background:rgba(111,155,255,0.08);border:1px solid rgba(111,155,255,0.22);border-radius:10px;padding:10px 16px;font-size:13px;color:var(--accent-2);display:flex;align-items:center;gap:10px;margin-bottom:14px;}
-    body.dark-theme .instruction-bar{background:rgba(111,155,255,0.12);color:var(--accent);}
     .compare-bar{display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap;}
     .controls-bar{display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap;}
     .filter-bar{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;}
@@ -7234,7 +7699,8 @@ struct HistoryTemplate {
     .col-resize-handle:hover,.col-resize-handle.dragging{background:rgba(111,155,255,0.3);}
     td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
     tr:last-child td{border-bottom:none;}
-    tr.selected td{background:var(--sel-bg);outline:2px solid var(--sel-border);outline-offset:-1px;}
+    tr.selected td{background:var(--sel-bg);}
+    tr.selected td:first-child{box-shadow:inset 4px 0 0 var(--sel-border);}
     tr:hover:not(.selected) td{background:var(--surface-2);}
     tr{cursor:pointer;}
     .run-id-chip{font-family:ui-monospace,monospace;font-size:11px;background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:2px 7px;color:var(--muted);}
@@ -7242,7 +7708,7 @@ struct HistoryTemplate {
     body.dark-theme .git-chip{background:rgba(111,155,255,0.12);border-color:rgba(111,155,255,0.25);color:var(--accent);}
     .metric-num{font-weight:700;}
     .metric-secondary{font-size:11px;color:var(--muted);margin-top:2px;}
-    .sel-badge{width:22px;height:22px;border-radius:6px;border:1.5px solid var(--line-strong);background:var(--surface-2);display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:900;color:var(--muted-2);flex:0 0 auto;transition:background .12s,border-color .12s;}
+    .sel-badge{display:block;width:22px;height:22px;margin:0 auto;border-radius:6px;border:1.5px solid var(--line-strong);background:var(--surface-2);line-height:20px;text-align:center;font-size:11px;font-weight:900;color:var(--muted-2);transition:background .12s,border-color .12s;}
     tr.selected .sel-badge{background:var(--sel-border);border-color:var(--sel-border);color:#fff;}
     .btn{display:inline-flex;align-items:center;gap:6px;padding:8px 18px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;border:1px solid var(--line);background:var(--surface-2);color:var(--text);text-decoration:none;transition:background .12s ease;white-space:nowrap;}
     .btn:hover{background:var(--line);}
@@ -7267,6 +7733,18 @@ struct HistoryTemplate {
     .server-status-wrap{position:relative;display:inline-flex;}.server-online-pill{cursor:default;}.server-status-tip{display:none;position:absolute;top:calc(100% + 10px);right:0;z-index:100;background:rgba(20,12,8,0.97);color:rgba(255,255,255,0.92);border-radius:10px;padding:10px 14px;font-size:12px;font-weight:500;line-height:1.55;white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,0.32);pointer-events:none;border:1px solid rgba(255,255,255,0.10);}.server-status-tip::before{content:'';position:absolute;bottom:100%;right:18px;border:6px solid transparent;border-bottom-color:rgba(20,12,8,0.97);}.server-status-wrap:hover .server-status-tip,.server-status-wrap:focus-within .server-status-tip{display:block;}
     .code-particles{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;}.code-particle{position:absolute;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--oxide);opacity:0;white-space:nowrap;user-select:none;animation:floatCode linear infinite;}
     @keyframes floatCode{0%{opacity:0;transform:translateY(0) rotate(var(--rot));}10%{opacity:var(--op);}85%{opacity:var(--op);}100%{opacity:0;transform:translateY(-200px) rotate(var(--rot));}}
+    .summary-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px;}
+    @media(max-width:800px){.summary-strip{grid-template-columns:repeat(2,1fr);}}
+    .stat-chip{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;position:relative;cursor:default;transition:transform .2s ease,box-shadow .2s ease;}
+    .stat-chip:hover{transform:translateY(-4px);box-shadow:0 12px 32px rgba(77,44,20,0.2);}
+    .stat-chip-val{font-size:20px;font-weight:900;color:var(--oxide);}
+    .stat-chip-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-top:4px;}
+    .stat-chip-tip{position:absolute;top:calc(100% + 10px);left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:7px 12px;border-radius:8px;font-size:11px;font-weight:500;line-height:1.4;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .2s ease;z-index:200;box-shadow:0 4px 14px rgba(0,0,0,0.2);}
+    .stat-chip-tip::after{content:'';position:absolute;bottom:100%;left:50%;transform:translateX(-50%);border:5px solid transparent;border-bottom-color:var(--text);}
+    .stat-chip:hover .stat-chip-tip{opacity:1;}
+    .sel-count{font-size:11px;background:rgba(255,255,255,0.22);border-radius:999px;padding:1px 8px;font-weight:800;letter-spacing:.02em;margin-left:2px;}
+    .instruction-bar{background:rgba(111,155,255,0.08);border:1px solid rgba(111,155,255,0.22);border-radius:10px;padding:8px 14px;font-size:13px;color:var(--accent-2);display:inline-flex;align-items:center;gap:8px;margin-bottom:14px;width:fit-content;max-width:100%;}
+    body.dark-theme .instruction-bar{background:rgba(111,155,255,0.12);color:var(--accent);}
   </style>
 </head>
 <body>
@@ -7287,8 +7765,8 @@ struct HistoryTemplate {
       </a>
       <div class="nav-right">
         <a class="nav-pill" href="/">Home</a>
-        <a class="nav-pill" href="/history">View Reports</a>
-        <a class="nav-pill" href="/compare-select">Compare Scans</a>
+        <a class="nav-pill" href="/view-reports">View Reports</a>
+        <a class="nav-pill" href="/compare-scans">Compare Scans</a>
         <div class="server-status-wrap">
           <div class="nav-pill server-online-pill"><span class="status-dot"></span>Server online</div>
           <div class="server-status-tip">OxideSLOC is running as a local server in your terminal.<br>Close the terminal window to stop the server.</div>
@@ -7302,16 +7780,30 @@ struct HistoryTemplate {
   </div>
 
   <div class="page">
+    {% if total_scans > 0 %}
+    <div class="summary-strip">
+      <div class="stat-chip"><div class="stat-chip-tip">Total scan runs available for comparison</div><div class="stat-chip-val">{{ total_scans }}</div><div class="stat-chip-label">Total scans</div></div>
+      <div class="stat-chip"><div class="stat-chip-tip">Source lines of code in the most recent scan — excludes comments and blank lines</div><div class="stat-chip-val" id="agg-code">—</div><div class="stat-chip-label">Latest code lines</div></div>
+      <div class="stat-chip"><div class="stat-chip-tip">Number of source files analyzed in the most recent scan</div><div class="stat-chip-val" id="agg-files">—</div><div class="stat-chip-label">Latest files</div></div>
+      <div class="stat-chip"><div class="stat-chip-tip">Number of distinct projects tracked across all scans in this workspace</div><div class="stat-chip-val" id="agg-projects">—</div><div class="stat-chip-label">Projects tracked</div></div>
+    </div>
+    {% endif %}
     <section class="panel">
       <div class="panel-header">
         <div>
           <h1>Compare Scans</h1>
           <p class="panel-meta">{{ total_scans }} scan record(s) available. Select exactly two to compare their metrics side-by-side.</p>
         </div>
-        <a class="btn-back" href="/">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="15 18 9 12 15 6"></polyline></svg>
-          Home
-        </a>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <button class="btn primary" id="compare-btn" onclick="doCompare()" disabled>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
+            Compare <span class="sel-count" id="sel-count">0/2</span>
+          </button>
+          <a class="btn-back" href="/">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="15 18 9 12 15 6"></polyline></svg>
+            Home
+          </a>
+        </div>
       </div>
 
       {% if entries.is_empty() %}
@@ -7320,18 +7812,16 @@ struct HistoryTemplate {
         Run your first analysis from the <a href="/scan">scan page</a>.
       </div>
       {% else %}
-      <div class="instruction-bar">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-        Click any two rows to select them, then press <strong>&nbsp;Compare&nbsp;</strong> to view the scan delta.
-      </div>
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
-        <input class="filter-input" id="project-filter" type="text" placeholder="Filter by project…" oninput="applyFilters()">
-        <select class="filter-select" id="branch-filter" onchange="applyFilters()"><option value="">All branches</option></select>
-        <button type="button" class="btn" onclick="resetView()">&#8635; Reset view</button>
-        <button class="btn primary" id="compare-btn" onclick="doCompare()" disabled style="margin-left:auto;">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
-          Compare (0/2 selected)
-        </button>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap;">
+        <div class="instruction-bar" style="margin-bottom:0;flex-shrink:0;">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+          Click any two rows to select them, then press <strong>Compare</strong> to view the scan delta.
+        </div>
+        <div style="margin-left:auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <input class="filter-input" id="project-filter" type="text" placeholder="Filter by project…" oninput="applyFilters()">
+          <select class="filter-select" id="branch-filter" onchange="applyFilters()"><option value="">All branches</option></select>
+          <button type="button" class="btn" onclick="resetView()">&#8635; Reset view</button>
+        </div>
       </div>
       <div class="table-wrap">
         <table id="compare-table">
@@ -7426,6 +7916,21 @@ struct HistoryTemplate {
       var perPage = 25, currentPage = 1, sortCol = null, sortOrder = 'asc';
       var allRows = Array.prototype.slice.call(document.querySelectorAll('.compare-row'));
       allRows.forEach(function(r, i) { r.dataset.origIdx = i; });
+
+      // ── Stat chips ────────────────────────────────────────────────────────
+      (function() {
+        var projects = {}, latestTs = '', latestRow = null;
+        allRows.forEach(function(r) {
+          var p = r.dataset.project || ''; if (p) projects[p] = true;
+          var ts = r.dataset.timestamp || '';
+          if (!latestRow || ts > latestTs) { latestTs = ts; latestRow = r; }
+        });
+        var pe = document.getElementById('agg-projects'); if (pe) pe.textContent = Object.keys(projects).filter(Boolean).length;
+        if (latestRow) {
+          var ce = document.getElementById('agg-code'); if (ce) ce.textContent = Number(latestRow.dataset.code).toLocaleString();
+          var fe = document.getElementById('agg-files'); if (fe) fe.textContent = latestRow.dataset.files;
+        }
+      })();
 
       // ── Branch filter population ──────────────────────────────────────────
       (function() {
@@ -7588,9 +8093,10 @@ struct HistoryTemplate {
     var selected = [];
     function updateCompareBtn() {
       var btn = document.getElementById('compare-btn');
+      var cnt = document.getElementById('sel-count');
       if (!btn) return;
       btn.disabled = selected.length !== 2;
-      btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg> Compare (' + selected.length + '/2 selected)';
+      if (cnt) cnt.textContent = selected.length + '/2';
     }
 
     function toggleRow(row, runId) {
@@ -7639,7 +8145,7 @@ struct CompareSelectTemplate {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Oxide-SLOC | Scan Delta</title>
+  <title>OxideSLOC | Scan Delta</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
   <style>
     :root {
@@ -7658,7 +8164,8 @@ struct CompareSelectTemplate {
     .top-nav{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,var(--nav),var(--nav-2));border-bottom:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 14px rgba(0,0,0,0.18);}
     .top-nav-inner{max-width:1720px;margin:0 auto;padding:4px 24px;min-height:56px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
     .brand{display:flex;align-items:center;gap:14px;text-decoration:none;} .brand-logo{width:42px;height:46px;object-fit:contain;flex:0 0 auto;filter:drop-shadow(0 4px 10px rgba(0,0,0,0.22));}
-    .brand-title{margin:0;color:#fff;font-size:17px;font-weight:800;} .brand-subtitle{color:rgba(255,255,255,0.85);font-size:12px;margin-top:2px;}
+    .brand-copy{display:flex;flex-direction:column;justify-content:center;min-width:0;}
+    .brand-title{margin:0;color:#fff;font-size:17px;font-weight:800;line-height:1.1;} .brand-subtitle{color:rgba(255,255,255,0.85);font-size:12px;margin-top:2px;line-height:1.2;}
     .nav-right{margin-left:auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
     .nav-pill,.theme-toggle{display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:0 14px;border-radius:999px;border:1px solid rgba(255,255,255,0.18);color:#fff;background:rgba(255,255,255,0.08);font-size:12px;font-weight:700;text-decoration:none;}
     .theme-toggle{width:38px;justify-content:center;padding:0;cursor:pointer;transition:transform 0.15s ease;}
@@ -7809,8 +8316,8 @@ struct CompareSelectTemplate {
       </a>
       <div class="nav-right">
         <a class="nav-pill" href="/">Home</a>
-        <a class="nav-pill" href="/history">View Reports</a>
-        <a class="nav-pill" href="/compare-select">Compare Scans</a>
+        <a class="nav-pill" href="/view-reports">View Reports</a>
+        <a class="nav-pill" href="/compare-scans">Compare Scans</a>
         <div class="server-status-wrap">
           <div class="nav-pill server-online-pill"><span class="status-dot"></span>Server online</div>
           <div class="server-status-tip">OxideSLOC is running as a local server in your terminal.<br>Close the terminal window to stop the server.</div>
@@ -7827,10 +8334,22 @@ struct CompareSelectTemplate {
     <section class="hero">
       <div class="hero-header">
         <div>
-          <h1 style="margin:0 0 4px;">Scan Delta</h1>
-          <p class="muted" style="margin:0;">Comparing two scans of <a class="path-link" data-folder="{{ project_path }}" href="#" onclick="fetch('/open-path?path='+encodeURIComponent(this.dataset.folder));return false;"><strong>{{ project_path }}</strong></a></p>
+          <h1 style="margin:0 0 6px;">Scan Delta</h1>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <span class="muted" style="font-size:13px;">Comparing two scans of</span>
+            <a class="path-link" data-folder="{{ project_path }}" href="#" onclick="fetch('/open-path?path='+encodeURIComponent(this.dataset.folder));return false;" style="font-size:13px;font-weight:700;">{{ project_path }}</a>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap;">
+            <span style="font-size:12px;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:4px 10px;color:var(--muted);">
+              <span style="color:var(--text);font-weight:700;">Baseline</span>&nbsp;&nbsp;{{ baseline_timestamp }}
+            </span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--muted);flex:0 0 auto;"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
+            <span style="font-size:12px;background:var(--surface-2);border:1px solid var(--oxide);border-radius:8px;padding:4px 10px;color:var(--muted);">
+              <span style="color:var(--oxide);font-weight:700;">Current</span>&nbsp;&nbsp;{{ current_timestamp }}
+            </span>
+          </div>
         </div>
-        <a class="btn-back" href="/compare-select">
+        <a class="btn-back" href="/compare-scans">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="15 18 9 12 15 6"></polyline></svg>
           Compare Scans
         </a>

@@ -57,6 +57,15 @@ All flags live in `crates/sloc-cli/src/main.rs`. Follow the existing pattern: ad
 
 Output writers live in `crates/sloc-report/src/lib.rs`. Export the public function from that crate, then call it from the CLI handler after the analysis run completes.
 
+## Counting standard
+
+oxide-sloc implements **physical SLOC** per **IEEE Std 1045-1992**. The configurable parameters live in `sloc_config::AnalysisConfig`; the state machine that applies them is in `sloc_languages::analyze_generic`. When touching line-counting logic, keep the following invariants:
+
+- `total_physical_lines` must equal the number of `\n`-terminated lines in the file, regardless of any policy setting.
+- `compiler_directive_lines` must always be a strict subset of `code_only_lines` (never incremented for mixed or comment-only lines).
+- `effective_counts.code_lines` must never go negative — use `saturating_sub` when subtracting directive lines.
+- All new counting options must be mirrored in three places: `AnalysisConfig` (config + TOML), `AnalysisOptions` / `IeeeFlags` in `sloc-languages` (state machine), and the CLI `AnalyzeArgs` struct (flag).
+
 ## Vendor directory
 
 The `vendor/` directory is an offline mirror of all Cargo dependencies. When you add or upgrade a dependency:

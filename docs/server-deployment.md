@@ -126,13 +126,48 @@ server {
 
 ---
 
+## Security
+
+### Authentication (`SLOC_API_KEY`)
+
+Set `SLOC_API_KEY` to require a bearer token on every request. When set, clients must supply one of:
+
+- `Authorization: Bearer <key>` header
+- `X-API-Key: <key>` header
+
+When running in `--server` mode without `SLOC_API_KEY`, oxide-sloc logs a warning at startup. In local mode the warning is suppressed.
+
+### TLS (`SLOC_TLS_CERT` / `SLOC_TLS_KEY`)
+
+oxide-sloc can terminate TLS directly using PEM-encoded certificate and key files:
+
+```bash
+SLOC_TLS_CERT=/etc/oxide-sloc/server.crt \
+SLOC_TLS_KEY=/etc/oxide-sloc/server.key \
+oxide-sloc serve --server
+```
+
+When both are set the server prints `OxideSLOC server running at https://… (TLS)` and accepts HTTPS connections. When running in `--server` mode without TLS, a cleartext warning is logged at startup.
+
+For production deployments a **reverse proxy** (Nginx, Caddy) with `bind_address = "127.0.0.1:4317"` is the preferred approach — TLS termination at the proxy layer avoids certificate management in the binary.
+
+### Rate limiting
+
+A sliding-window rate limiter enforces **60 requests per 60-second window per client IP** across all routes. Requests over the limit receive `HTTP 429 Too Many Requests`.
+
+---
+
 ## Environment variables
 
 | Variable | Purpose | Default |
 |---|---|---|
 | `OXIDE_SLOC_ROOT` | Directory containing `images/` assets | binary directory |
 | `SLOC_BROWSER` | Path to Chromium-based browser for PDF export | auto-detected |
+| `SLOC_BROWSER_NOSANDBOX` | Set to `1` to add `--no-sandbox` to Chromium args (required in Docker) | unset |
 | `SLOC_REGISTRY_PATH` | Override path for `registry.json` | `<out-dir>/registry.json` |
+| `SLOC_API_KEY` | Bearer token for request authentication (server mode) | unset (no auth) |
+| `SLOC_TLS_CERT` | Path to PEM certificate file for native TLS | unset |
+| `SLOC_TLS_KEY` | Path to PEM private key file for native TLS | unset |
 | `RUST_LOG` | Tracing log level (`info`, `debug`, `warn`) | `info` |
 
 ---
@@ -144,3 +179,5 @@ server {
 ```bash
 curl http://localhost:4317/healthz
 ```
+
+The Docker image includes a `HEALTHCHECK` that polls this endpoint every 30 seconds.

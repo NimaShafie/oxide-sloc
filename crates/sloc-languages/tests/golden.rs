@@ -8,7 +8,7 @@
 /// immediately on CI.
 use std::path::Path;
 
-use sloc_languages::{analyze_text, Language};
+use sloc_languages::{analyze_text, AnalysisOptions, Language};
 
 fn corpus(rel: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -23,7 +23,7 @@ fn corpus(rel: &str) -> String {
 #[test]
 fn c_mixed() {
     let text = corpus("c/mixed.c");
-    let result = analyze_text(Language::C, &text);
+    let result = analyze_text(Language::C, &text, AnalysisOptions::default());
     let r = &result.raw;
     // split_terminator omits the empty string after the final newline → 8 lines
     assert_eq!(r.total_physical_lines, 8, "total physical lines");
@@ -49,7 +49,7 @@ fn c_mixed() {
 #[test]
 fn python_mixed() {
     let text = corpus("python/mixed.py");
-    let result = analyze_text(Language::Python, &text);
+    let result = analyze_text(Language::Python, &text, AnalysisOptions::default());
     let r = &result.raw;
     // 3 docstring lines (module doc, greet doc, Greeter class doc)
     assert_eq!(r.docstring_comment_lines, 3, "docstring lines");
@@ -65,7 +65,7 @@ fn python_mixed() {
 #[test]
 fn rust_mixed() {
     let text = corpus("rust/mixed.rs");
-    let result = analyze_text(Language::Rust, &text);
+    let result = analyze_text(Language::Rust, &text, AnalysisOptions::default());
     let r = &result.raw;
     assert_eq!(r.single_comment_only_lines, 1, "// comment-only line");
     assert_eq!(
@@ -84,7 +84,7 @@ fn rust_mixed() {
 #[test]
 fn go_mixed() {
     let text = corpus("go/mixed.go");
-    let result = analyze_text(Language::Go, &text);
+    let result = analyze_text(Language::Go, &text, AnalysisOptions::default());
     let r = &result.raw;
     assert!(r.single_comment_only_lines >= 2, "// comment-only lines");
     assert_eq!(
@@ -99,7 +99,7 @@ fn go_mixed() {
 #[test]
 fn typescript_mixed() {
     let text = corpus("typescript/mixed.ts");
-    let result = analyze_text(Language::TypeScript, &text);
+    let result = analyze_text(Language::TypeScript, &text, AnalysisOptions::default());
     let r = &result.raw;
     assert_eq!(r.single_comment_only_lines, 1, "// comment-only");
     assert_eq!(r.multi_comment_only_lines, 1, "/* block comment-only */");
@@ -127,7 +127,7 @@ fn empty_file_all_languages() {
         Language::PowerShell,
         Language::TypeScript,
     ] {
-        let result = analyze_text(lang, "");
+        let result = analyze_text(lang, "", AnalysisOptions::default());
         assert_eq!(
             result.raw.total_physical_lines,
             0,

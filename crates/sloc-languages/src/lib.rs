@@ -217,6 +217,11 @@ pub struct RawLineCounts {
     /// Best-effort count of import/use/include statement lines detected lexically.
     #[serde(default)]
     pub imports: u64,
+    /// Lines consisting solely of preprocessor/compiler directives (e.g. `#include`, `#define`
+    /// in C/C++/Objective-C). Always a subset of `code_only_lines`. Controlled by
+    /// `AnalysisConfig::count_compiler_directives`. IEEE 1045-1992 §4.2.
+    #[serde(default)]
+    pub compiler_directive_lines: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -232,6 +237,29 @@ pub struct RawFileAnalysis {
     pub raw: RawLineCounts,
     pub parse_mode: ParseMode,
     pub warnings: Vec<String>,
+}
+
+/// IEEE 1045-1992 counting options passed from `sloc-core` (built from `AnalysisConfig`).
+///
+/// `analyze_text` accepts this struct so that the caller can control behaviour that the
+/// standard defines as configurable parameters rather than fixed conventions.
+#[derive(Debug, Clone, Copy)]
+pub struct AnalysisOptions {
+    /// When `true` (IEEE 1045-1992 default), blank lines inside block comments count as
+    /// comment lines rather than blank lines.
+    pub blank_in_block_comment_as_comment: bool,
+    /// When `true`, backslash-continued physical lines are collapsed into a single logical
+    /// line for SLOC counting purposes (IEEE logical SLOC mode).
+    pub collapse_continuation_lines: bool,
+}
+
+impl Default for AnalysisOptions {
+    fn default() -> Self {
+        Self {
+            blank_in_block_comment_as_comment: true,
+            collapse_continuation_lines: false,
+        }
+    }
 }
 
 pub fn supported_languages() -> BTreeSet<Language> {
@@ -422,7 +450,20 @@ pub fn detect_language(
     None
 }
 
-pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
+pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) -> RawFileAnalysis {
+    // IEEE flags shared by all non-preprocessor languages.
+    let base = IeeeFlags {
+        has_preprocessor_directives: false,
+        blank_in_block_comment_as_comment: options.blank_in_block_comment_as_comment,
+        collapse_continuation_lines: options.collapse_continuation_lines,
+    };
+    // C, C++, and Objective-C have a preprocessor whose directive lines are tracked separately
+    // per IEEE 1045-1992 §4.2.
+    let cpp = IeeeFlags {
+        has_preprocessor_directives: true,
+        ..base
+    };
+
     match language {
         Language::C => {
             #[cfg(feature = "tree-sitter")]
@@ -441,6 +482,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                     skip_lines: HashSet::new(),
                     symbol_patterns: SP_C,
                 },
+                cpp,
             )
         }
         Language::Cpp => {
@@ -461,6 +503,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                     skip_lines: HashSet::new(),
                     symbol_patterns: SP_CPP,
                 },
+                cpp,
             )
         }
         Language::CSharp => analyze_generic(
@@ -475,6 +518,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_CSHARP,
             },
+            base,
         ),
         Language::Go => analyze_generic(
             text,
@@ -488,6 +532,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_GO,
             },
+            base,
         ),
         Language::Java => analyze_generic(
             text,
@@ -501,6 +546,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_JAVA,
             },
+            base,
         ),
         Language::JavaScript => analyze_generic(
             text,
@@ -514,6 +560,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_JS,
             },
+            base,
         ),
         Language::Rust => analyze_generic(
             text,
@@ -528,6 +575,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_RUST,
             },
+            base,
         ),
         Language::Shell => analyze_generic(
             text,
@@ -541,6 +589,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_SHELL,
             },
+            base,
         ),
         Language::PowerShell => analyze_generic(
             text,
@@ -554,6 +603,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_POWERSHELL,
             },
+            base,
         ),
         Language::TypeScript => analyze_generic(
             text,
@@ -567,6 +617,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_TS,
             },
+            base,
         ),
         Language::Python => {
             #[cfg(feature = "tree-sitter")]
@@ -586,6 +637,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                     skip_lines: docstring_lines,
                     symbol_patterns: SP_PYTHON,
                 },
+                base,
             )
         }
         // --- Extended language analyzers ---
@@ -601,6 +653,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_ASSEMBLY,
             },
+            base,
         ),
         Language::Clojure => analyze_generic(
             text,
@@ -614,6 +667,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_CLOJURE,
             },
+            base,
         ),
         Language::Css => analyze_generic(
             text,
@@ -627,6 +681,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_NONE,
             },
+            base,
         ),
         Language::Dart => analyze_generic(
             text,
@@ -640,6 +695,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_DART,
             },
+            base,
         ),
         Language::Dockerfile => analyze_generic(
             text,
@@ -653,6 +709,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_NONE,
             },
+            base,
         ),
         Language::Elixir => analyze_generic(
             text,
@@ -666,6 +723,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_ELIXIR,
             },
+            base,
         ),
         Language::Erlang => analyze_generic(
             text,
@@ -679,6 +737,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_ERLANG,
             },
+            base,
         ),
         Language::FSharp => analyze_generic(
             text,
@@ -692,6 +751,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_FSHARP,
             },
+            base,
         ),
         Language::Groovy => analyze_generic(
             text,
@@ -705,6 +765,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_GROOVY,
             },
+            base,
         ),
         Language::Haskell => analyze_generic(
             text,
@@ -718,6 +779,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_HASKELL,
             },
+            base,
         ),
         Language::Html | Language::Xml => analyze_generic(
             text,
@@ -731,6 +793,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_NONE,
             },
+            base,
         ),
         Language::Julia => analyze_generic(
             text,
@@ -744,6 +807,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_JULIA,
             },
+            base,
         ),
         Language::Kotlin => analyze_generic(
             text,
@@ -757,6 +821,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_KOTLIN,
             },
+            base,
         ),
         Language::Lua => analyze_generic(
             text,
@@ -770,6 +835,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_LUA,
             },
+            base,
         ),
         Language::Makefile => analyze_generic(
             text,
@@ -783,6 +849,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_NONE,
             },
+            base,
         ),
         Language::Nim => analyze_generic(
             text,
@@ -796,6 +863,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_NIM,
             },
+            base,
         ),
         Language::ObjectiveC => analyze_generic(
             text,
@@ -809,6 +877,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_OBJECTIVEC,
             },
+            cpp,
         ),
         Language::Ocaml => analyze_generic(
             text,
@@ -822,6 +891,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_OCAML,
             },
+            base,
         ),
         Language::Perl => analyze_generic(
             text,
@@ -835,6 +905,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_PERL,
             },
+            base,
         ),
         Language::Php => analyze_generic(
             text,
@@ -848,6 +919,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_PHP,
             },
+            base,
         ),
         Language::R => analyze_generic(
             text,
@@ -861,6 +933,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_R,
             },
+            base,
         ),
         Language::Ruby => analyze_generic(
             text,
@@ -874,6 +947,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_RUBY,
             },
+            base,
         ),
         Language::Scala => analyze_generic(
             text,
@@ -887,6 +961,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_SCALA,
             },
+            base,
         ),
         Language::Scss => analyze_generic(
             text,
@@ -900,6 +975,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_NONE,
             },
+            base,
         ),
         Language::Sql => analyze_generic(
             text,
@@ -913,6 +989,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_SQL,
             },
+            base,
         ),
         Language::Svelte => analyze_generic(
             text,
@@ -926,6 +1003,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_JS,
             },
+            base,
         ),
         Language::Swift => analyze_generic(
             text,
@@ -939,6 +1017,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_SWIFT,
             },
+            base,
         ),
         Language::Vue => analyze_generic(
             text,
@@ -952,6 +1031,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_JS,
             },
+            base,
         ),
         Language::Zig => analyze_generic(
             text,
@@ -965,6 +1045,7 @@ pub fn analyze_text(language: Language, text: &str) -> RawFileAnalysis {
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_ZIG,
             },
+            base,
         ),
     }
 }
@@ -1487,6 +1568,18 @@ struct ScanConfig {
     symbol_patterns: SymbolPatterns,
 }
 
+/// Per-call IEEE 1045-1992 flags derived from AnalysisOptions plus per-language properties.
+/// Private to this crate; constructed inside analyze_text.
+#[derive(Debug, Clone, Copy)]
+struct IeeeFlags {
+    /// True for C, C++, and Objective-C — languages with a C preprocessor.
+    has_preprocessor_directives: bool,
+    /// Mirrors AnalysisOptions::blank_in_block_comment_as_comment.
+    blank_in_block_comment_as_comment: bool,
+    /// Mirrors AnalysisOptions::collapse_continuation_lines.
+    collapse_continuation_lines: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum StringState {
     Single(char),
@@ -1502,7 +1595,7 @@ struct LineFacts {
     has_docstring: bool,
 }
 
-fn analyze_generic(text: &str, config: ScanConfig) -> RawFileAnalysis {
+fn analyze_generic(text: &str, config: ScanConfig, ieee: IeeeFlags) -> RawFileAnalysis {
     let normalized = if text.is_empty() {
         String::new()
     } else {
@@ -1520,6 +1613,8 @@ fn analyze_generic(text: &str, config: ScanConfig) -> RawFileAnalysis {
 
     let mut in_block_comment = false;
     let mut string_state: Option<StringState> = None;
+    // IEEE continuation-line state: accumulates facts across a backslash-continued sequence.
+    let mut pending_continuation: Option<LineFacts> = None;
 
     for (line_idx, line) in lines.iter().enumerate() {
         raw.total_physical_lines += 1;
@@ -1532,7 +1627,10 @@ fn analyze_generic(text: &str, config: ScanConfig) -> RawFileAnalysis {
         let mut facts = LineFacts::default();
         let trimmed = line.trim();
 
-        if in_block_comment {
+        // IEEE 1045-1992: blank lines inside block comments are comment lines by default.
+        // When blank_in_block_comment_as_comment is false, blank lines keep their blank
+        // classification even while inside a block comment.
+        if in_block_comment && (ieee.blank_in_block_comment_as_comment || !trimmed.is_empty()) {
             facts.has_multi_comment = true;
         }
 
@@ -1657,37 +1755,60 @@ fn analyze_generic(text: &str, config: ScanConfig) -> RawFileAnalysis {
             i += 1;
         }
 
-        if facts.has_docstring {
-            raw.docstring_comment_lines += 1;
-        } else if !facts.has_code
+        // IEEE 1045-1992 §4.2: track preprocessor/compiler directive lines (C/C++/ObjC).
+        // A directive line is a pure code line (no comment on the same physical line) whose
+        // trimmed content starts with '#'.
+        if ieee.has_preprocessor_directives
+            && facts.has_code
             && !facts.has_single_comment
             && !facts.has_multi_comment
-            && trimmed.is_empty()
+            && trimmed.starts_with('#')
         {
-            raw.blank_only_lines += 1;
-        } else if facts.has_code && facts.has_single_comment {
-            raw.mixed_code_single_comment_lines += 1;
-        } else if facts.has_code && facts.has_multi_comment {
-            raw.mixed_code_multi_comment_lines += 1;
-        } else if facts.has_code {
-            raw.code_only_lines += 1;
-        } else if facts.has_single_comment {
-            raw.single_comment_only_lines += 1;
-        } else if facts.has_multi_comment {
-            raw.multi_comment_only_lines += 1;
-        } else if trimmed.is_empty() {
-            raw.blank_only_lines += 1;
-        } else {
-            raw.skipped_unknown_lines += 1;
+            raw.compiler_directive_lines += 1;
         }
 
-        if facts.has_code {
+        // IEEE 1045-1992 continuation-line handling.
+        // A line is a continuation starter when it ends with '\' outside any comment or string.
+        let is_continuation = ieee.collapse_continuation_lines
+            && !in_block_comment
+            && string_state.is_none()
+            && trimmed.ends_with('\\');
+
+        if is_continuation {
+            let pending = pending_continuation.get_or_insert_with(LineFacts::default);
+            pending.has_code |= facts.has_code;
+            pending.has_single_comment |= facts.has_single_comment;
+            pending.has_multi_comment |= facts.has_multi_comment;
+            pending.has_docstring |= facts.has_docstring;
+            continue; // defer classification until the sequence ends
+        }
+
+        // Merge any accumulated continuation facts into the final line.
+        let emit = if let Some(pending) = pending_continuation.take() {
+            LineFacts {
+                has_code: pending.has_code | facts.has_code,
+                has_single_comment: pending.has_single_comment | facts.has_single_comment,
+                has_multi_comment: pending.has_multi_comment | facts.has_multi_comment,
+                has_docstring: pending.has_docstring | facts.has_docstring,
+            }
+        } else {
+            facts
+        };
+
+        classify_line(&mut raw, &emit, trimmed);
+
+        if emit.has_code {
             let (f, c, v, i) = count_symbols(&config.symbol_patterns, trimmed);
             raw.functions += f;
             raw.classes += c;
             raw.variables += v;
             raw.imports += i;
         }
+    }
+
+    // Flush any pending continuation that reaches end-of-file without a closing line.
+    if let Some(pending) = pending_continuation.take() {
+        classify_line(&mut raw, &pending, "");
     }
 
     if in_block_comment {
@@ -1705,6 +1826,32 @@ fn analyze_generic(text: &str, config: ScanConfig) -> RawFileAnalysis {
             ParseMode::LexicalBestEffort
         },
         warnings,
+    }
+}
+
+fn classify_line(raw: &mut RawLineCounts, facts: &LineFacts, trimmed: &str) {
+    if facts.has_docstring {
+        raw.docstring_comment_lines += 1;
+    } else if !facts.has_code
+        && !facts.has_single_comment
+        && !facts.has_multi_comment
+        && trimmed.is_empty()
+    {
+        raw.blank_only_lines += 1;
+    } else if facts.has_code && facts.has_single_comment {
+        raw.mixed_code_single_comment_lines += 1;
+    } else if facts.has_code && facts.has_multi_comment {
+        raw.mixed_code_multi_comment_lines += 1;
+    } else if facts.has_code {
+        raw.code_only_lines += 1;
+    } else if facts.has_single_comment {
+        raw.single_comment_only_lines += 1;
+    } else if facts.has_multi_comment {
+        raw.multi_comment_only_lines += 1;
+    } else if trimmed.is_empty() {
+        raw.blank_only_lines += 1;
+    } else {
+        raw.skipped_unknown_lines += 1;
     }
 }
 
@@ -2035,7 +2182,7 @@ def fn_a():
     return value
 "####;
 
-        let result = analyze_text(Language::Python, input);
+        let result = analyze_text(Language::Python, input, AnalysisOptions::default());
         assert_eq!(result.raw.docstring_comment_lines, 2);
         assert_eq!(result.raw.mixed_code_single_comment_lines, 1);
         assert_eq!(result.raw.code_only_lines, 2);
@@ -2044,7 +2191,7 @@ def fn_a():
     #[test]
     fn c_style_mixed_lines_are_captured() {
         let input = "int x = 1; // note\n/* block */\n";
-        let result = analyze_text(Language::C, input);
+        let result = analyze_text(Language::C, input, AnalysisOptions::default());
         assert_eq!(result.raw.mixed_code_single_comment_lines, 1);
         assert_eq!(result.raw.multi_comment_only_lines, 1);
     }

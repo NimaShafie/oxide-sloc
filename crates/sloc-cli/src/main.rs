@@ -13,7 +13,7 @@ use lettre::{
 };
 use tracing_subscriber::EnvFilter;
 
-use sloc_config::{AppConfig, MixedLinePolicy};
+use sloc_config::{AppConfig, BlankInBlockCommentPolicy, ContinuationLinePolicy, MixedLinePolicy};
 use sloc_core::{analyze, compute_delta, read_json, write_json, AnalysisRun, ScanComparison};
 use sloc_report::{
     render_html, write_csv, write_diff_csv, write_html, write_pdf_from_html, write_xlsx,
@@ -123,6 +123,19 @@ struct AnalyzeArgs {
     /// Count Python docstrings as code rather than comments
     #[arg(long)]
     python_docstrings_as_code: bool,
+
+    /// IEEE 1045-1992: override continuation-line counting policy
+    #[arg(long)]
+    continuation_line_policy: Option<ContinuationLinePolicy>,
+
+    /// IEEE 1045-1992: override blank-line classification inside block comments
+    #[arg(long)]
+    blank_in_block_comment_policy: Option<BlankInBlockCommentPolicy>,
+
+    /// IEEE 1045-1992 §4.2: exclude compiler directives (#include, #define, etc.) from
+    /// code SLOC; they are tracked in raw counts but not added to effective code lines
+    #[arg(long)]
+    no_count_compiler_directives: bool,
 
     /// Ignore .gitignore / .ignore files
     #[arg(long)]
@@ -522,6 +535,11 @@ fn run_init(args: InitArgs) -> Result<()> {
 # minified_file_detection = true
 # vendor_directory_detection = true
 # include_lockfiles = false
+#
+# IEEE 1045-1992 counting parameters:
+# continuation_line_policy = "each-physical-line"  # each-physical-line | collapse-to-logical
+# blank_in_block_comment_policy = "count-as-comment"  # count-as-comment | count-as-blank
+# count_compiler_directives = true   # false = exclude #include/#define from code SLOC (C/C++/ObjC)
 
 # Override extension → language mappings (e.g. treat .h as C++)
 # [analysis.extension_overrides]
@@ -572,6 +590,13 @@ fn run_validate(args: ValidateArgs) -> Result<()> {
 async fn run_send(args: SendArgs) -> Result<()> {
     if args.smtp_to.is_empty() && args.webhook_url.is_empty() {
         anyhow::bail!("provide at least one of --smtp-to or --webhook-url");
+    }
+
+    if args.smtp_pass.is_some() && std::env::var("SLOC_SMTP_PASS").is_err() {
+        eprintln!(
+            "WARNING: --smtp-pass exposes credentials in process listings. \
+             Use the SLOC_SMTP_PASS environment variable instead."
+        );
     }
 
     let run = read_json(&args.input)?;
@@ -651,7 +676,47 @@ async fn send_smtp(args: &SendArgs, run: &AnalysisRun) -> Result<()> {
     Ok(())
 }
 
+fn validate_webhook_url(raw: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(raw).with_context(|| format!("invalid webhook URL: {raw}"))?;
+    if parsed.scheme() != "https" {
+        anyhow::bail!(
+            "webhook URL must use HTTPS (got scheme \"{}\")",
+            parsed.scheme()
+        );
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("webhook URL has no host"))?;
+    if matches!(
+        host,
+        "169.254.169.254" | "metadata.google.internal" | "metadata.internal" | "instance-data"
+    ) || host.ends_with(".local")
+    {
+        anyhow::bail!("webhook URL host is blocked: {host}");
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        let blocked = match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    || v4.is_broadcast()
+                    || v4.is_unspecified()
+            }
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback() || v6.is_unspecified() || v6.is_multicast()
+            }
+        };
+        if blocked {
+            anyhow::bail!("webhook URL resolves to a blocked IP address: {ip}");
+        }
+    }
+    Ok(())
+}
+
 async fn send_webhook(url: &str, token: Option<&str>, run: &AnalysisRun) -> Result<()> {
+    validate_webhook_url(url)?;
+
     let client = reqwest::Client::new();
     let mut req = client.post(url).json(run);
 
@@ -707,6 +772,15 @@ fn resolve_analyze_config(args: &AnalyzeArgs) -> Result<AppConfig> {
     }
     if args.python_docstrings_as_code {
         config.analysis.python_docstrings_as_comments = false;
+    }
+    if let Some(policy) = args.continuation_line_policy {
+        config.analysis.continuation_line_policy = policy;
+    }
+    if let Some(policy) = args.blank_in_block_comment_policy {
+        config.analysis.blank_in_block_comment_policy = policy;
+    }
+    if args.no_count_compiler_directives {
+        config.analysis.count_compiler_directives = false;
     }
     if let Some(title) = &args.report_title {
         config.reporting.report_title = title.clone();

@@ -18,9 +18,13 @@ use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use sloc_config::{AppConfig, BinaryFileBehavior, FailureBehavior, MixedLinePolicy};
+use sloc_config::{
+    AppConfig, BinaryFileBehavior, BlankInBlockCommentPolicy, ContinuationLinePolicy,
+    FailureBehavior, MixedLinePolicy,
+};
 use sloc_languages::{
-    analyze_text, detect_language, supported_languages, Language, ParseMode, RawLineCounts,
+    analyze_text, detect_language, supported_languages, AnalysisOptions, Language, ParseMode,
+    RawLineCounts,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -592,11 +596,18 @@ fn analyze_candidate_file(
         }
     }
 
-    let analysis = analyze_text(language, &text);
+    let ieee_opts = AnalysisOptions {
+        blank_in_block_comment_as_comment: config.analysis.blank_in_block_comment_policy
+            == BlankInBlockCommentPolicy::CountAsComment,
+        collapse_continuation_lines: config.analysis.continuation_line_policy
+            == ContinuationLinePolicy::CollapseToLogical,
+    };
+    let analysis = analyze_text(language, &text, ieee_opts);
     let effective_counts = compute_effective_counts(
         &analysis.raw,
         config.analysis.mixed_line_policy,
         config.analysis.python_docstrings_as_comments,
+        config.analysis.count_compiler_directives,
     );
 
     let mut warnings = decode_warnings;
@@ -628,6 +639,7 @@ fn compute_effective_counts(
     raw: &RawLineCounts,
     mixed_line_policy: MixedLinePolicy,
     python_docstrings_as_comments: bool,
+    count_compiler_directives: bool,
 ) -> EffectiveCounts {
     let mut effective = EffectiveCounts {
         code_lines: raw.code_only_lines,
@@ -651,6 +663,14 @@ fn compute_effective_counts(
         }
         MixedLinePolicy::CommentOnly => effective.comment_lines += mixed_total,
         MixedLinePolicy::SeparateMixedCategory => effective.mixed_lines_separate += mixed_total,
+    }
+
+    // IEEE 1045-1992 §4.2: optionally exclude preprocessor/compiler directives from code SLOC.
+    // compiler_directive_lines is a subset of code_only_lines, so subtract it directly.
+    if !count_compiler_directives {
+        effective.code_lines = effective
+            .code_lines
+            .saturating_sub(raw.compiler_directive_lines);
     }
 
     effective
@@ -1035,7 +1055,7 @@ mod tests {
             docstring_comment_lines: 2,
             ..RawLineCounts::default()
         };
-        let counts = compute_effective_counts(&raw, MixedLinePolicy::CodeOnly, true);
+        let counts = compute_effective_counts(&raw, MixedLinePolicy::CodeOnly, true, true);
         assert_eq!(counts.code_lines, 5);
         assert_eq!(counts.comment_lines, 3);
     }
@@ -1047,7 +1067,8 @@ mod tests {
             mixed_code_multi_comment_lines: 1,
             ..RawLineCounts::default()
         };
-        let counts = compute_effective_counts(&raw, MixedLinePolicy::SeparateMixedCategory, true);
+        let counts =
+            compute_effective_counts(&raw, MixedLinePolicy::SeparateMixedCategory, true, true);
         assert_eq!(counts.mixed_lines_separate, 3);
         assert_eq!(counts.code_lines, 0);
         assert_eq!(counts.comment_lines, 0);

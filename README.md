@@ -6,7 +6,7 @@
 [![Latest Release](https://img.shields.io/github/v/release/NimaShafie/oxide-sloc?include_prereleases&label=release)](https://github.com/NimaShafie/oxide-sloc/releases/latest)
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](./LICENSE)
 
-**oxide-sloc** is a Rust-based source line analysis tool — more than a line counter.
+**oxide-sloc** is a Rust-based source line analysis tool — IEEE 1045-1992 compliant, more than a line counter.
 
 ## Quick Start
 
@@ -27,6 +27,7 @@ For air-gapped setup, CI, and Docker, see [`docs/airgap.md`](./docs/airgap.md).
 - **Localhost web UI** — guided 4-step flow with light/dark theme, auto browser-open
 - **Quick Scan** — one-click scan from step 1 using all defaults
 - **Server mode** — `--server` binds to `0.0.0.0`, suppresses browser auto-open
+- **IEEE 1045-1992 physical SLOC** — configurable counting parameters: mixed-line policy, continuation lines, compiler directives, blank-in-comment classification
 - **Symbol counting** — lexical detection of functions, classes, variables, and imports per file
 - **Rich HTML reports** — per-file breakdown, language charts, warning analysis
 - **PDF export** — background generation via locally installed Chromium
@@ -148,6 +149,9 @@ oxide-sloc send result.json --webhook-url https://hooks.example.com/sloc --webho
 | `--fail-below` | | *(none)* | Exit 3 if code lines fall below N |
 | `--mixed-line-policy` | | `code-only` | `code-only` \| `code-and-comment` \| `comment-only` \| `separate-mixed-category` |
 | `--python-docstrings-as-code` | | off | Treat docstrings as code |
+| `--continuation-line-policy` | | `each-physical-line` | `each-physical-line` \| `collapse-to-logical` — IEEE 1045-1992 §3 |
+| `--blank-in-block-comment-policy` | | `count-as-comment` | `count-as-comment` \| `count-as-blank` — IEEE 1045-1992 §4 |
+| `--no-count-compiler-directives` | | off | Exclude `#include`/`#define` from code SLOC — IEEE 1045-1992 §4.2 (C/C++/ObjC only) |
 | `--include-glob` | | *(all)* | Only scan matching files (repeatable) |
 | `--exclude-glob` | | *(none)* | Skip matching files (repeatable) |
 | `--enabled-language` | | *(all)* | Restrict to language (repeatable) |
@@ -198,6 +202,69 @@ Navigate to `/history` to browse past scans, or `/compare?a=<run_id>&b=<run_id>`
 oxide-sloc performs best-effort lexical detection of structural symbols across 10+ languages. Counts are surfaced in the JSON output (`functions`, `classes`, `variables`, `imports` fields) and in the HTML report.
 
 Supported languages: C, C++, C#, Go, Java, JavaScript, Rust, Shell, PowerShell, TypeScript.
+
+---
+
+## Counting methodology — IEEE 1045-1992
+
+oxide-sloc implements **physical SLOC** as defined in IEEE Std 1045-1992 *Software Productivity Metrics*. Every source line is classified into one of four categories before any policy is applied:
+
+| Category | What it contains |
+|---|---|
+| **Code** | Executable statements, declarations, and compiler directives |
+| **Comment** | Lines consisting solely of comment text |
+| **Mixed** | Lines that contain both code and a trailing comment |
+| **Blank** | Empty or whitespace-only lines |
+
+The standard defines several counting parameters as configurable. oxide-sloc exposes all of them via CLI flags and the TOML config file.
+
+### Mixed-line policy — `mixed_line_policy`
+
+Controls how lines that contain both code and a comment are counted toward the totals. Default: `code-only`.
+
+| Value | Behaviour |
+|---|---|
+| `code-only` *(default)* | Mixed lines count toward code only |
+| `code-and-comment` | Mixed lines are counted in both totals |
+| `comment-only` | Mixed lines count toward comments only |
+| `separate-mixed-category` | Mixed lines are kept in a separate total |
+
+### Continuation-line policy — `continuation_line_policy` (IEEE 1045-1992 §3)
+
+Controls how backslash-continued lines (C/C++ macros, shell, Makefile) are counted. Default: `each-physical-line`.
+
+| Value | Behaviour |
+|---|---|
+| `each-physical-line` *(default)* | Each physical line is counted separately (physical SLOC mode) |
+| `collapse-to-logical` | A backslash-continued sequence counts as a single logical line |
+
+### Blank lines inside block comments — `blank_in_block_comment_policy` (IEEE 1045-1992 §4)
+
+Controls how blank lines that fall inside `/* ... */` (or equivalent) comment blocks are classified. Default: `count-as-comment`, which is the IEEE-aligned behaviour.
+
+| Value | Behaviour |
+|---|---|
+| `count-as-comment` *(default, IEEE aligned)* | Blank lines inside block comments count as comment lines |
+| `count-as-blank` | Blank lines inside block comments remain blank lines |
+
+### Compiler directives — `count_compiler_directives` (IEEE 1045-1992 §4.2)
+
+Applies to **C, C++, and Objective-C** only. By default, preprocessor directive lines (`#include`, `#define`, `#ifdef`, `#pragma`, etc.) are counted as code lines. Set `count_compiler_directives = false` to exclude them from effective code SLOC — they are still recorded in the raw JSON output as `compiler_directive_lines` so nothing is lost.
+
+### TOML configuration
+
+All parameters are settable in `.oxide-sloc.toml` under `[analysis]`:
+
+```toml
+[analysis]
+mixed_line_policy            = "code-only"          # code-only | code-and-comment | comment-only | separate-mixed-category
+continuation_line_policy     = "each-physical-line"  # each-physical-line | collapse-to-logical
+blank_in_block_comment_policy = "count-as-comment"  # count-as-comment | count-as-blank
+count_compiler_directives    = true                 # false = exclude #include/#define from code SLOC (C/C++/ObjC)
+python_docstrings_as_comments = true                # false = treat docstrings as code
+```
+
+Run `oxide-sloc init` to generate a starter config with all options documented inline.
 
 ---
 
@@ -317,6 +384,9 @@ oxide-sloc diff baseline.json current.json -c delta.csv -x delta.xlsx
 | Quick Scan | `oxide-sloc analyze ./my-repo --plain` |
 | Step 2: mixed-line policy | `--mixed-line-policy code-only` |
 | Step 2: Python docstrings as code | `--python-docstrings-as-code` |
+| *(config / CLI only)* | `--continuation-line-policy collapse-to-logical` |
+| *(config / CLI only)* | `--blank-in-block-comment-policy count-as-blank` |
+| *(config / CLI only)* | `--no-count-compiler-directives` |
 | Step 3: outputs | `-j` `-H` `--pdf-out` `-c` `-x` `--open` |
 | Step 3: custom title | `--report-title "My Report"` |
 | Re-render from saved JSON | `oxide-sloc report result.json -H report.html` |

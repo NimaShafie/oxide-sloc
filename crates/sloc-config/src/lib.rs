@@ -35,6 +35,35 @@ pub enum FailureBehavior {
     Fail,
 }
 
+/// IEEE 1045-1992: how backslash line continuations are handled for physical SLOC counting.
+///
+/// Physical SLOC (the default) counts each physical line. Logical mode collapses a
+/// backslash-continued sequence into a single counted line, which is useful when measuring
+/// logical statements (e.g., multi-line C preprocessor macros).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ValueEnum, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinuationLinePolicy {
+    #[default]
+    /// Count each physical line separately — the IEEE 1045-1992 default for physical SLOC.
+    EachPhysicalLine,
+    /// Collapse backslash-continued physical lines into a single logical line.
+    CollapseToLogical,
+}
+
+/// IEEE 1045-1992: how blank lines that fall inside a block comment are classified.
+///
+/// The standard aligns with counting them as comment lines (they are part of the comment
+/// body). The `CountAsBlank` variant preserves the legacy behaviour if required.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ValueEnum, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BlankInBlockCommentPolicy {
+    #[default]
+    /// Blank lines inside /* */ (or equivalent) blocks count as comment lines — IEEE aligned.
+    CountAsComment,
+    /// Blank lines inside block comments count as blank lines.
+    CountAsBlank,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveryConfig {
     pub root_paths: Vec<PathBuf>,
@@ -47,6 +76,7 @@ pub struct DiscoveryConfig {
     pub max_file_size_bytes: u64,
     pub parallelism_limit: Option<usize>,
     /// When true, detect .gitmodules and produce a per-submodule summary alongside the overall run.
+    #[serde(default = "default_true")]
     pub submodule_breakdown: bool,
     #[serde(default)]
     pub allowed_scan_roots: Vec<PathBuf>,
@@ -84,6 +114,21 @@ pub struct AnalysisConfig {
     pub binary_file_behavior: BinaryFileBehavior,
     pub decode_failure_behavior: FailureBehavior,
     pub parse_failure_behavior: FailureBehavior,
+    /// IEEE 1045-1992: how backslash line continuations (C macros, shell, Makefile) are counted.
+    #[serde(default)]
+    pub continuation_line_policy: ContinuationLinePolicy,
+    /// IEEE 1045-1992: whether blank lines inside block comments count as comment lines.
+    #[serde(default)]
+    pub blank_in_block_comment_policy: BlankInBlockCommentPolicy,
+    /// IEEE 1045-1992 §4.2: when false, preprocessor/compiler directives (#include, #define,
+    /// etc.) are excluded from code SLOC and tracked separately in `compiler_directive_lines`.
+    /// Applies to C, C++, and Objective-C. Default: true (directives count toward code SLOC).
+    #[serde(default = "default_true")]
+    pub count_compiler_directives: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AnalysisConfig {
@@ -101,6 +146,9 @@ impl Default for AnalysisConfig {
             binary_file_behavior: BinaryFileBehavior::Skip,
             decode_failure_behavior: FailureBehavior::WarnSkip,
             parse_failure_behavior: FailureBehavior::WarnSkip,
+            continuation_line_policy: ContinuationLinePolicy::EachPhysicalLine,
+            blank_in_block_comment_policy: BlankInBlockCommentPolicy::CountAsComment,
+            count_compiler_directives: true,
         }
     }
 }

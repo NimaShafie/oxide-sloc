@@ -9,7 +9,9 @@
 #   1. Push this file to the root of your repo.
 #   2. GitLab will auto-detect it and run the pipeline on every push.
 
-image: debian:bookworm-slim
+# Use the official Rust image (pinned by digest) instead of curl|sh rustup install (FIND-014).
+# To update the digest: docker pull rust:slim && docker inspect --format '{{index .RepoDigests 0}}' rust:slim
+image: rust:slim@sha256:81099830a1e1d244607b9a7a30f3ff6ecadc52134a933b4635faba24f52840c9
 
 variables:
   CARGO_HOME: "${CI_PROJECT_DIR}/.cargo"
@@ -27,16 +29,12 @@ cache:
     - vendor/
 
 before_script:
-  - apt-get update -qq && apt-get install -y -qq curl build-essential pkg-config libssl-dev ca-certificates xz-utils
-  - |
-    if ! command -v cargo &>/dev/null; then
-      curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs \
-        | sh -s -- -y --default-toolchain stable --no-modify-path
-    fi
-  - export PATH="${CARGO_HOME}/bin:${PATH}"
+  - apt-get update -qq && apt-get install -y -qq build-essential pkg-config libssl-dev ca-certificates xz-utils
   - rustup show
   - |
     if [ ! -d vendor ]; then
+      echo "Verifying vendor.tar.xz integrity..."
+      sha256sum -c vendor.tar.xz.sha256
       echo "Decompressing vendor.tar.xz (22 MB → 362 MB)..."
       tar -xJf vendor.tar.xz
     fi

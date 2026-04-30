@@ -6,3 +6,6 @@ tmp-sloc/
 .git/
 .vscode/
 .idea/
+# Uncompressed vendor tree — Docker always extracts from vendor.tar.xz instead,
+# so the directory must be excluded to prevent COPY from shadowing the archive.
+vendor/

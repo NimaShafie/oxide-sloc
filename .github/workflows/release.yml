@@ -107,7 +107,7 @@ jobs:
             /td sha256 `
             /fd sha256 `
             /d "OxideSLOC" `
-            /du "https://github.com/NimaShafie/oxide-sloc" `
+            /du "https://github.com/oxide-sloc/oxide-sloc" `
             "${{ matrix.artifact }}"
 
           Remove-Item -Force $certPath
@@ -181,19 +181,19 @@ jobs:
 
             ```bash
             # Linux x86-64
-            curl -Lo oxide-sloc https://github.com/NimaShafie/oxide-sloc/releases/download/${{ github.ref_name }}/oxide-sloc-linux-x86_64
+            curl -Lo oxide-sloc https://github.com/oxide-sloc/oxide-sloc/releases/download/${{ github.ref_name }}/oxide-sloc-linux-x86_64
             chmod +x oxide-sloc && sudo mv oxide-sloc /usr/local/bin/
 
             # Linux arm64
-            curl -Lo oxide-sloc https://github.com/NimaShafie/oxide-sloc/releases/download/${{ github.ref_name }}/oxide-sloc-linux-arm64
+            curl -Lo oxide-sloc https://github.com/oxide-sloc/oxide-sloc/releases/download/${{ github.ref_name }}/oxide-sloc-linux-arm64
             chmod +x oxide-sloc && sudo mv oxide-sloc /usr/local/bin/
 
             # macOS (Apple Silicon)
-            curl -Lo oxide-sloc https://github.com/NimaShafie/oxide-sloc/releases/download/${{ github.ref_name }}/oxide-sloc-macos-arm64
+            curl -Lo oxide-sloc https://github.com/oxide-sloc/oxide-sloc/releases/download/${{ github.ref_name }}/oxide-sloc-macos-arm64
             chmod +x oxide-sloc && sudo mv oxide-sloc /usr/local/bin/
 
             # macOS (Intel)
-            curl -Lo oxide-sloc https://github.com/NimaShafie/oxide-sloc/releases/download/${{ github.ref_name }}/oxide-sloc-macos-x86_64
+            curl -Lo oxide-sloc https://github.com/oxide-sloc/oxide-sloc/releases/download/${{ github.ref_name }}/oxide-sloc-macos-x86_64
             chmod +x oxide-sloc && sudo mv oxide-sloc /usr/local/bin/
 
             # Windows — rename and add to PATH
@@ -206,5 +206,5 @@ jobs:
             ## Or build from source (requires Rust 1.95+)
 
             ```bash
-            cargo install --git https://github.com/NimaShafie/oxide-sloc oxide-sloc
+            cargo install --git https://github.com/oxide-sloc/oxide-sloc oxide-sloc
             ```

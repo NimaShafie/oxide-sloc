@@ -12,7 +12,7 @@ pipeline {
         // ── Source repository ──────────────────────────────────────────────────
         string(
             name:         'REPO_URL',
-            defaultValue: 'https://github.com/NimaShafie/oxide-sloc.git',
+            defaultValue: 'https://github.com/oxide-sloc/oxide-sloc.git',
             description:  'Git repository URL to check out (branch: main). ' +
                           'Use file:///path/to/repo for air-gapped local repos.'
         )

@@ -1,5 +1,5 @@
 blank_issues_enabled: true
 contact_links:
   - name: Security issue
-    url: https://github.com/NimaShafie/oxide-sloc/security
+    url: https://github.com/oxide-sloc/oxide-sloc/security
     about: Report vulnerabilities privately when security reporting is enabled.

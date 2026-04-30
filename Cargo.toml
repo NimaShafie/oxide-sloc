@@ -17,9 +17,9 @@ authors = ["Nima Shafie"]
 description = "Source line analysis tool with CLI, web UI, HTML/PDF reports, and CI/CD integration"
 keywords = ["sloc", "code-analysis", "cli", "static-analysis", "metrics"]
 categories = ["command-line-utilities", "development-tools"]
-repository = "https://github.com/NimaShafie/oxide-sloc"
-homepage = "https://github.com/NimaShafie/oxide-sloc"
-documentation = "https://github.com/NimaShafie/oxide-sloc"
+repository = "https://github.com/oxide-sloc/oxide-sloc"
+homepage = "https://github.com/oxide-sloc/oxide-sloc"
+documentation = "https://github.com/oxide-sloc/oxide-sloc"
 rust-version = "1.95"
 
 [workspace.dependencies]

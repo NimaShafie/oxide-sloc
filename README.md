@@ -1,9 +1,9 @@
 # oxide-sloc
 
-[![CI](https://github.com/NimaShafie/oxide-sloc/actions/workflows/ci.yml/badge.svg)](https://github.com/NimaShafie/oxide-sloc/actions/workflows/ci.yml)
-[![Release](https://github.com/NimaShafie/oxide-sloc/actions/workflows/release.yml/badge.svg)](https://github.com/NimaShafie/oxide-sloc/actions/workflows/release.yml)
-[![Docker](https://github.com/NimaShafie/oxide-sloc/actions/workflows/docker.yml/badge.svg)](https://github.com/NimaShafie/oxide-sloc/actions/workflows/docker.yml)
-[![Latest Release](https://img.shields.io/github/v/release/NimaShafie/oxide-sloc?include_prereleases&label=release)](https://github.com/NimaShafie/oxide-sloc/releases/latest)
+[![CI](https://github.com/oxide-sloc/oxide-sloc/actions/workflows/ci.yml/badge.svg)](https://github.com/oxide-sloc/oxide-sloc/actions/workflows/ci.yml)
+[![Release](https://github.com/oxide-sloc/oxide-sloc/actions/workflows/release.yml/badge.svg)](https://github.com/oxide-sloc/oxide-sloc/actions/workflows/release.yml)
+[![Docker](https://github.com/oxide-sloc/oxide-sloc/actions/workflows/docker.yml/badge.svg)](https://github.com/oxide-sloc/oxide-sloc/actions/workflows/docker.yml)
+[![Latest Release](https://img.shields.io/github/v/release/oxide-sloc/oxide-sloc?include_prereleases&label=release)](https://github.com/oxide-sloc/oxide-sloc/releases/latest)
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](./LICENSE)
 
 **oxide-sloc** is a Rust-based source line analysis tool — IEEE 1045-1992 compliant, more than a line counter.

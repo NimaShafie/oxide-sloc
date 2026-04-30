@@ -5631,7 +5631,7 @@ struct SubmoduleRow {
   <footer class="site-footer">
     oxide-sloc v{{ version }} — local source line analysis workbench &nbsp;·&nbsp;
     Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
-    &nbsp;·&nbsp; <a href="https://github.com/NimaShafie/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
+    &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
   </footer>
 </body>
@@ -5845,7 +5845,7 @@ struct IndexTemplate {
   <footer class="site-footer">
     oxide-sloc — local source line analysis workbench &nbsp;·&nbsp;
     Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
-    &nbsp;·&nbsp; <a href="https://github.com/NimaShafie/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
+    &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
   </footer>
 
@@ -6162,7 +6162,7 @@ struct SplashTemplate {}
   <footer class="site-footer">
     oxide-sloc — local source line analysis workbench &nbsp;·&nbsp;
     Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
-    &nbsp;·&nbsp; <a href="https://github.com/NimaShafie/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
+    &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
   </footer>
 
@@ -7031,7 +7031,7 @@ struct ScanSetupTemplate {
   <footer class="site-footer">
     oxide-sloc — local source line analysis workbench &nbsp;·&nbsp;
     Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
-    &nbsp;·&nbsp; <a href="https://github.com/NimaShafie/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
+    &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
   </footer>
 </body>
@@ -7534,7 +7534,7 @@ struct ErrorTemplate {
   <footer class="site-footer">
     oxide-sloc — local source line analysis workbench &nbsp;·&nbsp;
     Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
-    &nbsp;·&nbsp; <a href="https://github.com/NimaShafie/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
+    &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
   </footer>
 
@@ -8022,7 +8022,7 @@ struct HistoryTemplate {
   <footer class="site-footer">
     oxide-sloc — local source line analysis workbench &nbsp;·&nbsp;
     Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
-    &nbsp;·&nbsp; <a href="https://github.com/NimaShafie/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
+    &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
   </footer>
 
@@ -8635,7 +8635,7 @@ struct CompareSelectTemplate {
   <footer class="site-footer">
     oxide-sloc — local source line analysis workbench &nbsp;·&nbsp;
     Built by <a href="https://github.com/NimaShafie" target="_blank" rel="noopener">Nima Shafie</a>
-    &nbsp;·&nbsp; <a href="https://github.com/NimaShafie/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
+    &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
   </footer>
 
   <script>

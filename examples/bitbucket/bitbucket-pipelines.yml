@@ -135,7 +135,7 @@ PYEOF
 | Language | Files | Code lines |\\n\
 |----------|-------|------------|\\n\
 ${LANG_TABLE}\\n\\n\
-*Posted by [oxide-sloc](https://github.com/NimaShafie/oxide-sloc)*"
+*Posted by [oxide-sloc](https://github.com/oxide-sloc/oxide-sloc)*"
 
             curl -sf -u "${BB_USER}:${BB_APP_PASSWORD}" \
               -X POST \

@@ -4,11 +4,22 @@
 [![Release](https://github.com/oxide-sloc/oxide-sloc/actions/workflows/release.yml/badge.svg)](https://github.com/oxide-sloc/oxide-sloc/actions/workflows/release.yml)
 [![Docker](https://github.com/oxide-sloc/oxide-sloc/actions/workflows/docker.yml/badge.svg)](https://github.com/oxide-sloc/oxide-sloc/actions/workflows/docker.yml)
 [![Latest Release](https://img.shields.io/github/v/release/oxide-sloc/oxide-sloc?include_prereleases&label=release)](https://github.com/oxide-sloc/oxide-sloc/releases/latest)
+[![crates.io](https://img.shields.io/crates/v/oxide-sloc.svg)](https://crates.io/crates/oxide-sloc)
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](./LICENSE)
 
 **oxide-sloc** is a Rust-based source line analysis tool — IEEE 1045-1992 compliant, more than a line counter.
 
 ## Quick Start
+
+**Install via Cargo (requires Rust):**
+
+```bash
+cargo install oxide-sloc
+oxide-sloc serve          # web UI at http://127.0.0.1:4317
+oxide-sloc analyze ./my-repo --plain
+```
+
+**Or use a pre-built binary:**
 
 | Platform | Install | Launch |
 |---|---|---|

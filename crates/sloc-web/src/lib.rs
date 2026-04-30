@@ -3677,14 +3677,14 @@ struct SubmoduleRow {
     .coverage-pills { display:flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
     .coverage-pill, .language-pill, .soft-chip { display:inline-flex; align-items:center; min-height: 32px; padding: 0 12px; border-radius: 999px; border:1px solid var(--line); background: var(--surface-2); color: var(--text); font-size: 13px; font-weight: 700; }
     .layout { display:grid; grid-template-columns: 218px minmax(0, 1fr); gap: 18px; align-items:start; }
-    .side-stack { display:grid; gap: 16px; align-items:start; }
-    .step-nav { padding: 14px; position: sticky; top: 88px; }
-    .step-nav h3 { margin: 6px 4px 14px; font-size: 15px; }
-    .step-button { width:100%; display:flex; align-items:center; gap:12px; border:none; background:transparent; border-radius: 12px; padding: 12px 12px; color: var(--text); cursor:pointer; text-align:left; font-size:15px; font-weight:700; transition: background 0.15s ease, transform 0.15s ease; }
+    .side-stack { display:grid; gap: 16px; align-items:start; align-self: stretch; }
+    .step-nav { padding: 20px 16px; position: sticky; top: 57px; z-index: 25; }
+    .step-nav h3 { margin: 6px 4px 20px; font-size: 16px; font-weight: 850; letter-spacing: -0.01em; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+    .step-button { width:100%; display:flex; align-items:center; gap:12px; border:none; background:transparent; border-radius: 12px; padding: 14px 12px; color: var(--text); cursor:pointer; text-align:left; font-size:15px; font-weight:700; transition: background 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease; animation: stepEntrance 0.3s ease both; }
     .step-button:hover { background: var(--surface-2); }
     .step-button.active { background: rgba(37,99,235,0.09); box-shadow: inset 0 0 0 1px rgba(37,99,235,0.18); color: var(--accent-2); }
     .step-num { width:22px; height:22px; border-radius:999px; display:inline-flex; align-items:center; justify-content:center; background: var(--surface-3); color: var(--text); font-size:12px; font-weight:800; flex:0 0 auto; }
-    .step-nav-info { margin:14px 4px 0; padding:12px; border-radius:10px; background:var(--surface-2); border:1px solid var(--line); }
+    .step-nav-info { margin:20px 4px 0; padding:14px; border-radius:12px; background:var(--surface-2); border:1px solid var(--line); }
     .step-nav-info-label { font-size:10px; font-weight:900; text-transform:uppercase; letter-spacing:.08em; color:var(--muted-2); margin-bottom:6px; }
     .step-nav-info-desc { font-size:12px; color:var(--muted); line-height:1.55; }
     .step-nav-summary { margin:8px 4px 0; padding:10px 12px; border-radius:10px; background:rgba(184,93,51,0.05); border:1px solid rgba(184,93,51,0.14); }
@@ -3692,16 +3692,22 @@ struct SubmoduleRow {
     .step-nav-sum-row:last-child { border-bottom:none; }
     .step-nav-sum-key { font-size:10px; font-weight:900; text-transform:uppercase; letter-spacing:.07em; color:var(--muted-2); flex-shrink:0; }
     .step-nav-sum-val { font-size:12px; font-weight:700; color:var(--text); text-align:right; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:120px; }
-    .quick-scan-divider { height:1px; background:var(--line); margin: 12px 4px; }
-    .quick-scan-section { padding: 4px 4px 6px; }
-    .quick-scan-label { font-size:10px; font-weight:900; text-transform:uppercase; letter-spacing:.08em; color:var(--muted-2); margin-bottom:8px; }
+    .quick-scan-divider { height:1px; background:var(--line); margin: 20px 4px 6px; }
+    .quick-scan-section { padding: 10px 4px 14px; }
+    .quick-scan-label { font-size:10px; font-weight:900; text-transform:uppercase; letter-spacing:.08em; color:var(--muted-2); margin-bottom:16px; }
     .quick-scan-btn { width:100%; display:flex; align-items:center; justify-content:center; gap:8px; padding:11px 14px; border-radius:14px; border:none; background:linear-gradient(135deg,#e07b3a,#b85028); color:#fff; font-size:14px; font-weight:800; cursor:pointer; box-shadow:0 6px 18px rgba(184,80,40,0.28); transition:transform 0.15s ease,box-shadow 0.15s ease; }
     .quick-scan-btn:hover { transform:translateY(-2px); box-shadow:0 10px 24px rgba(184,80,40,0.35); }
     .quick-scan-btn:active { transform:translateY(0); }
     .quick-scan-btn:disabled { opacity:.6; cursor:not-allowed; transform:none; }
-    .quick-scan-hint { font-size:11px; color:var(--muted); margin-top:8px; line-height:1.4; text-align:center; }
-    .step-button.active .step-num { background: rgba(37,99,235,0.18); color: var(--accent-2); }
-    .card-header { padding: 22px 22px 18px; border-bottom:1px solid var(--line); background: linear-gradient(180deg, rgba(255,255,255,0.30), transparent), var(--surface); position: sticky; top: 68px; z-index: 20; border-radius: var(--radius) var(--radius) 0 0; }
+    .quick-scan-hint { font-size:11px; color:var(--muted); margin-top:16px; line-height:1.4; text-align:center; hyphens:none; overflow-wrap:normal; }
+    .step-button.active .step-num { background: rgba(37,99,235,0.18); color: var(--accent-2); animation: stepPulse 2.5s ease-in-out infinite; }
+    @keyframes stepPulse { 0%,100%{box-shadow:0 0 0 0 rgba(37,99,235,0.2);} 60%{box-shadow:0 0 0 5px rgba(37,99,235,0.07);} }
+    @keyframes stepEntrance { from{opacity:0;transform:translateX(-8px);} to{opacity:1;transform:translateX(0);} }
+    .step-nav > button:nth-child(2) { animation-delay: 0.04s; }
+    .step-nav > button:nth-child(3) { animation-delay: 0.09s; }
+    .step-nav > button:nth-child(4) { animation-delay: 0.14s; }
+    .step-nav > button:nth-child(5) { animation-delay: 0.19s; }
+    .card-header { padding: 22px 22px 18px; border-bottom:1px solid var(--line); background: linear-gradient(180deg, rgba(255,255,255,0.30), transparent), var(--surface); position: sticky; top: 57px; z-index: 20; border-radius: var(--radius) var(--radius) 0 0; }
     body.dark-theme .card-header { background: linear-gradient(180deg, rgba(255,255,255,0.04), transparent), var(--surface); }
     .card-title-row { display:flex; justify-content:space-between; align-items:flex-start; gap:18px; }
     .wizard-progress { min-width: 288px; max-width: 384px; width: 100%; }
@@ -3826,9 +3832,9 @@ struct SubmoduleRow {
     .review-scan-note p { margin: 3px 0 0; font-size: 12px; line-height: 1.45; }
     .review-scan-note code { display:inline; padding: 1px 5px; border-radius: 5px; font-size: 11px; }
     .review-card { min-height: 200px; }
-    .scope-info-row { display:flex; gap:14px; align-items:flex-start; margin:12px 0; }
+    .scope-info-row { display:flex; gap:14px; align-items:stretch; margin:12px 0; }
     .scope-info-row .explorer-language-strip { flex:1; min-width:0; overflow:hidden; }
-    .scope-info-row .preview-note { flex:0 0 28%; max-width:260px; margin:0; font-size:12px; line-height:1.5; padding:10px 12px; }
+    .scope-info-row .preview-note { flex:0 0 52%; margin:0; font-size:12px; line-height:1.5; padding:10px 12px; }
     .language-pill-row.iconified { flex-wrap:nowrap; overflow:hidden; }
     .lang-overflow-chip { position:relative; cursor:default; }
     .lang-overflow-tip { display:none; position:absolute; top:calc(100% + 6px); left:0; z-index:300; background:var(--surface); border:1px solid var(--line-strong); border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,0.16); padding:10px 14px; min-width:160px; white-space:pre-line; font-size:12px; font-weight:600; color:var(--text); line-height:1.7; pointer-events:none; }
@@ -3861,7 +3867,7 @@ struct SubmoduleRow {
     .scope-stat-label { display:block; font-size:12px; font-weight:800; color: var(--muted-2); text-transform: uppercase; letter-spacing: .08em; }
     .scope-stat-value { display:block; margin-top: 6px; font-size: 22px; font-weight: 900; color: var(--text); }
     [data-tooltip] { position: relative; }
-    [data-tooltip]::after { content: attr(data-tooltip); display: none; position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 7px 12px; border-radius: 8px; font-size: 12px; font-weight: 600; white-space: normal; max-width: 220px; text-align: center; line-height: 1.5; pointer-events: none; z-index: 400; box-shadow: 0 4px 14px rgba(0,0,0,0.22); }
+    [data-tooltip]::after { content: attr(data-tooltip); display: none; position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 7px 12px; border-radius: 8px; font-size: 12px; font-weight: 600; white-space: normal; width: max-content; min-width: 180px; max-width: 280px; text-align: center; line-height: 1.5; pointer-events: none; z-index: 400; box-shadow: 0 4px 14px rgba(0,0,0,0.22); }
     [data-tooltip]:hover::after { display: block; }
     .scope-stat-button[data-tooltip] { cursor: pointer; }
     .badge[data-tooltip] { cursor: help; }
@@ -4233,7 +4239,7 @@ struct SubmoduleRow {
                 <h2>Choose counting behavior</h2>
                 <p class="card-subtitle counting-intro">These settings decide how mixed code-plus-comment lines and Python docstrings are classified. Pure comment lines, block comments, physical lines, and blank lines are still tracked by supported analyzers even when they do not share a line with executable code. Counting methodology follows IEEE Std 1045-1992 physical SLOC.</p>
                 <div class="subsection-bar">Primary line classification</div>
-                <div class="preset-inline-row">
+                <div class="preset-inline-row" style="align-items:start;">
                   <div class="toggle-card mixed-line-card" style="margin:0;">
                     <div class="field-help-title" style="margin-bottom:10px;">Primary line classification</div>
                     <h4 style="margin:0 0 12px;font-size:16px;">Mixed-line policy</h4>
@@ -4369,7 +4375,7 @@ struct SubmoduleRow {
                 <div class="section-kicker">Step 3</div>
                 <h2>Output and report identity</h2>
                 <p class="card-subtitle step3-subtitle">Choose where generated files should be saved, what the exported report title should be, and which artifact bundle fits your workflow.</p>
-                <div class="preset-inline-row">
+                <div class="preset-inline-row" style="align-items:start;">
                   <div class="toggle-card" style="margin:0;">
                     <div class="field-help-title" style="margin-bottom:10px;">Scan configuration</div>
                     <h4 style="margin:0 0 12px;font-size:16px;">Scan preset</h4>
@@ -4390,7 +4396,7 @@ struct SubmoduleRow {
                   </div>
                 </div>
                 <hr class="step3-separator" />
-                <div class="preset-inline-row">
+                <div class="preset-inline-row" style="align-items:start;">
                   <div class="toggle-card" style="margin:0;">
                     <div class="field-help-title" style="margin-bottom:10px;">Output configuration</div>
                     <h4 style="margin:0 0 12px;font-size:16px;">Artifact preset</h4>
@@ -4502,11 +4508,6 @@ struct SubmoduleRow {
                   <div class="review-card highlight">
                     <div class="review-card-head"><h4>What will be scanned</h4><button type="button" class="review-link jump-step" data-step-target="1">Edit step 1</button></div>
                     <ul id="review-scan-summary"></ul>
-                    <div class="review-scan-note">
-                      <div class="review-scan-note-label">Analyzer coverage</div>
-                      <p>41 languages supported. Files outside the supported set are excluded from code totals and flagged as unsupported in the scope preview.</p>
-                      <p>Respects <code>.gitignore</code> and skips vendor dirs, generated files, and lockfiles unless overridden.</p>
-                    </div>
                   </div>
                   <div class="review-card highlight">
                     <div class="review-card-head"><h4>How it will be counted</h4><button type="button" class="review-link jump-step" data-step-target="2">Edit step 2</button></div>
@@ -5972,7 +5973,7 @@ struct SplashTemplate {}
     .page{max-width:960px;margin:0 auto;padding:40px 24px 64px;position:relative;z-index:1;}
     .page-header{text-align:center;margin-bottom:32px;}
     .page-header h1{font-size:34px;font-weight:900;letter-spacing:-0.03em;margin:0 0 8px;}
-    .page-header p{font-size:15px;color:var(--muted);line-height:1.6;max-width:480px;margin:0 auto;}
+    .page-header p{font-size:15px;color:var(--muted);line-height:1.6;white-space:nowrap;margin:0 auto;}
     .breadcrumb{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);margin-bottom:28px;}
     .breadcrumb a{color:var(--muted);text-decoration:none;} .breadcrumb a:hover{color:var(--oxide);}
     .breadcrumb svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:2;}

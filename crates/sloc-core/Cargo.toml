@@ -22,5 +22,5 @@ ignore.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-sloc-config = { path = "../sloc-config", version = "1.2.0" }
-sloc-languages = { path = "../sloc-languages", version = "1.2.0" }
+sloc-config = { path = "../sloc-config", version = "1.2.1" }
+sloc-languages = { path = "../sloc-languages", version = "1.2.1" }

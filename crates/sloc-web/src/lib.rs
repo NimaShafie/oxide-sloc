@@ -3007,7 +3007,7 @@ fn build_preview_html(
     out.push_str(r#"<button type="button" class="scope-stat-button reset" data-filter="reset-view" data-tooltip="Clear all filters and return to the full project view."><span class="scope-stat-label">Reset view</span><span class="scope-stat-value">All</span></button>"#);
     out.push_str(r#"</div>"#);
 
-    out.push_str(r#"<div class="explorer-meta-grid">"#);
+    out.push_str(r#"<div class="scope-info-row">"#);
     out.push_str(r#"<div class="explorer-language-strip"><div class="meta-label">Detected languages</div><div class="language-pill-row iconified">"#);
     if languages.is_empty() {
         out.push_str(
@@ -3029,9 +3029,9 @@ fn build_preview_html(
             }
         }
     }
-    out.push_str(r#"</div></div></div>"#);
-
+    out.push_str(r#"</div></div>"#);
     out.push_str(r#"<div class="preview-note stronger">This preview is generated before the run starts. It shows what is currently supported, what default policies skip, and which files are outside the enabled analyzer set for this build.</div>"#);
+    out.push_str(r#"</div>"#);
 
     out.push_str(r#"<div class="file-explorer-shell">"#);
     out.push_str(r#"<div class="file-explorer-controls"><div class="file-explorer-actions"><button type="button" class="mini-button explorer-action" data-explorer-action="expand-all">Expand all</button><button type="button" class="mini-button explorer-action" data-explorer-action="collapse-all">Collapse all</button><button type="button" class="mini-button explorer-action" data-explorer-action="clear-filters">Reset view</button></div><div class="file-explorer-search-row"><select class="explorer-filter-select" id="explorer-filter-select"><option value="all">All rows</option><option value="dir">Directories only</option><option value="file">Files only</option><option value="supported">Supported only</option><option value="skipped">Skipped by policy</option><option value="unsupported">Unsupported only</option></select><input type="text" class="explorer-search" id="explorer-search" placeholder="Filter by file or folder name" /></div></div>"#);
@@ -3635,10 +3635,18 @@ struct SubmoduleRow {
     .ws-path-link { background:none; border:none; padding:0; font:inherit; font-size:13px; font-weight:700; color:var(--oxide-2); cursor:pointer; text-decoration:underline; text-decoration-style:dotted; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:block; max-width:100%; }
     .ws-path-link:hover { color:var(--oxide); }
     body.dark-theme .ws-path-link { color:var(--oxide); }
-    .ws-stat-output { max-width:260px; overflow:hidden; }
+    .ws-stat-output { flex:1 1 0; min-width:0; overflow:hidden; }
     .ws-stat-output .ws-value { overflow:hidden; display:block; }
-    .scope-legend-row { display:inline-flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:10px; padding:6px 12px; border:1px solid var(--line); border-radius:8px; background:var(--surface-2); font-size:13px; }
+    .ws-mini-box-sm { flex:0 0 auto; min-width:80px; max-width:110px; }
+    .ws-mini-box-sm .ws-mini-label { font-size:9px; }
+    .ws-mini-box-sm .ws-mini-value { font-size:13px; }
+    .ws-mini-box-lg { flex:2 1 0; }
+    .ws-mini-box-lg .ws-mini-value { font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .ws-mini-box-br { flex:1.5 1 0; }
+    .scope-legend-row { display:inline-flex; align-items:center; gap:8px; flex-wrap:wrap; padding:6px 12px; border:1px solid var(--line); border-radius:8px; background:var(--surface-2); font-size:13px; flex-shrink:0; }
     .scope-legend-label { font-weight:800; color:var(--text); white-space:nowrap; }
+    .path-scope-grid { display:grid; grid-template-columns: 1fr auto; gap:14px; align-items:start; }
+    .path-scope-grid .input-group { width:100%; }
     .recent-more-link { padding:10px 16px; font-size:13px; color:var(--muted); border-top:1px solid var(--line); }
     .recent-more-link a { color:var(--oxide-2); text-decoration:underline; }
     .step3-separator { border:none; border-top:1px solid var(--line); margin:20px 0; }
@@ -3804,10 +3812,15 @@ struct SubmoduleRow {
     .review-card h4 { margin: 0 0 8px; font-size: 17px; }
     .review-card p, .review-card li { color: var(--muted); font-size: 14px; line-height: 1.62; }
     .review-card ul { padding-left: 18px; margin: 0; }
-    .review-scan-note { margin-top: 14px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-2); }
-    .review-scan-note-label { font-size: 11px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
-    .review-scan-note p { margin: 4px 0 0; font-size: 13px; }
-    .review-scan-note code { display:inline; padding: 1px 5px; border-radius: 5px; font-size: 12px; }
+    .review-scan-note { margin-top: 10px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface-2); }
+    .review-scan-note-label { font-size: 10px; font-weight: 900; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted-2); margin-bottom: 4px; }
+    .review-scan-note p { margin: 3px 0 0; font-size: 12px; line-height: 1.45; }
+    .review-scan-note code { display:inline; padding: 1px 5px; border-radius: 5px; font-size: 11px; }
+    .review-card { min-height: 200px; }
+    .scope-info-row { display:flex; gap:14px; align-items:flex-start; margin:12px 0; }
+    .scope-info-row .explorer-language-strip { flex:0 0 auto; }
+    .scope-info-row .preview-note { flex:1; min-width:0; margin:0; font-size:13px; line-height:1.55; }
+    .preset-inline-row .toggle-card { justify-content: center; }
         .explorer-wrap { display:grid; gap: 16px; margin-top: 18px; }
     .explorer-toolbar { display:flex; justify-content:space-between; gap: 12px; align-items:flex-start; }
     .explorer-toolbar.compact { padding: 0; border-bottom: none; }
@@ -4034,15 +4047,15 @@ struct SubmoduleRow {
       <div class="workbench-box ws-history-group">
         <div class="ws-history-label">Scan history</div>
         <div class="ws-history-inner">
-          <div class="ws-mini-box">
-            <div class="ws-mini-label">Previous Scans</div>
+          <div class="ws-mini-box ws-mini-box-sm">
+            <div class="ws-mini-label">Scans</div>
             <div class="ws-mini-value" id="ws-scan-count">—</div>
           </div>
-          <div class="ws-mini-box">
+          <div class="ws-mini-box ws-mini-box-lg">
             <div class="ws-mini-label">Last Scan</div>
             <div class="ws-mini-value" id="ws-last-scan">—</div>
           </div>
-          <div class="ws-mini-box">
+          <div class="ws-mini-box ws-mini-box-br">
             <div class="ws-mini-label">Branch</div>
             <div class="ws-mini-value" id="ws-branch">—</div>
           </div>
@@ -4126,19 +4139,21 @@ struct SubmoduleRow {
                 <p class="card-subtitle">Choose the target folder, apply include and exclude filters, and preview what the current build is likely to scan.</p>
                 <div class="field" style="margin:10px 0 0;">
                   <label for="path">Project path</label>
-                  <div class="input-group" style="flex:1;min-width:0;">
-                    <input id="path" name="path" type="text" value="samples/basic" placeholder="/path/to/repository" required />
-                    <button type="button" class="mini-button oxide" id="browse-path">Browse</button>
-                    <button type="button" class="mini-button" id="use-sample-path">Use sample</button>
+                  <div class="path-scope-grid">
+                    <div class="input-group">
+                      <input id="path" name="path" type="text" value="samples/basic" placeholder="/path/to/repository" required />
+                      <button type="button" class="mini-button oxide" id="browse-path">Browse</button>
+                      <button type="button" class="mini-button" id="use-sample-path">Use sample</button>
+                    </div>
+                    <div class="scope-legend-row">
+                      <span class="scope-legend-label">Scope legend:</span>
+                      <span class="badge badge-scan" data-tooltip="Files with a supported language analyzer — counted in SLOC totals.">supported</span>
+                      <span class="badge badge-skip" data-tooltip="Files excluded by a policy rule such as vendor, generated, or minified detection.">skipped by policy</span>
+                      <span class="badge badge-unsupported" data-tooltip="Files outside the supported language set — listed but not counted.">unsupported</span>
+                    </div>
                   </div>
                   <div class="hint">Browse opens the native folder picker through the Rust backend, so you do not need to type local paths manually.</div>
                   <div id="path-history-badge" class="path-history-badge" style="display:none"></div>
-                  <div class="scope-legend-row">
-                    <span class="scope-legend-label">Scope legend:</span>
-                    <span class="badge badge-scan" data-tooltip="Files with a supported language analyzer — counted in SLOC totals.">supported</span>
-                    <span class="badge badge-skip" data-tooltip="Files excluded by a policy rule such as vendor, generated, or minified detection.">skipped by policy</span>
-                    <span class="badge badge-unsupported" data-tooltip="Files outside the supported language set — listed but not counted.">unsupported</span>
-                  </div>
                 </div>
 
                 <div style="height:1px;background:var(--line);margin:28px 0;"></div>
@@ -4462,7 +4477,7 @@ struct SubmoduleRow {
                     <input type="checkbox" name="generate_json" checked class="hidden artifact-checkbox" />
                   </div>
                 </div>
-                <div class="hint">Artifact cards are selectable. Presets above can also toggle them for common workflows.</div>
+                <div class="hint" style="margin-top:16px;">Artifact cards are selectable. Presets above can also toggle them for common workflows.</div>
               </div>
 
               <div class="wizard-actions">

@@ -3676,7 +3676,7 @@ struct SubmoduleRow {
     .summary-body { margin-top: 8px; color: var(--muted); font-size: 13px; line-height: 1.55; }
     .coverage-pills { display:flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
     .coverage-pill, .language-pill, .soft-chip { display:inline-flex; align-items:center; min-height: 32px; padding: 0 12px; border-radius: 999px; border:1px solid var(--line); background: var(--surface-2); color: var(--text); font-size: 13px; font-weight: 700; }
-    .layout { display:grid; grid-template-columns: 218px minmax(0, 1fr); gap: 18px; align-items:start; }
+    .layout { display:grid; grid-template-columns: 218px minmax(0, 1fr); gap: 18px; align-items:stretch; min-height: calc(100vh - 57px); }
     .side-stack { display:grid; gap: 16px; align-items:start; align-self: stretch; }
     .step-nav { padding: 20px 16px; position: sticky; top: 57px; z-index: 25; }
     .step-nav h3 { margin: 6px 4px 20px; font-size: 16px; font-weight: 850; letter-spacing: -0.01em; padding-bottom: 16px; border-bottom: 1px solid var(--line); }

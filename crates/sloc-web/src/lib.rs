@@ -178,13 +178,46 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state.clone());
 
-    let listener = tokio::net::TcpListener::bind(&bind_address)
-        .await
-        .with_context(|| format!("failed to bind local web UI on {bind_address}"))?;
-
-    let addr: SocketAddr = bind_address
+    // Try the configured port first, then step up through a few alternatives.
+    // On Windows, a killed process can leave its LISTEN socket as an unkillable
+    // kernel zombie (visible in netstat but owned by no living process).  Rather
+    // than failing, we auto-select the next free port and tell the user.
+    let preferred: SocketAddr = bind_address
         .parse()
-        .unwrap_or_else(|_| listener.local_addr().expect("listener has a local address"));
+        .with_context(|| format!("invalid bind address: {bind_address}"))?;
+    let (listener, addr) = {
+        let candidates = (0u16..=9).map(|offset| {
+            let mut a = preferred;
+            a.set_port(preferred.port().saturating_add(offset));
+            a
+        });
+        let mut found = None;
+        for candidate in candidates {
+            match tokio::net::TcpListener::bind(candidate).await {
+                Ok(l) => {
+                    found = Some((l, candidate));
+                    break;
+                }
+                Err(_) => continue,
+            }
+        }
+        found.ok_or_else(|| {
+            anyhow::anyhow!(
+                "failed to bind local web UI on {} (tried ports {}-{}): all in use",
+                bind_address,
+                preferred.port(),
+                preferred.port().saturating_add(9)
+            )
+        })?
+    };
+    if addr != preferred {
+        eprintln!(
+            "NOTE: port {} is blocked by a system socket (Windows zombie); \
+             using {} instead.",
+            preferred.port(),
+            addr.port()
+        );
+    }
 
     if tls_enabled {
         let cert_path = tls_cert.expect("tls_enabled guarantees SLOC_TLS_CERT is Some");
@@ -3582,8 +3615,8 @@ struct SubmoduleRow {
 
     * { box-sizing: border-box; }
     html, body { margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); }
-    html { scrollbar-gutter: stable; }
-    body { overflow-x: hidden; transition: background 0.18s ease, color 0.18s ease; }
+    html { overflow-y: scroll; }
+    body { overflow-x: hidden; transition: background 0.18s ease, color 0.18s ease; display: flex; flex-direction: column; }
     .top-nav, .page, .loading { position: relative; z-index: 2; }
     .background-watermarks { position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
     .background-watermarks img { position: absolute; opacity: 0.16; filter: blur(0.3px); user-select: none; max-width: none; }
@@ -3611,7 +3644,7 @@ struct SubmoduleRow {
     body.dark-theme .theme-toggle .icon-moon { display:none; }
     .status-dot { width: 8px; height: 8px; border-radius: 999px; background: #26d768; box-shadow: 0 0 0 4px rgba(38,215,104,0.14); flex:0 0 auto; }
     .server-status-wrap{position:relative;display:inline-flex;}.server-online-pill{cursor:default;}.server-status-tip{display:none;position:absolute;top:calc(100% + 10px);right:0;z-index:100;background:rgba(20,12,8,0.97);color:rgba(255,255,255,0.92);border-radius:10px;padding:10px 14px;font-size:12px;font-weight:500;line-height:1.55;white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,0.32);pointer-events:none;border:1px solid rgba(255,255,255,0.10);}.server-status-tip::before{content:'';position:absolute;bottom:100%;right:18px;border:6px solid transparent;border-bottom-color:rgba(20,12,8,0.97);}.server-status-wrap:hover .server-status-tip,.server-status-wrap:focus-within .server-status-tip{display:block;}
-    .page { max-width: 1720px; margin: 0 auto; padding: 18px 24px 40px; }
+    .page { max-width: 1720px; margin: 0 auto; padding: 18px 24px 40px; flex: 1; width: 100%; }
     .summary-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }
     .workbench-strip { display:flex; align-items:stretch; gap:16px; margin-bottom: 18px; flex-wrap: nowrap; overflow: visible; }
     .workbench-box { border: 1px solid var(--line-strong); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
@@ -3678,6 +3711,7 @@ struct SubmoduleRow {
     .coverage-pills { display:flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
     .coverage-pill, .language-pill, .soft-chip { display:inline-flex; align-items:center; min-height: 32px; padding: 0 12px; border-radius: 999px; border:1px solid var(--line); background: var(--surface-2); color: var(--text); font-size: 13px; font-weight: 700; }
     .layout { display:grid; grid-template-columns: 218px minmax(0, 1fr); gap: 18px; align-items:stretch; min-height: calc(100vh - 57px); }
+    .layout[data-active-step="4"] { align-items: start; min-height: auto; }
     .side-stack { display:grid; gap: 16px; align-items:start; align-self: stretch; width: 218px; max-width: 218px; }
     .step-nav { padding: 20px 16px; position: sticky; top: 57px; z-index: 25; }
     .step-nav h3 { margin: 6px 4px 20px; font-size: 16px; font-weight: 850; letter-spacing: -0.01em; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
@@ -4097,12 +4131,6 @@ struct SubmoduleRow {
         <div class="step-nav-info" id="step-nav-info">
           <div class="step-nav-info-label" id="step-nav-info-label">Step 1 of 4</div>
           <div class="step-nav-info-desc" id="step-nav-info-desc">Choose a project folder, apply scope filters, and preview which files will be counted.</div>
-        </div>
-
-        <div class="step-nav-summary" id="step-nav-summary" style="display:none;">
-          <div class="step-nav-sum-row"><span class="step-nav-sum-key">Path</span><span class="step-nav-sum-val" id="snav-path">—</span></div>
-          <div class="step-nav-sum-row"><span class="step-nav-sum-key">Output</span><span class="step-nav-sum-val" id="snav-output">—</span></div>
-          <div class="step-nav-sum-row"><span class="step-nav-sum-key">Title</span><span class="step-nav-sum-val" id="snav-title">—</span></div>
         </div>
 
         <div class="quick-scan-divider"></div>
@@ -4719,18 +4747,6 @@ struct SubmoduleRow {
         if (infoLabel) infoLabel.textContent = "Step " + step + " of 4";
         if (infoDesc)  infoDesc.textContent  = stepDescriptions[step - 1] || "";
 
-        var summary = document.getElementById("step-nav-summary");
-        if (summary) summary.style.display = step > 1 ? "" : "none";
-
-        var snavPath   = document.getElementById("snav-path");
-        var snavOutput = document.getElementById("snav-output");
-        var snavTitle  = document.getElementById("snav-title");
-        var pv = pathInput ? pathInput.value.trim() : "";
-        var ov = outputDirInput ? outputDirInput.value.trim() : "";
-        var tv = reportTitleInput ? reportTitleInput.value.trim() : "";
-        if (snavPath)   snavPath.textContent   = pv  || "—";
-        if (snavOutput) snavOutput.textContent  = ov  || "auto";
-        if (snavTitle)  snavTitle.textContent   = tv  || "—";
       }
 
       function setStep(step, pushHistory) {
@@ -4741,6 +4757,8 @@ struct SubmoduleRow {
         stepButtons.forEach(function (button) {
           button.classList.toggle("active", Number(button.getAttribute("data-step-target")) === step);
         });
+        var layoutEl = document.querySelector(".layout");
+        if (layoutEl) layoutEl.setAttribute("data-active-step", step);
         updateWizardProgress();
         updateStepNav(step);
 
@@ -4750,20 +4768,7 @@ struct SubmoduleRow {
           } catch (e) {}
         }
 
-        var wizardTop =
-          document.querySelector(".page-shell") ||
-          document.querySelector(".page") ||
-          document.querySelector(".card") ||
-          document.body;
-
-        var top = 0;
-        try {
-          top = Math.max(0, wizardTop.getBoundingClientRect().top + window.scrollY - 16);
-        } catch (e) {
-          top = 0;
-        }
-
-        window.scrollTo({ top: top, behavior: "smooth" });
+        window.scrollTo({ top: 0, behavior: "instant" });
       }
 
       window.addEventListener("popstate", function (e) {
@@ -6395,7 +6400,7 @@ struct ScanSetupTemplate {
     .delta-chip { font-size:12px; font-weight:700; padding:2px 8px; border-radius:999px; }
     .delta-chip.pos { background:#e6f4ea; color:#1e7e34; }
     .delta-chip.neg { background:#fde8e8; color:#b91c1c; }
-    .delta-cards-inline { display:flex; flex-wrap:wrap; gap:8px; flex:1 1 auto; align-items:center; }
+    .delta-cards-inline { display:flex; flex-wrap:wrap; gap:8px; flex:1 1 auto; align-items:center; justify-content:center; }
     .delta-card-inline { background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:6px 12px; text-align:center; min-width:80px; }
     .delta-card-val { font-size:16px; font-weight:800; }
     .delta-card-val.pos { color:#1e7e34; }
@@ -6406,16 +6411,16 @@ struct ScanSetupTemplate {
     .compare-ts { font-size:13px; color:var(--muted); }
     .compare-banner-stats { display:flex; align-items:center; gap:10px; font-size:14px; flex-wrap:wrap; }
     .compare-arrow { color: var(--muted); }
-    .action-grid { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 18px; }
-    .action-card { padding: 16px; border-radius: 16px; border: 1px solid var(--line); background: var(--surface-2); }
-    .action-card h3 { margin:0 0 10px; font-size: 16px; }
-    .action-buttons { display:flex; flex-wrap:wrap; gap: 10px; }
+    .action-grid { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; margin-top: 18px; }
+    .action-card { padding: 12px 14px 14px; border-radius: 16px; border: 1px solid var(--line); background: var(--surface-2); display:flex; flex-direction:column; align-items:center; justify-content:center; }
+    .action-card h3 { margin:0 0 10px; font-size: 16px; text-align:center; }
+    .action-buttons { display:flex; flex-wrap:wrap; gap: 10px; justify-content:center; }
     .button, .copy-button {
       display: inline-flex; align-items: center; justify-content: center; border-radius: 14px; border: 1px solid rgba(111, 144, 255, 0.30); padding: 11px 14px; text-decoration: none; color: white; background: linear-gradient(135deg, var(--accent), var(--accent-2)); font-weight: 800; font-size: 14px; box-shadow: 0 12px 24px rgba(73, 106, 255, 0.22); cursor: pointer;
     }
     .button.secondary, .copy-button.secondary { background: var(--surface-3); box-shadow: none; color: var(--text); border-color: var(--line-strong); }
     .path-list { display: grid; grid-template-columns: 1fr 0.6fr 1.4fr; gap: 10px; margin-top: 18px; }
-    .path-item { padding: 10px 14px; background: var(--surface-2); display: flex; flex-direction: column; justify-content: space-between; }
+    .path-item { padding: 14px 16px; background: var(--surface-2); display: flex; flex-direction: column; justify-content: center; gap: 4px; }
     .path-item-label { font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: 4px; }
     .path-item strong { display: block; margin-bottom: 6px; }
     .path-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }

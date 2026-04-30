@@ -1658,9 +1658,9 @@ struct WarningOpportunityRow {
       bs+='<rect x="'+(LW+48)+'" y="'+ly+'" width="9" height="9" fill="'+GN+'"/><text x="'+(LW+60)+'" y="'+(ly+9)+'" font-family="Calibri,Arial" font-size="9" font-weight="600" fill="#555">Comments</text>';
       bs+='<rect x="'+(LW+130)+'" y="'+ly+'" width="9" height="9" fill="'+GY+'"/><text x="'+(LW+142)+'" y="'+(ly+9)+'" font-family="Calibri,Arial" font-size="9" font-weight="600" fill="#555">Blanks</text>';
       bs+='</svg>';
-      el.innerHTML='<div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start;">'+
+      el.innerHTML='<div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start;justify-content:center;">'+
         '<div style="flex:0 0 auto;"><p style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#AAA;margin:0 0 8px;">Code Lines by Language</p>'+ds+'</div>'+
-        '<div style="flex:1;min-width:260px;"><p style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#AAA;margin:0 0 8px;">Line Mix per Language</p>'+bs+'</div>'+
+        '<div style="flex:0 0 auto;min-width:260px;"><p style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#AAA;margin:0 0 8px;">Line Mix per Language</p>'+bs+'</div>'+
         '</div>';
     })();
   </script>

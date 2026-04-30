@@ -8,6 +8,9 @@ repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
 rust-version.workspace = true
+description.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [features]
 tree-sitter = ["dep:tree-sitter", "dep:tree-sitter-c", "dep:tree-sitter-python"]

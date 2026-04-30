@@ -8,6 +8,9 @@ repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
 rust-version.workspace = true
+description.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 rfd = "0.14"
@@ -24,6 +27,6 @@ tokio.workspace = true
 tokio-rustls.workspace = true
 tower.workspace = true
 tower-http.workspace = true
-sloc-config = { path = "../sloc-config" }
-sloc-core = { path = "../sloc-core" }
-sloc-report = { path = "../sloc-report" }
+sloc-config = { path = "../sloc-config", version = "1.2.0" }
+sloc-core = { path = "../sloc-core", version = "1.2.0" }
+sloc-report = { path = "../sloc-report", version = "1.2.0" }

@@ -2942,7 +2942,7 @@ fn build_preview_html(
         ));
     }
 
-    let selected = display_path(root);
+    let _selected = display_path(root);
     let mut stats = PreviewStats::default();
     let mut rows = Vec::new();
     let mut languages = Vec::new();
@@ -3007,8 +3007,7 @@ fn build_preview_html(
     out.push_str(r#"<button type="button" class="scope-stat-button reset" data-filter="reset-view" data-tooltip="Clear all filters and return to the full project view."><span class="scope-stat-label">Reset view</span><span class="scope-stat-value">All</span></button>"#);
     out.push_str(r#"</div>"#);
 
-    out.push_str(r#"<div class="explorer-meta-grid split">"#);
-    out.push_str(&format!(r#"<div class="explorer-meta-card"><div class="meta-label">Selected project path</div><div class="preview-code">{}</div></div>"#, escape_html(&selected)));
+    out.push_str(r#"<div class="explorer-meta-grid">"#);
     out.push_str(r#"<div class="explorer-language-strip"><div class="meta-label">Detected languages</div><div class="language-pill-row iconified">"#);
     if languages.is_empty() {
         out.push_str(
@@ -3633,9 +3632,16 @@ struct SubmoduleRow {
     .ws-lang-item { padding:3px 6px; border-radius:5px; background:rgba(184,93,51,0.08); border:1px solid rgba(184,93,51,0.14); color:var(--oxide-2); font-size:11px; font-weight:700; text-align:center; white-space:nowrap; }
     body.dark-theme .ws-lang-item { background:rgba(211,122,76,0.12); border-color:rgba(211,122,76,0.22); color:var(--oxide); }
     .ws-divider { display: none; }
-    .ws-path-link { background:none; border:none; padding:0; font:inherit; font-size:13px; font-weight:700; color:var(--oxide-2); cursor:pointer; text-decoration:underline; text-decoration-style:dotted; }
+    .ws-path-link { background:none; border:none; padding:0; font:inherit; font-size:13px; font-weight:700; color:var(--oxide-2); cursor:pointer; text-decoration:underline; text-decoration-style:dotted; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:block; max-width:100%; }
     .ws-path-link:hover { color:var(--oxide); }
     body.dark-theme .ws-path-link { color:var(--oxide); }
+    .ws-stat-output { max-width:260px; overflow:hidden; }
+    .ws-stat-output .ws-value { overflow:hidden; display:block; }
+    .scope-legend-row { display:inline-flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:10px; padding:6px 12px; border:1px solid var(--line); border-radius:8px; background:var(--surface-2); font-size:13px; }
+    .scope-legend-label { font-weight:800; color:var(--text); white-space:nowrap; }
+    .recent-more-link { padding:10px 16px; font-size:13px; color:var(--muted); border-top:1px solid var(--line); }
+    .recent-more-link a { color:var(--oxide-2); text-decoration:underline; }
+    .step3-separator { border:none; border-top:1px solid var(--line); margin:20px 0; }
     .ws-history-group { display:flex; flex-direction:column; justify-content:center; padding: 16px 28px; flex: 3 1 0; min-width: 0; }
     .ws-history-label { font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted-2); margin-bottom: 10px; }
     .ws-history-inner { display:flex; align-items:center; gap: 14px; flex-wrap: nowrap; }
@@ -3706,7 +3712,7 @@ struct SubmoduleRow {
     input[type="text"]:focus, textarea:focus, select:focus { outline:none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.13); transform: translateY(-1px); }
     textarea { min-height: 128px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .hint { margin-top: 8px; color: var(--muted); font-size: 13px; line-height: 1.55; }
-    .path-history-badge { margin-top: 8px; padding: 8px 12px; border-radius: 8px; font-size: 13px; line-height: 1.5; display: inline-block; max-width: 100%; }
+    .path-history-badge { margin-top: 6px; padding: 4px 10px; border-radius: 6px; font-size: 12px; line-height: 1.4; display: inline-flex; align-items: center; gap: 4px; }
     .path-history-badge.found { background: var(--info-bg, #eef3ff); color: var(--info-text, #4467d8); border: 1px solid rgba(100,130,220,0.25); }
     .path-history-badge.new   { background: var(--success-bg, #e8f5ed); color: var(--success-text, #1a8f47); border: 1px solid rgba(30,143,71,0.2); }
     .input-group { display:grid; grid-template-columns: 1fr auto auto auto; gap: 8px; align-items:center; }
@@ -3731,9 +3737,11 @@ struct SubmoduleRow {
     .field-help-grid { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
     .field-help-grid.coupled-help { margin-top: 12px; }
     .field-help-grid.preset-grid { align-items: start; }
-    .preset-inline-row { display:grid; grid-template-columns: minmax(0, 0.55fr) 1fr; gap: 20px; align-items:center; margin-bottom: 16px; }
+    .preset-inline-row { display:grid; grid-template-columns: minmax(0, 0.55fr) 1fr; gap: 20px; align-items:stretch; margin-bottom: 16px; }
     .preset-inline-row .field { margin: 0; }
     .preset-inline-row .explainer-card { margin: 0; }
+    .preset-inline-row .toggle-card { display:flex; flex-direction:column; }
+    .preset-inline-row .explainer-card { display:flex; flex-direction:column; }
     .output-field-row { display:grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items:start; }
     .output-field-row .field { margin: 0; }
     .output-field-aside { padding: 16px 18px; border-radius: 14px; border: 1px solid var(--line); background: var(--surface-2); font-size: 14px; color: var(--muted); line-height: 1.6; }
@@ -4013,7 +4021,7 @@ struct SubmoduleRow {
           <div class="ws-divider"></div>
           <div class="ws-stat"><span class="ws-label">Active project</span><span class="ws-value" id="live-report-title">—</span></div>
           <div class="ws-divider"></div>
-          <div class="ws-stat">
+          <div class="ws-stat ws-stat-output">
             <span class="ws-label">Output</span>
             <span class="ws-value">
               <button type="button" class="ws-path-link open-folder-button" id="ws-output-link" data-folder="" title="Click to open in file explorer">
@@ -4118,21 +4126,19 @@ struct SubmoduleRow {
                 <p class="card-subtitle">Choose the target folder, apply include and exclude filters, and preview what the current build is likely to scan.</p>
                 <div class="field" style="margin:10px 0 0;">
                   <label for="path">Project path</label>
-                  <div style="display:flex;align-items:center;gap:14px;">
-                    <div class="input-group" style="flex:1;min-width:0;">
-                      <input id="path" name="path" type="text" value="samples/basic" placeholder="/path/to/repository" required />
-                      <button type="button" class="mini-button oxide" id="browse-path">Browse</button>
-                      <button type="button" class="mini-button" id="use-sample-path">Use sample</button>
-                    </div>
-                    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;flex-shrink:0;font-size:13px;">
-                      <span style="font-weight:800;color:var(--text);">Scope legend:</span>
-                      <span class="badge badge-scan" data-tooltip="Files with a supported language analyzer — counted in SLOC totals.">supported</span>
-                      <span class="badge badge-skip" data-tooltip="Files excluded by a policy rule such as vendor, generated, or minified detection.">skipped by policy</span>
-                      <span class="badge badge-unsupported" data-tooltip="Files outside the supported language set — listed but not counted.">unsupported</span>
-                    </div>
+                  <div class="input-group" style="flex:1;min-width:0;">
+                    <input id="path" name="path" type="text" value="samples/basic" placeholder="/path/to/repository" required />
+                    <button type="button" class="mini-button oxide" id="browse-path">Browse</button>
+                    <button type="button" class="mini-button" id="use-sample-path">Use sample</button>
                   </div>
                   <div class="hint">Browse opens the native folder picker through the Rust backend, so you do not need to type local paths manually.</div>
                   <div id="path-history-badge" class="path-history-badge" style="display:none"></div>
+                  <div class="scope-legend-row">
+                    <span class="scope-legend-label">Scope legend:</span>
+                    <span class="badge badge-scan" data-tooltip="Files with a supported language analyzer — counted in SLOC totals.">supported</span>
+                    <span class="badge badge-skip" data-tooltip="Files excluded by a policy rule such as vendor, generated, or minified detection.">skipped by policy</span>
+                    <span class="badge badge-unsupported" data-tooltip="Files outside the supported language set — listed but not counted.">unsupported</span>
+                  </div>
                 </div>
 
                 <div style="height:1px;background:var(--line);margin:28px 0;"></div>
@@ -4366,6 +4372,7 @@ struct SubmoduleRow {
                     <div class="preset-note" id="scan-preset-note"></div>
                   </div>
                 </div>
+                <hr class="step3-separator" />
                 <div class="preset-inline-row">
                   <div class="field">
                     <label for="artifact_preset">Artifact preset</label>
@@ -6102,13 +6109,17 @@ struct SplashTemplate {}
         return p;
       }
 
-      // Build recent scan list
+      // Build recent scan list (capped at 3 visible entries)
       var list = document.getElementById('recent-list');
       var noNote = document.getElementById('no-recent-note');
       var hasAny = false;
+      var MAX_RECENT = 3;
       if (Array.isArray(recentScans)) {
-        recentScans.forEach(function (entry) {
-          if (!entry.config || typeof entry.config !== 'object') return;
+        var validEntries = recentScans.filter(function(e) { return e.config && typeof e.config === 'object'; });
+        var shown = 0;
+        validEntries.forEach(function (entry) {
+          if (shown >= MAX_RECENT) return;
+          shown++;
           hasAny = true;
           var item = document.createElement('div');
           item.className = 'recent-item';
@@ -6125,6 +6136,12 @@ struct SplashTemplate {}
           });
           list.appendChild(item);
         });
+        if (validEntries.length > MAX_RECENT) {
+          var moreEl = document.createElement('div');
+          moreEl.className = 'recent-more-link';
+          moreEl.innerHTML = '+' + (validEntries.length - MAX_RECENT) + ' more &mdash; <a href="/view-reports">view all runs</a>';
+          list.appendChild(moreEl);
+        }
       }
       if (hasAny && noNote) noNote.style.display = 'none';
 

@@ -3643,10 +3643,11 @@ struct SubmoduleRow {
     .ws-mini-box-lg { flex:2 1 0; }
     .ws-mini-box-lg .ws-mini-value { font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .ws-mini-box-br { flex:1.5 1 0; }
-    .scope-legend-row { display:inline-flex; align-items:center; gap:8px; flex-wrap:wrap; padding:6px 12px; border:1px solid var(--line); border-radius:8px; background:var(--surface-2); font-size:13px; flex-shrink:0; }
+    .scope-legend-row { display:inline-flex; align-items:center; gap:8px; flex-wrap:wrap; padding:6px 12px; border:1px solid var(--line); border-radius:8px; background:var(--surface-2); font-size:13px; flex-shrink:0; border-left:3px solid var(--line-strong); }
     .scope-legend-label { font-weight:800; color:var(--text); white-space:nowrap; }
-    .path-scope-grid { display:grid; grid-template-columns: 1fr auto; gap:14px; align-items:start; }
-    .path-scope-grid .input-group { width:100%; }
+    .path-scope-grid { display:grid; grid-template-columns: 1fr 1px auto; gap:0; align-items:stretch; }
+    .path-scope-grid .input-group { width:100%; align-self:start; }
+    .path-scope-sep { background:var(--line); margin:4px 14px; }
     .recent-more-link { padding:10px 16px; font-size:13px; color:var(--muted); border-top:1px solid var(--line); }
     .recent-more-link a { color:var(--oxide-2); text-decoration:underline; }
     .step3-separator { border:none; border-top:1px solid var(--line); margin:20px 0; }
@@ -3683,6 +3684,14 @@ struct SubmoduleRow {
     .step-button:hover { background: var(--surface-2); }
     .step-button.active { background: rgba(37,99,235,0.09); box-shadow: inset 0 0 0 1px rgba(37,99,235,0.18); color: var(--accent-2); }
     .step-num { width:22px; height:22px; border-radius:999px; display:inline-flex; align-items:center; justify-content:center; background: var(--surface-3); color: var(--text); font-size:12px; font-weight:800; flex:0 0 auto; }
+    .step-nav-info { margin:14px 4px 0; padding:12px; border-radius:10px; background:var(--surface-2); border:1px solid var(--line); }
+    .step-nav-info-label { font-size:10px; font-weight:900; text-transform:uppercase; letter-spacing:.08em; color:var(--muted-2); margin-bottom:6px; }
+    .step-nav-info-desc { font-size:12px; color:var(--muted); line-height:1.55; }
+    .step-nav-summary { margin:8px 4px 0; padding:10px 12px; border-radius:10px; background:rgba(184,93,51,0.05); border:1px solid rgba(184,93,51,0.14); }
+    .step-nav-sum-row { display:flex; justify-content:space-between; align-items:baseline; gap:8px; padding:3px 0; border-bottom:1px solid var(--line); }
+    .step-nav-sum-row:last-child { border-bottom:none; }
+    .step-nav-sum-key { font-size:10px; font-weight:900; text-transform:uppercase; letter-spacing:.07em; color:var(--muted-2); flex-shrink:0; }
+    .step-nav-sum-val { font-size:12px; font-weight:700; color:var(--text); text-align:right; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:120px; }
     .quick-scan-divider { height:1px; background:var(--line); margin: 12px 4px; }
     .quick-scan-section { padding: 4px 4px 6px; }
     .quick-scan-label { font-size:10px; font-weight:900; text-transform:uppercase; letter-spacing:.08em; color:var(--muted-2); margin-bottom:8px; }
@@ -3818,8 +3827,14 @@ struct SubmoduleRow {
     .review-scan-note code { display:inline; padding: 1px 5px; border-radius: 5px; font-size: 11px; }
     .review-card { min-height: 200px; }
     .scope-info-row { display:flex; gap:14px; align-items:flex-start; margin:12px 0; }
-    .scope-info-row .explorer-language-strip { flex:0 0 auto; }
-    .scope-info-row .preview-note { flex:1; min-width:0; margin:0; font-size:13px; line-height:1.55; }
+    .scope-info-row .explorer-language-strip { flex:1; min-width:0; overflow:hidden; }
+    .scope-info-row .preview-note { flex:0 0 28%; max-width:260px; margin:0; font-size:12px; line-height:1.5; padding:10px 12px; }
+    .language-pill-row.iconified { flex-wrap:nowrap; overflow:hidden; }
+    .lang-overflow-chip { position:relative; cursor:default; }
+    .lang-overflow-tip { display:none; position:absolute; top:calc(100% + 6px); left:0; z-index:300; background:var(--surface); border:1px solid var(--line-strong); border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,0.16); padding:10px 14px; min-width:160px; white-space:pre-line; font-size:12px; font-weight:600; color:var(--text); line-height:1.7; pointer-events:none; }
+    .lang-overflow-chip:hover .lang-overflow-tip { display:block; }
+    .git-inline-row { align-items:start; }
+    .mixed-line-card { display:flex; flex-direction:column; }
     .preset-inline-row .toggle-card { justify-content: center; }
         .explorer-wrap { display:grid; gap: 16px; margin-top: 18px; }
     .explorer-toolbar { display:flex; justify-content:space-between; gap: 12px; align-items:flex-start; }
@@ -4071,6 +4086,18 @@ struct SubmoduleRow {
         <button type="button" class="step-button" data-step-target="2"><span class="step-num">2</span><span>Counting rules</span></button>
         <button type="button" class="step-button" data-step-target="3"><span class="step-num">3</span><span>Outputs and reports</span></button>
         <button type="button" class="step-button" data-step-target="4"><span class="step-num">4</span><span>Review and run</span></button>
+
+        <div class="step-nav-info" id="step-nav-info">
+          <div class="step-nav-info-label" id="step-nav-info-label">Step 1 of 4</div>
+          <div class="step-nav-info-desc" id="step-nav-info-desc">Choose a project folder, apply scope filters, and preview which files will be counted.</div>
+        </div>
+
+        <div class="step-nav-summary" id="step-nav-summary" style="display:none;">
+          <div class="step-nav-sum-row"><span class="step-nav-sum-key">Path</span><span class="step-nav-sum-val" id="snav-path">—</span></div>
+          <div class="step-nav-sum-row"><span class="step-nav-sum-key">Output</span><span class="step-nav-sum-val" id="snav-output">—</span></div>
+          <div class="step-nav-sum-row"><span class="step-nav-sum-key">Title</span><span class="step-nav-sum-val" id="snav-title">—</span></div>
+        </div>
+
         <div class="quick-scan-divider"></div>
         <div class="quick-scan-section">
           <div class="quick-scan-label">No customization needed?</div>
@@ -4082,34 +4109,6 @@ struct SubmoduleRow {
         </div>
         </section>
 
-        <section class="workspace-card side-info-card" style="padding:18px 18px 20px;">
-          <div class="section-kicker" style="margin-bottom:12px;">Run details</div>
-
-          <div style="display:grid;gap:12px;">
-            <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px 13px;">
-              <div style="font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.09em;color:var(--muted-2);margin-bottom:5px;">Project path</div>
-              <div class="preview-code" id="side-path-preview" style="font-size:12px;word-break:break-all;">samples/basic</div>
-            </div>
-
-            <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px 13px;">
-              <div style="font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.09em;color:var(--muted-2);margin-bottom:5px;">Output folder</div>
-              <div class="preview-code" id="side-output-preview" style="font-size:12px;word-break:break-all;">out/web</div>
-            </div>
-
-            <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px 13px;">
-              <div style="font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.09em;color:var(--muted-2);margin-bottom:5px;">Report title</div>
-              <div id="side-title-preview" style="font-size:12px;font-weight:700;color:var(--text);">project</div>
-            </div>
-
-            <div style="border-top:1px solid var(--line);padding-top:12px;display:grid;gap:7px;">
-              <div style="font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.09em;color:var(--muted-2);margin-bottom:2px;">Step guide</div>
-              <div style="font-size:12px;color:var(--muted);line-height:1.5;"><span style="font-weight:800;color:var(--text);">1 · Project</span> — choose folder, set scope filters, preview file list.</div>
-              <div style="font-size:12px;color:var(--muted);line-height:1.5;"><span style="font-weight:800;color:var(--text);">2 · Rules</span> — configure mixed-line policy, docstrings, lockfiles.</div>
-              <div style="font-size:12px;color:var(--muted);line-height:1.5;"><span style="font-weight:800;color:var(--text);">3 · Outputs</span> — set report title, artifacts (HTML, PDF, JSON).</div>
-              <div style="font-size:12px;color:var(--muted);line-height:1.5;"><span style="font-weight:800;color:var(--text);">4 · Review</span> — confirm all settings, then run the analysis.</div>
-            </div>
-          </div>
-        </section>
       </aside>
 
       <section class="card">
@@ -4145,6 +4144,7 @@ struct SubmoduleRow {
                       <button type="button" class="mini-button oxide" id="browse-path">Browse</button>
                       <button type="button" class="mini-button" id="use-sample-path">Use sample</button>
                     </div>
+                    <div class="path-scope-sep"></div>
                     <div class="scope-legend-row">
                       <span class="scope-legend-label">Scope legend:</span>
                       <span class="badge badge-scan" data-tooltip="Files with a supported language analyzer — counted in SLOC totals.">supported</span>
@@ -4193,7 +4193,7 @@ struct SubmoduleRow {
               </div>
 
               <div class="section" style="margin-top:14px;">
-                <div class="preset-inline-row">
+                <div class="preset-inline-row git-inline-row">
                   <div class="toggle-card" style="margin:0;">
                     <div class="field-help-title" style="margin-bottom:10px;">Git integration</div>
                     <h4 style="margin:0 0 12px;font-size:16px;">Submodule breakdown</h4>
@@ -4234,8 +4234,9 @@ struct SubmoduleRow {
                 <p class="card-subtitle counting-intro">These settings decide how mixed code-plus-comment lines and Python docstrings are classified. Pure comment lines, block comments, physical lines, and blank lines are still tracked by supported analyzers even when they do not share a line with executable code. Counting methodology follows IEEE Std 1045-1992 physical SLOC.</p>
                 <div class="subsection-bar">Primary line classification</div>
                 <div class="preset-inline-row">
-                  <div class="field" style="margin:0;">
-                    <label for="mixed_line_policy">Mixed-line policy</label>
+                  <div class="toggle-card mixed-line-card" style="margin:0;">
+                    <div class="field-help-title" style="margin-bottom:10px;">Primary line classification</div>
+                    <h4 style="margin:0 0 12px;font-size:16px;">Mixed-line policy</h4>
                     <select id="mixed_line_policy" name="mixed_line_policy">
                       <option value="code_only">Code only</option>
                       <option value="code_and_comment">Code and comment</option>
@@ -4369,8 +4370,9 @@ struct SubmoduleRow {
                 <h2>Output and report identity</h2>
                 <p class="card-subtitle step3-subtitle">Choose where generated files should be saved, what the exported report title should be, and which artifact bundle fits your workflow.</p>
                 <div class="preset-inline-row">
-                  <div class="field">
-                    <label for="scan_preset">Scan preset</label>
+                  <div class="toggle-card" style="margin:0;">
+                    <div class="field-help-title" style="margin-bottom:10px;">Scan configuration</div>
+                    <h4 style="margin:0 0 12px;font-size:16px;">Scan preset</h4>
                     <select id="scan_preset">
                       <option value="balanced">Balanced local scan</option>
                       <option value="code_focused">Code focused</option>
@@ -4389,8 +4391,9 @@ struct SubmoduleRow {
                 </div>
                 <hr class="step3-separator" />
                 <div class="preset-inline-row">
-                  <div class="field">
-                    <label for="artifact_preset">Artifact preset</label>
+                  <div class="toggle-card" style="margin:0;">
+                    <div class="field-help-title" style="margin-bottom:10px;">Output configuration</div>
+                    <h4 style="margin:0 0 12px;font-size:16px;">Artifact preset</h4>
                     <select id="artifact_preset">
                       <option value="review">Review bundle</option>
                       <option value="full">Full bundle</option>
@@ -4701,7 +4704,34 @@ struct SubmoduleRow {
         updateScrollProgress();
       }
 
-      function setStep(step) {
+      var stepDescriptions = [
+        "Choose a project folder, apply scope filters, and preview which files will be counted.",
+        "Configure how mixed code-plus-comment lines and docstrings are classified.",
+        "Pick your output formats, scan preset, and where reports are saved.",
+        "Review all settings and launch the analysis."
+      ];
+
+      function updateStepNav(step) {
+        var infoLabel = document.getElementById("step-nav-info-label");
+        var infoDesc  = document.getElementById("step-nav-info-desc");
+        if (infoLabel) infoLabel.textContent = "Step " + step + " of 4";
+        if (infoDesc)  infoDesc.textContent  = stepDescriptions[step - 1] || "";
+
+        var summary = document.getElementById("step-nav-summary");
+        if (summary) summary.style.display = step > 1 ? "" : "none";
+
+        var snavPath   = document.getElementById("snav-path");
+        var snavOutput = document.getElementById("snav-output");
+        var snavTitle  = document.getElementById("snav-title");
+        var pv = pathInput ? pathInput.value.trim() : "";
+        var ov = outputDirInput ? outputDirInput.value.trim() : "";
+        var tv = reportTitleInput ? reportTitleInput.value.trim() : "";
+        if (snavPath)   snavPath.textContent   = pv  || "—";
+        if (snavOutput) snavOutput.textContent  = ov  || "auto";
+        if (snavTitle)  snavTitle.textContent   = tv  || "—";
+      }
+
+      function setStep(step, pushHistory) {
         currentStep = step;
         stepPanels.forEach(function (panel) {
           panel.classList.toggle("active", Number(panel.getAttribute("data-step")) === step);
@@ -4710,6 +4740,13 @@ struct SubmoduleRow {
           button.classList.toggle("active", Number(button.getAttribute("data-step-target")) === step);
         });
         updateWizardProgress();
+        updateStepNav(step);
+
+        if (pushHistory !== false) {
+          try {
+            history.pushState({ wizardStep: step }, "", "#step" + step);
+          } catch (e) {}
+        }
 
         var wizardTop =
           document.querySelector(".page-shell") ||
@@ -4726,6 +4763,15 @@ struct SubmoduleRow {
 
         window.scrollTo({ top: top, behavior: "smooth" });
       }
+
+      window.addEventListener("popstate", function (e) {
+        if (e.state && e.state.wizardStep) {
+          setStep(e.state.wizardStep, false);
+        } else {
+          var hashMatch = location.hash.match(/^#step([1-4])$/);
+          if (hashMatch) setStep(Number(hashMatch[1]), false);
+        }
+      });
 
       function inferTitleFromPath(value) {
         if (!value) return "project";
@@ -5192,6 +5238,7 @@ struct SubmoduleRow {
             attachPreviewInteractions();
             syncPythonVisibility();
             updateReview();
+            setTimeout(collapseLanguagePills, 50);
           })
           .catch(function (err) {
             previewPanel.innerHTML = '<div class="preview-error">Preview request failed: ' + String(err) + '</div>';
@@ -5289,6 +5336,47 @@ struct SubmoduleRow {
       if (browseOutputDir) browseOutputDir.addEventListener("click", function () { pickDirectory(outputDirInput, "output"); });
 
       if (refreshPreviewInline) refreshPreviewInline.addEventListener("click", loadPreview);
+
+      // ── Language pill overflow: collapse to "+N more" chip ─────────────
+      function collapseLanguagePills() {
+        var rows = Array.prototype.slice.call(document.querySelectorAll('.language-pill-row.iconified'));
+        rows.forEach(function(row) {
+          // Remove any previous overflow chip
+          var prev = row.querySelector('.lang-overflow-chip');
+          if (prev) prev.remove();
+          var pills = Array.prototype.slice.call(row.querySelectorAll('.detected-language-chip'));
+          pills.forEach(function(p) { p.style.display = ''; });
+          if (!pills.length) return;
+
+          // Measure after restoring all pills
+          var containerRight = row.getBoundingClientRect().right;
+          var hidden = [];
+          for (var i = pills.length - 1; i >= 1; i--) {
+            var rect = pills[i].getBoundingClientRect();
+            if (rect.right > containerRight + 2) {
+              hidden.unshift(pills[i]);
+              pills[i].style.display = 'none';
+            } else {
+              break;
+            }
+          }
+
+          if (hidden.length) {
+            var chip = document.createElement('button');
+            chip.type = 'button';
+            chip.className = 'language-pill lang-overflow-chip';
+            var names = hidden.map(function(p) { return p.querySelector('span') ? p.querySelector('span').textContent.trim() : p.textContent.trim(); });
+            chip.innerHTML = '+' + hidden.length + '<div class="lang-overflow-tip">' + names.join('\n') + '</div>';
+            row.appendChild(chip);
+          }
+        });
+      }
+
+      // Run after preview loads (preview panel populates language pills)
+      var _origLoadPreviewCb = window.__previewLoaded;
+      document.addEventListener('previewLoaded', collapseLanguagePills);
+      window.addEventListener('resize', function() { clearTimeout(window._collapseTimer); window._collapseTimer = setTimeout(collapseLanguagePills, 120); });
+      setTimeout(collapseLanguagePills, 400);
 
       // ── Project history & output dir auto-set ──────────────────────────
       var wsOutputRoot   = document.getElementById("ws-output-root");
@@ -5446,6 +5534,13 @@ struct SubmoduleRow {
       window.addEventListener("scroll", updateScrollProgress, { passive: true });
       onPathChange();         // seed output dir, history badge, and preview from initial path
       loadPreview();
+      updateStepNav(1);
+
+      // Restore step from URL hash on initial load (e.g., back-forward cache)
+      (function() {
+        var hashMatch = location.hash.match(/^#step([1-4])$/);
+        if (hashMatch) { var s = Number(hashMatch[1]); if (s > 1) setStep(s, false); }
+      })();
 
       (function randomizeWatermarks() {
         var wms = Array.prototype.slice.call(document.querySelectorAll(".background-watermarks img"));

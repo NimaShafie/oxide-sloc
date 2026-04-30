@@ -5,7 +5,7 @@ Thank you for your interest in improving oxide-sloc. This guide covers everythin
 ## Quick start
 
 ```bash
-git clone https://github.com/NimaShafie/oxide-sloc.git
+git clone https://github.com/oxide-sloc/oxide-sloc.git
 cd oxide-sloc
 
 # Decompress vendored dependencies (required for offline CI builds)

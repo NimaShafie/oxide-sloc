@@ -11,4 +11,4 @@ This file is informational only and is not itself a commercial license grant.
 
 For commercial licensing inquiries, contact the repository owner:
 - GitHub: https://github.com/NimaShafie
-- Repository: https://github.com/NimaShafie/oxide-sloc
+- Repository: https://github.com/oxide-sloc/oxide-sloc

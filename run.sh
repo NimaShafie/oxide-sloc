@@ -69,7 +69,7 @@ elif [[ -f "$BUNDLE" ]]; then
 fi
 
 printf '\noxide-sloc: no binary found.\n\n' >&2
-printf '  Option 1 - Download: https://github.com/NimaShafie/oxide-sloc/releases\n' >&2
+printf '  Option 1 - Download: https://github.com/oxide-sloc/oxide-sloc/releases\n' >&2
 printf '             Place binary next to this script, then: bash run.sh\n' >&2
 printf '  Option 2 - Build:    cargo build --release -p oxide-sloc\n' >&2
 printf '  Option 3 - Docker:   docker compose up\n\n' >&2

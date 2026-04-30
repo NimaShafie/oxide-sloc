@@ -19,7 +19,8 @@ keywords = ["sloc", "code-analysis", "cli", "static-analysis", "metrics"]
 categories = ["command-line-utilities", "development-tools"]
 repository = "https://github.com/oxide-sloc/oxide-sloc"
 homepage = "https://github.com/oxide-sloc/oxide-sloc"
-documentation = "https://github.com/oxide-sloc/oxide-sloc"
+documentation = "https://docs.rs/oxide-sloc"
+readme = "README.md"
 rust-version = "1.95"
 
 [workspace.dependencies]

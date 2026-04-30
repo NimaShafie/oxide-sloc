@@ -1,7 +1,7 @@
 # Stage 1: build the release binary
 # Pin builder to digest so the toolchain cannot change silently under CI.
 # To refresh: docker pull rust:slim && docker inspect --format '{{index .RepoDigests 0}}' rust:slim
-FROM rust:slim@sha256:81099830a1e1d244607b9a7a30f3ff6ecadc52134a933b4635faba24f52840c9 AS builder
+FROM rust:slim@sha256:715efd1ccdc4a63bd6a6e2f54387fff73f904b70e610d41b4d9d74ff38e13ad3 AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
@@ -9,10 +9,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY . .
-# Verify vendor archive integrity before extracting (FIND-017).
-RUN if [ -f vendor.tar.xz ] && [ ! -d vendor ]; then \
-      sha256sum -c vendor.tar.xz.sha256 && tar -xJf vendor.tar.xz; \
-    fi
+# vendor/ is excluded from the Docker context via .dockerignore; the archive is
+# the authoritative source. Verify integrity (FIND-017) then extract.
+RUN sha256sum -c vendor.tar.xz.sha256 && tar -xJf vendor.tar.xz
 # --offline prevents any crates.io access; the vendor/ directory (via
 # .cargo/config.toml) satisfies all dependencies without the network.
 RUN cargo build --release --offline -p oxide-sloc
@@ -25,7 +24,9 @@ FROM debian:bookworm-slim@sha256:f9c6a2fd2ddbc23e336b6257a5245e31f996953ef06cd13
 # Install Chromium for PDF export (headless).
 # For a fully air-gapped Docker host, build this layer from a pre-populated
 # apt mirror or use a pre-built image that already contains chromium.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
     chromium \
     ca-certificates \
     wget \

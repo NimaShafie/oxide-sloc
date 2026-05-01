@@ -127,7 +127,7 @@ pub struct AnalysisConfig {
     pub count_compiler_directives: bool,
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
@@ -203,6 +203,10 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read, the TOML cannot be parsed, or the
+    /// resulting config fails validation.
     pub fn load_from_file(path: &Path) -> Result<Self> {
         let raw = fs::read_to_string(path)
             .with_context(|| format!("failed to read config file {}", path.display()))?;
@@ -212,6 +216,9 @@ impl AppConfig {
         Ok(config)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if any configuration field contains an invalid value.
     pub fn validate(&self) -> Result<()> {
         if self.discovery.max_file_size_bytes == 0 {
             anyhow::bail!("discovery.max_file_size_bytes must be greater than zero");

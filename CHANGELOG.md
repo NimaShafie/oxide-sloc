@@ -6,6 +6,23 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.2.7] — 2026-05-01
+
+### Changed
+
+- Resolved 485 SonarQube findings (16 HIGH, 469 MEDIUM) across all 6 crates with zero remaining actionable issues:
+  - Replaced 139 unnecessary struct-name repetitions with `Self` in `impl` blocks
+  - Converted 41 `push_str(&format!(...))` calls to `write!()` to avoid intermediate allocations
+  - Fixed 22 case-sensitive file-extension comparisons to use `eq_ignore_ascii_case`
+  - Added `# Errors` doc sections to all 15 public `Result`-returning functions missing them
+  - Merged identical `match` arms, removed redundant closures, inlined format args, and applied `let…else` rewrites throughout
+  - Tightened mutex-guard scopes in four `sloc-web` handlers (`significant_drop_tightening`)
+  - Converted `resolve_output_root` from `Result<PathBuf>` to `PathBuf` (unnecessary wrap removed)
+  - Added `#[allow]` with explanatory context for deliberate narrowing casts in ZIP generation, calendar math, and badge-pixel arithmetic
+  - Added intent comment to Python test corpus fixture (`mixed.py`) for empty method
+
+---
+
 ## [1.2.0] — 2026-04-29
 
 ### Added

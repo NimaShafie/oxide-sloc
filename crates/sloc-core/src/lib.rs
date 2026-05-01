@@ -215,6 +215,10 @@ fn get_hostname() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
+/// # Errors
+///
+/// Returns an error if the config is invalid, root paths cannot be walked, or any file
+/// analysis step fails in a way that cannot be recovered from.
 pub fn analyze(config: &AppConfig, runtime_mode: &str) -> Result<AnalysisRun> {
     config.validate()?;
 
@@ -232,16 +236,16 @@ pub fn analyze(config: &AppConfig, runtime_mode: &str) -> Result<AnalysisRun> {
     let mut seen_paths = HashSet::new();
 
     for root in &config.discovery.root_paths {
-        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let root = root.canonicalize().unwrap_or_else(|_| root.clone());
 
         if root.is_file() {
             if let Some(record) = analyze_candidate_file(
                 &root,
-                root.parent().unwrap_or(Path::new(".")),
+                root.parent().unwrap_or_else(|| Path::new(".")),
                 config,
-                &include_globs,
-                &exclude_globs,
-                &enabled_languages,
+                include_globs.as_ref(),
+                exclude_globs.as_ref(),
+                enabled_languages.as_ref(),
             )? {
                 push_record(record, &mut analyzed, &mut skipped, &mut warnings);
             }
@@ -279,9 +283,9 @@ pub fn analyze(config: &AppConfig, runtime_mode: &str) -> Result<AnalysisRun> {
                 &path,
                 &root,
                 config,
-                &include_globs,
-                &exclude_globs,
-                &enabled_languages,
+                include_globs.as_ref(),
+                exclude_globs.as_ref(),
+                enabled_languages.as_ref(),
             )? {
                 push_record(record, &mut analyzed, &mut skipped, &mut warnings);
             }
@@ -297,7 +301,9 @@ pub fn analyze(config: &AppConfig, runtime_mode: &str) -> Result<AnalysisRun> {
             .canonicalize()
             .unwrap_or_else(|_| config.discovery.root_paths[0].clone());
         let submodules = detect_submodules(&root);
-        if !submodules.is_empty() {
+        if submodules.is_empty() {
+            Vec::new()
+        } else {
             for file in &mut analyzed {
                 for (name, sub_path) in &submodules {
                     let prefix = sub_path.to_string_lossy().replace('\\', "/");
@@ -309,8 +315,6 @@ pub fn analyze(config: &AppConfig, runtime_mode: &str) -> Result<AnalysisRun> {
                 }
             }
             build_submodule_summaries(&analyzed, &submodules)
-        } else {
-            Vec::new()
         }
     } else {
         Vec::new()
@@ -324,7 +328,7 @@ pub fn analyze(config: &AppConfig, runtime_mode: &str) -> Result<AnalysisRun> {
         .discovery
         .root_paths
         .first()
-        .map(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()));
+        .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()));
     let git = first_root
         .as_deref()
         .map(detect_git_for_run)
@@ -394,9 +398,9 @@ fn analyze_candidate_file(
     path: &Path,
     root: &Path,
     config: &AppConfig,
-    include_globs: &Option<GlobSet>,
-    exclude_globs: &Option<GlobSet>,
-    enabled_languages: &Option<BTreeSet<Language>>,
+    include_globs: Option<&GlobSet>,
+    exclude_globs: Option<&GlobSet>,
+    enabled_languages: Option<&BTreeSet<Language>>,
 ) -> Result<Option<FileRecord>> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -622,9 +626,8 @@ fn analyze_candidate_file(
         raw_line_categories: analysis.raw,
         effective_counts,
         status: match analysis.parse_mode {
-            ParseMode::Lexical => FileStatus::AnalyzedExact,
+            ParseMode::Lexical | ParseMode::TreeSitter => FileStatus::AnalyzedExact,
             ParseMode::LexicalBestEffort => FileStatus::AnalyzedBestEffort,
-            ParseMode::TreeSitter => FileStatus::AnalyzedExact,
         },
         warnings,
         generated,
@@ -635,7 +638,7 @@ fn analyze_candidate_file(
     }))
 }
 
-fn compute_effective_counts(
+const fn compute_effective_counts(
     raw: &RawLineCounts,
     mixed_line_policy: MixedLinePolicy,
     python_docstrings_as_comments: bool,
@@ -770,14 +773,14 @@ fn path_to_string(path: &Path) -> String {
 }
 
 /// Parse `.gitmodules` in `root` and return `(name, relative_path)` for each submodule found.
+#[must_use]
 pub fn detect_submodules(root: &Path) -> Vec<(String, PathBuf)> {
     let gitmodules = root.join(".gitmodules");
     if !gitmodules.is_file() {
         return Vec::new();
     }
-    let content = match fs::read_to_string(&gitmodules) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
+    let Ok(content) = fs::read_to_string(&gitmodules) else {
+        return Vec::new();
     };
 
     let mut result = Vec::new();
@@ -877,8 +880,7 @@ fn build_language_summaries_from_slice(files: &[&FileRecord]) -> Vec<LanguageSum
 fn file_name_eq(path: &Path, expected: &str) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .map(|name| name == expected)
-        .unwrap_or(false)
+        .is_some_and(|name| name == expected)
 }
 
 fn is_excluded_dir_path(path: &Path, excluded_dirs: &[String]) -> bool {
@@ -886,8 +888,7 @@ fn is_excluded_dir_path(path: &Path, excluded_dirs: &[String]) -> bool {
         component
             .as_os_str()
             .to_str()
-            .map(|part| excluded_dirs.iter().any(|excluded| excluded == part))
-            .unwrap_or(false)
+            .is_some_and(|part| excluded_dirs.iter().any(|excluded| excluded == part))
     })
 }
 
@@ -896,15 +897,14 @@ fn is_vendor_path(path: &Path) -> bool {
         component
             .as_os_str()
             .to_str()
-            .map(|part| matches!(part, "vendor" | "node_modules" | "packages"))
-            .unwrap_or(false)
+            .is_some_and(|part| matches!(part, "vendor" | "node_modules" | "packages"))
     })
 }
 
 fn is_known_lockfile(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .map(|name| {
+        .is_some_and(|name| {
             matches!(
                 name,
                 "Cargo.lock"
@@ -916,7 +916,6 @@ fn is_known_lockfile(path: &Path) -> bool {
                     | "composer.lock"
             )
         })
-        .unwrap_or(false)
 }
 
 fn looks_generated(path: &Path, bytes: &[u8]) -> bool {
@@ -942,7 +941,7 @@ fn looks_minified(path: &Path, bytes: &[u8]) -> bool {
     }
 
     let sample = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]);
-    let longest_line = sample.lines().map(|line| line.len()).max().unwrap_or(0);
+    let longest_line = sample.lines().map(str::len).max().unwrap_or(0);
     let whitespace = sample.chars().filter(|c| c.is_whitespace()).count();
     longest_line > 2000 && whitespace * 100 < sample.len().max(1)
 }
@@ -983,16 +982,17 @@ fn decode_bytes(bytes: &[u8]) -> std::result::Result<(String, String, Vec<String
         return Ok((cow.into_owned(), "utf-16be".into(), warnings));
     }
 
-    match String::from_utf8(bytes.to_vec()) {
-        Ok(text) => Ok((text, "utf-8".into(), vec![])),
-        Err(_) => {
-            let (cow, _, had_errors) = WINDOWS_1252.decode(bytes);
-            let mut warnings = vec!["decoded using windows-1252 fallback".into()];
-            if had_errors {
-                warnings.push("fallback decode contained replacement characters".into());
-            }
-            Ok((cow.into_owned(), "windows-1252".into(), warnings))
+    // Multiple statements in the else branch make map_or_else awkward here.
+    #[allow(clippy::option_if_let_else)]
+    if let Ok(text) = String::from_utf8(bytes.to_vec()) {
+        Ok((text, "utf-8".into(), vec![]))
+    } else {
+        let (cow, _, had_errors) = WINDOWS_1252.decode(bytes);
+        let mut warnings = vec!["decoded using windows-1252 fallback".into()];
+        if had_errors {
+            warnings.push("fallback decode contained replacement characters".into());
         }
+        Ok((cow.into_owned(), "windows-1252".into(), warnings))
     }
 }
 
@@ -1029,12 +1029,18 @@ fn parse_enabled_languages(enabled: &[String]) -> Result<Option<BTreeSet<Languag
     Ok(Some(set))
 }
 
+/// # Errors
+///
+/// Returns an error if serialization fails or the output file cannot be written.
 pub fn write_json(run: &AnalysisRun, output_path: &Path) -> Result<()> {
     let json = serde_json::to_string_pretty(run).context("failed to serialize analysis run")?;
     fs::write(output_path, json)
         .with_context(|| format!("failed to write JSON output to {}", output_path.display()))
 }
 
+/// # Errors
+///
+/// Returns an error if the file cannot be read or the JSON cannot be parsed.
 pub fn read_json(path: &Path) -> Result<AnalysisRun> {
     let contents = fs::read_to_string(path)
         .with_context(|| format!("failed to read result file {}", path.display()))?;

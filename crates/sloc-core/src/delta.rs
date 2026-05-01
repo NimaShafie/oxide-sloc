@@ -63,6 +63,7 @@ pub struct ScanComparison {
     pub files_unchanged: usize,
 }
 
+#[must_use]
 pub fn compute_delta(baseline: &AnalysisRun, current: &AnalysisRun) -> ScanComparison {
     let baseline_map: HashMap<&str, &EffectiveCounts> = baseline
         .per_file_records
@@ -151,7 +152,7 @@ pub fn compute_delta(baseline: &AnalysisRun, current: &AnalysisRun) -> ScanCompa
     }
 
     file_deltas.sort_by(|a, b| {
-        fn order(s: FileChangeStatus) -> u8 {
+        const fn order(s: FileChangeStatus) -> u8 {
             match s {
                 FileChangeStatus::Modified => 0,
                 FileChangeStatus::Added => 1,
@@ -186,8 +187,8 @@ pub fn compute_delta(baseline: &AnalysisRun, current: &AnalysisRun) -> ScanCompa
 
     ScanComparison {
         summary: SummaryDelta {
-            baseline_run_id: baseline.tool.run_id.to_string(),
-            current_run_id: current.tool.run_id.to_string(),
+            baseline_run_id: baseline.tool.run_id.clone(),
+            current_run_id: current.tool.run_id.clone(),
             baseline_timestamp: baseline.tool.timestamp_utc,
             current_timestamp: current.tool.timestamp_utc,
             baseline_files: b.files_analyzed,

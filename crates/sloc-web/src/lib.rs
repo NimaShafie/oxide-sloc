@@ -3,6 +3,7 @@
 
 use std::{
     collections::{HashMap, VecDeque},
+    fmt::Write,
     fs,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
@@ -57,19 +58,26 @@ impl IpRateLimiter {
         }
     }
 
+    // The MutexGuard `state` must live as long as `bucket` borrows from it,
+    // so it cannot be dropped any earlier than the end of the inner block.
+    #[allow(clippy::significant_drop_tightening)]
     fn is_allowed(&self, ip: IpAddr) -> bool {
         let now = Instant::now();
         let cutoff = now.checked_sub(self.window).unwrap_or(now);
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let bucket = state.entry(ip).or_default();
-        while bucket.front().map(|t| *t <= cutoff).unwrap_or(false) {
+        while bucket.front().is_some_and(|t| *t <= cutoff) {
             bucket.pop_front();
         }
         if bucket.len() >= self.max_requests {
-            return false;
+            false
+        } else {
+            bucket.push_back(now);
+            true
         }
-        bucket.push_back(now);
-        true
     }
 }
 
@@ -97,14 +105,17 @@ struct RunArtifacts {
     report_title: String,
 }
 
+/// # Errors
+///
+/// Returns an error if the server fails to bind to the configured address or
+/// if the TLS configuration cannot be loaded.
 pub async fn serve(config: AppConfig) -> Result<()> {
     let bind_address = config.web.bind_address.clone();
     let server_mode = config.web.server_mode;
-    let output_root = resolve_output_root(None).unwrap_or_else(|_| PathBuf::from("out/web"));
+    let output_root = resolve_output_root(None);
     // SLOC_REGISTRY_PATH overrides the registry location — useful for shared drives/mounts.
     let registry_path = std::env::var("SLOC_REGISTRY_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| output_root.join("registry.json"));
+        .map_or_else(|_| output_root.join("registry.json"), PathBuf::from);
     let mut registry = ScanRegistry::load(&registry_path);
     registry.prune_stale();
     let _ = registry.save(&registry_path);
@@ -129,7 +140,7 @@ pub async fn serve(config: AppConfig) -> Result<()> {
     }
 
     // FIND-010: 60 req/min per IP across all routes.
-    let rate_limiter = Arc::new(IpRateLimiter::new(Duration::from_secs(60), 60));
+    let rate_limiter = Arc::new(IpRateLimiter::new(Duration::from_mins(1), 60));
 
     let state = AppState {
         base_config: config,
@@ -195,12 +206,9 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         });
         let mut found = None;
         for candidate in candidates {
-            match tokio::net::TcpListener::bind(candidate).await {
-                Ok(l) => {
-                    found = Some((l, candidate));
-                    break;
-                }
-                Err(_) => continue,
+            if let Ok(l) = tokio::net::TcpListener::bind(candidate).await {
+                found = Some((l, candidate));
+                break;
             }
         }
         found.ok_or_else(|| {
@@ -285,7 +293,7 @@ pub async fn serve(config: AppConfig) -> Result<()> {
     .context("web server terminated unexpectedly")
 }
 
-/// Load a rustls ServerConfig from PEM certificate and key files.
+/// Load a rustls `ServerConfig` from PEM certificate and key files.
 fn build_tls_config(cert_path: &str, key_path: &str) -> Result<rustls::ServerConfig> {
     use rustls_pemfile::{certs, private_key};
     use std::io::BufReader;
@@ -381,7 +389,7 @@ async fn require_api_key(
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
             .or_else(|| req.headers().get("X-API-Key").and_then(|v| v.to_str().ok()));
-        if provided.map(|k| ct_eq(k, expected)).unwrap_or(false) {
+        if provided.is_some_and(|k| ct_eq(k, expected)) {
             return next.run(req).await;
         }
         return (
@@ -513,11 +521,8 @@ async fn index(
             exclude_globs: query.exclude_globs.unwrap_or_default(),
             submodule_breakdown: query.submodule_breakdown.as_deref() == Some("enabled"),
             mixed_line_policy: policy,
-            python_docstrings_as_comments: query
-                .python_docstrings_as_comments
-                .as_deref()
-                .map(|v| v != "off")
-                .unwrap_or(true),
+            python_docstrings_as_comments: query.python_docstrings_as_comments.as_deref()
+                != Some("off"),
             generated_file_detection: query.generated_file_detection.as_deref() != Some("disabled"),
             minified_file_detection: query.minified_file_detection.as_deref() != Some("disabled"),
             vendor_directory_detection: query.vendor_directory_detection.as_deref()
@@ -526,11 +531,7 @@ async fn index(
             binary_file_behavior: behavior,
             output_dir: query.output_dir.unwrap_or_default(),
             report_title: query.report_title.unwrap_or_default(),
-            generate_html: query
-                .generate_html
-                .as_deref()
-                .map(|v| v != "off")
-                .unwrap_or(true),
+            generate_html: query.generate_html.as_deref() != Some("off"),
             generate_pdf: query.generate_pdf.as_deref() == Some("on"),
         };
         serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string())
@@ -556,31 +557,32 @@ async fn scan_setup_handler(
     axum::extract::Extension(CspNonce(csp_nonce)): axum::extract::Extension<CspNonce>,
 ) -> impl IntoResponse {
     let recent_scans_json = {
-        let reg = state.registry.lock().await;
-        let arr: Vec<serde_json::Value> = reg
-            .entries
-            .iter()
-            .rev()
-            .take(6)
-            .map(|e| {
-                let run_dir = e
-                    .html_path
-                    .as_ref()
-                    .or(e.json_path.as_ref())
-                    .and_then(|p| p.parent().map(PathBuf::from));
-                let config_val: Option<serde_json::Value> = run_dir
-                    .map(|d| d.join("scan-config.json"))
-                    .filter(|p| p.exists())
-                    .and_then(|p| fs::read_to_string(&p).ok())
-                    .and_then(|s| serde_json::from_str(&s).ok());
-                serde_json::json!({
-                    "project_label": e.project_label,
-                    "timestamp": fmt_pst(e.timestamp_utc),
-                    "path": e.input_roots.first().map(|s| sanitize_path_str(s)).unwrap_or_default(),
-                    "config": config_val,
+        let arr: Vec<serde_json::Value> = {
+            let reg = state.registry.lock().await;
+            reg.entries
+                .iter()
+                .rev()
+                .take(6)
+                .map(|e| {
+                    let run_dir = e
+                        .html_path
+                        .as_ref()
+                        .or(e.json_path.as_ref())
+                        .and_then(|p| p.parent().map(PathBuf::from));
+                    let config_val: Option<serde_json::Value> = run_dir
+                        .map(|d| d.join("scan-config.json"))
+                        .filter(|p| p.exists())
+                        .and_then(|p| fs::read_to_string(&p).ok())
+                        .and_then(|s| serde_json::from_str(&s).ok());
+                    serde_json::json!({
+                        "project_label": e.project_label,
+                        "timestamp": fmt_pst(e.timestamp_utc),
+                        "path": e.input_roots.first().map(|s| sanitize_path_str(s)).unwrap_or_default(),
+                        "config": config_val,
+                    })
                 })
-            })
-            .collect();
+                .collect()
+        };
         serde_json::to_string(&arr).unwrap_or_else(|_| "[]".to_string())
     };
 
@@ -768,23 +770,22 @@ async fn locate_report_handler(
         .unwrap_or_else(|_| "<pre>Invalid file type.</pre>".to_string());
         return Html(html).into_response();
     }
-    let html_path = match fs::canonicalize(PathBuf::from(&form.file_path)) {
-        Ok(p) => strip_unc_prefix(p),
-        Err(_) => {
-            let html = ErrorTemplate {
-                message: "Report file not found or path is invalid.".to_string(),
-                last_report_url: Some("/view-reports".to_string()),
-                last_report_label: Some("View Reports".to_string()),
-                csp_nonce: csp_nonce.clone(),
-            }
-            .render()
-            .unwrap_or_else(|_| "<pre>Invalid path.</pre>".to_string());
-            return Html(html).into_response();
+    let html_path = if let Ok(p) = fs::canonicalize(PathBuf::from(&form.file_path)) {
+        strip_unc_prefix(p)
+    } else {
+        let html = ErrorTemplate {
+            message: "Report file not found or path is invalid.".to_string(),
+            last_report_url: Some("/view-reports".to_string()),
+            last_report_label: Some("View Reports".to_string()),
+            csp_nonce: csp_nonce.clone(),
         }
+        .render()
+        .unwrap_or_else(|_| "<pre>Invalid path.</pre>".to_string());
+        return Html(html).into_response();
     };
     // In server mode, only accept reports within the configured output directory.
     if state.server_mode {
-        let output_root = resolve_output_root(None).unwrap_or_else(|_| PathBuf::from("out/web"));
+        let output_root = resolve_output_root(None);
         let canonical_root = fs::canonicalize(&output_root).unwrap_or(output_root);
         if !html_path.starts_with(&canonical_root) {
             let html = ErrorTemplate {
@@ -798,19 +799,18 @@ async fn locate_report_handler(
             return Html(html).into_response();
         }
     }
-    let parent = match html_path.parent() {
-        Some(p) => p.to_path_buf(),
-        None => {
-            let html = ErrorTemplate {
-                message: "Report file has no parent directory.".to_string(),
-                last_report_url: Some("/view-reports".to_string()),
-                last_report_label: Some("View Reports".to_string()),
-                csp_nonce: csp_nonce.clone(),
-            }
-            .render()
-            .unwrap_or_else(|_| "<pre>Invalid path.</pre>".to_string());
-            return Html(html).into_response();
+    let parent = if let Some(p) = html_path.parent() {
+        p.to_path_buf()
+    } else {
+        let html = ErrorTemplate {
+            message: "Report file has no parent directory.".to_string(),
+            last_report_url: Some("/view-reports".to_string()),
+            last_report_label: Some("View Reports".to_string()),
+            csp_nonce: csp_nonce.clone(),
         }
+        .render()
+        .unwrap_or_else(|_| "<pre>Invalid path.</pre>".to_string());
+        return Html(html).into_response();
     };
     let json_candidate = parent.join("result.json");
     let mut reg = state.registry.lock().await;
@@ -820,14 +820,12 @@ async fn locate_report_handler(
             .json_path
             .as_ref()
             .and_then(|p| p.parent())
-            .map(|p| p == parent)
-            .unwrap_or(false);
+            .is_some_and(|p| p == parent);
         let html_match = e
             .html_path
             .as_ref()
             .and_then(|p| p.parent())
-            .map(|p| p == parent)
-            .unwrap_or(false);
+            .is_some_and(|p| p == parent);
         json_match || html_match
     });
     if let Some(idx) = entry_idx {
@@ -839,11 +837,10 @@ async fn locate_report_handler(
     if json_candidate.exists() {
         match read_json(&json_candidate) {
             Ok(run) => {
-                let project_label = run
-                    .input_roots
-                    .first()
-                    .map(|r| sanitize_project_label(r))
-                    .unwrap_or_else(|| "Unknown Project".to_string());
+                let project_label = run.input_roots.first().map_or_else(
+                    || "Unknown Project".to_string(),
+                    |r| sanitize_project_label(r),
+                );
                 let entry = RegistryEntry {
                     run_id: run.tool.run_id.clone(),
                     timestamp_utc: run.tool.timestamp_utc,
@@ -895,6 +892,7 @@ async fn locate_report_handler(
             }
         }
     }
+    drop(reg);
     let file_hint = if state.server_mode {
         String::new()
     } else {
@@ -931,9 +929,8 @@ async fn open_path_handler(
         _ => return (StatusCode::BAD_REQUEST, "missing path").into_response(),
     };
 
-    let canonical = match fs::canonicalize(raw) {
-        Ok(p) => p,
-        Err(_) => return (StatusCode::BAD_REQUEST, "path not found").into_response(),
+    let Ok(canonical) = fs::canonicalize(raw) else {
+        return (StatusCode::BAD_REQUEST, "path not found").into_response();
     };
 
     // Must be a directory (or a file whose parent directory we open).
@@ -1004,10 +1001,10 @@ async fn image_handler(AxumPath((folder, file)): AxumPath<(String, String)>) -> 
         .join("images")
         .join(safe_folder)
         .join(safe_name);
-    match fs::read(path) {
-        Ok(bytes) => ([(header::CONTENT_TYPE, content_type)], bytes).into_response(),
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
-    }
+    fs::read(path).map_or_else(
+        |_| StatusCode::NOT_FOUND.into_response(),
+        |bytes| ([(header::CONTENT_TYPE, content_type)], bytes).into_response(),
+    )
 }
 
 async fn preview_handler(
@@ -1028,8 +1025,7 @@ async fn preview_handler(
         let allowed = config.discovery.allowed_scan_roots.iter().any(|root| {
             fs::canonicalize(root)
                 .ok()
-                .map(|r| canonical.starts_with(&r))
-                .unwrap_or(false)
+                .is_some_and(|r| canonical.starts_with(&r))
         });
         if !allowed {
             return Html(
@@ -1055,27 +1051,23 @@ async fn analyze_handler(
     axum::extract::Extension(CspNonce(csp_nonce)): axum::extract::Extension<CspNonce>,
     Form(form): Form<AnalyzeForm>,
 ) -> impl IntoResponse {
-    let _permit = match Arc::clone(&state.analyze_semaphore).try_acquire_owned() {
-        Ok(p) => p,
-        Err(_) => {
-            let template = ErrorTemplate {
-                message:
-                    "Server is busy — too many concurrent analyses. Please try again in a moment."
-                        .to_string(),
-                last_report_url: None,
-                last_report_label: None,
-                csp_nonce: csp_nonce.clone(),
-            };
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Html(
-                    template
-                        .render()
-                        .unwrap_or_else(|_| "<pre>Server busy.</pre>".to_string()),
-                ),
-            )
-                .into_response();
-        }
+    let Ok(_permit) = Arc::clone(&state.analyze_semaphore).try_acquire_owned() else {
+        let template = ErrorTemplate {
+            message: "Server is busy — too many concurrent analyses. Please try again in a moment."
+                .to_string(),
+            last_report_url: None,
+            last_report_label: None,
+            csp_nonce: csp_nonce.clone(),
+        };
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Html(
+                template
+                    .render()
+                    .unwrap_or_else(|_| "<pre>Server busy.</pre>".to_string()),
+            ),
+        )
+            .into_response();
     };
 
     let mut config = state.base_config.clone();
@@ -1105,8 +1097,7 @@ async fn analyze_handler(
         let allowed = config.discovery.allowed_scan_roots.iter().any(|root| {
             fs::canonicalize(root)
                 .ok()
-                .map(|r| canonical.starts_with(&r))
-                .unwrap_or(false)
+                .is_some_and(|r| canonical.starts_with(&r))
         });
         if !allowed {
             let template = ErrorTemplate {
@@ -1218,7 +1209,7 @@ async fn analyze_handler(
         }
     };
 
-    let run_id = run.tool.run_id.to_string();
+    let run_id = run.tool.run_id.clone();
 
     // Capture the most-recent previous scan for this project before registering the current one.
     // Only consider entries whose json file still exists on disk.
@@ -1251,28 +1242,10 @@ async fn analyze_handler(
             .count()
     };
 
-    let output_root = match resolve_output_root(form.output_dir.as_deref()) {
-        Ok(path) => path,
-        Err(err) => {
-            eprintln!("[oxide-sloc][analyze] output directory error: {err:#}");
-            let template = ErrorTemplate {
-                message: "Could not create output directory. Check the output path setting."
-                    .to_string(),
-                last_report_url: None,
-                last_report_label: None,
-                csp_nonce: csp_nonce.clone(),
-            };
-            return Html(
-                template
-                    .render()
-                    .unwrap_or_else(|_| "<pre>Output directory error.</pre>".to_string()),
-            )
-            .into_response();
-        }
-    };
+    let output_root = resolve_output_root(form.output_dir.as_deref());
 
     let project_label = sanitize_project_label(&form.path);
-    let run_dir = output_root.join(format!("{}_{}", project_label, run_id));
+    let run_dir = output_root.join(format!("{project_label}_{run_id}"));
 
     let artifact_result = persist_run_artifacts(
         &run,
@@ -1432,7 +1405,7 @@ async fn analyze_handler(
     let prev_cl = prev_sum.map(|s| s.code_lines);
     let prev_cml = prev_sum.map(|s| s.comment_lines);
     let prev_bl = prev_sum.map(|s| s.blank_lines);
-    let fmt_prev = |opt: Option<u64>| opt.map(|v| v.to_string()).unwrap_or_else(|| "—".into());
+    let fmt_prev = |opt: Option<u64>| opt.map_or_else(|| "—".into(), |v| v.to_string());
     let prev_fa_str = fmt_prev(prev_fa);
     let prev_fs_str = fmt_prev(prev_fs);
     let prev_pl_str = fmt_prev(prev_pl);
@@ -1560,7 +1533,11 @@ async fn analyze_handler(
             d.file_deltas
                 .iter()
                 .filter(|f| f.status == sloc_core::FileChangeStatus::Unchanged)
-                .map(|f| f.current_code as u64)
+                .map(|f| {
+                    #[allow(clippy::cast_sign_loss)]
+                    let n = f.current_code as u64;
+                    n
+                })
                 .sum()
         }),
         git_branch: git_branch.clone(),
@@ -1573,22 +1550,23 @@ async fn analyze_handler(
             .iter()
             .map(|s| {
                 let safe = sanitize_project_label(&s.name);
-                let artifact_key = format!("sub_{}", safe);
+                let artifact_key = format!("sub_{safe}");
                 let html_url = if run.effective_configuration.discovery.submodule_breakdown
                     && form.generate_html.is_some()
                 {
-                    let parent_path = run.input_roots.first().map(|s| s.as_str()).unwrap_or("");
+                    let parent_path = run
+                        .input_roots
+                        .first()
+                        .map_or("", std::string::String::as_str);
                     let sub_run = build_sub_run(&run, s, parent_path);
-                    if let Ok(sub_html) = render_sub_report_html(&sub_run) {
-                        let path = run_dir.join(format!("{}.html", artifact_key));
+                    render_sub_report_html(&sub_run).ok().and_then(|sub_html| {
+                        let path = run_dir.join(format!("{artifact_key}.html"));
                         if fs::write(&path, sub_html.as_bytes()).is_ok() {
-                            Some(format!("/runs/{}/{}", run_id, artifact_key))
+                            Some(format!("/runs/{run_id}/{artifact_key}"))
                         } else {
                             None
                         }
-                    } else {
-                        None
-                    }
+                    })
                 } else {
                     None
                 };
@@ -1654,61 +1632,54 @@ async fn artifact_handler(
 
     // Fall back to the persisted registry when the server was restarted and the
     // in-memory artifact map no longer holds the entry.
-    let artifact_set = match artifact_set {
-        Some(a) => a,
-        None => {
-            let reg = state.registry.lock().await;
-            match reg.find_by_run_id(&run_id) {
-                Some(entry) => {
-                    let output_dir = entry
-                        .html_path
-                        .as_ref()
-                        .or(entry.json_path.as_ref())
-                        .or(entry.pdf_path.as_ref())
-                        .and_then(|p| p.parent().map(PathBuf::from))
-                        .unwrap_or_default();
-                    // Recover pdf_path: use the persisted one, or look for report.pdf
-                    // adjacent to html/json if only the old entries lack it.
-                    let pdf_path = entry.pdf_path.clone().or_else(|| {
-                        let candidate = output_dir.join("report.pdf");
-                        if candidate.exists() {
-                            Some(candidate)
-                        } else {
-                            None
-                        }
-                    });
-                    RunArtifacts {
-                        output_dir,
-                        html_path: entry.html_path.clone(),
-                        pdf_path,
-                        json_path: entry.json_path.clone(),
-                        report_title: entry.project_label.clone(),
-                    }
+    let artifact_set = if let Some(a) = artifact_set {
+        a
+    } else {
+        let reg = state.registry.lock().await;
+        if let Some(entry) = reg.find_by_run_id(&run_id) {
+            let output_dir = entry
+                .html_path
+                .as_ref()
+                .or(entry.json_path.as_ref())
+                .or(entry.pdf_path.as_ref())
+                .and_then(|p| p.parent().map(PathBuf::from))
+                .unwrap_or_default();
+            // Recover pdf_path: use the persisted one, or look for report.pdf
+            // adjacent to html/json if only the old entries lack it.
+            let pdf_path = entry.pdf_path.clone().or_else(|| {
+                let candidate = output_dir.join("report.pdf");
+                if candidate.exists() {
+                    Some(candidate)
+                } else {
+                    None
                 }
-                None => {
-                    let error_html = ErrorTemplate {
-                        message: format!(
-                            "Report not found. Run ID {} is not in the scan history. \
-                             The report may have been deleted, or this is an old run from \
-                             before the scan registry was introduced.",
-                            &run_id[..run_id.len().min(8)]
-                        ),
-                        last_report_url: Some("/view-reports".to_string()),
-                        last_report_label: Some("View Reports".to_string()),
-                        csp_nonce: csp_nonce.clone(),
-                    }
-                    .render()
-                    .unwrap_or_else(|_| "<pre>Report not found.</pre>".to_string());
-                    return (StatusCode::NOT_FOUND, Html(error_html)).into_response();
-                }
+            });
+            RunArtifacts {
+                output_dir,
+                html_path: entry.html_path.clone(),
+                pdf_path,
+                json_path: entry.json_path.clone(),
+                report_title: entry.project_label.clone(),
             }
+        } else {
+            let error_html = ErrorTemplate {
+                message: format!(
+                    "Report not found. Run ID {} is not in the scan history. \
+                     The report may have been deleted, or this is an old run from \
+                     before the scan registry was introduced.",
+                    &run_id[..run_id.len().min(8)]
+                ),
+                last_report_url: Some("/view-reports".to_string()),
+                last_report_label: Some("View Reports".to_string()),
+                csp_nonce: csp_nonce.clone(),
+            }
+            .render()
+            .unwrap_or_else(|_| "<pre>Report not found.</pre>".to_string());
+            return (StatusCode::NOT_FOUND, Html(error_html)).into_response();
         }
     };
 
-    let wants_download = matches!(
-        query.download.as_deref(),
-        Some("1") | Some("true") | Some("yes")
-    );
+    let wants_download = matches!(query.download.as_deref(), Some("1" | "true" | "yes"));
 
     match artifact.as_str() {
         "html" => {
@@ -1735,10 +1706,10 @@ async fn artifact_handler(
                     }
                 }
                 Err(err) => {
-                    let filename = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| "report.html".to_string());
+                    let filename = path.file_name().map_or_else(
+                        || "report.html".to_string(),
+                        |n| n.to_string_lossy().into_owned(),
+                    );
                     let msg = format!(
                         "HTML report '{filename}' could not be read.\n\n\
                          Error: {err}\n\n\
@@ -1777,9 +1748,9 @@ async fn artifact_handler(
                 Ok(bytes) => {
                     let filename = build_pdf_filename(&artifact_set.report_title, &run_id);
                     let disposition = if wants_download {
-                        format!("attachment; filename=\"{}\"", filename)
+                        format!("attachment; filename=\"{filename}\"")
                     } else {
-                        format!("inline; filename=\"{}\"", filename)
+                        format!("inline; filename=\"{filename}\"")
                     };
                     (
                         [
@@ -1791,10 +1762,10 @@ async fn artifact_handler(
                         .into_response()
                 }
                 Err(err) => {
-                    let filename = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| "report.pdf".to_string());
+                    let filename = path.file_name().map_or_else(
+                        || "report.pdf".to_string(),
+                        |n| n.to_string_lossy().into_owned(),
+                    );
                     let msg = format!(
                         "PDF report '{filename}' could not be read.\n\n\
                          Error: {err}\n\n\
@@ -1852,10 +1823,10 @@ async fn artifact_handler(
                     }
                 }
                 Err(err) => {
-                    let filename = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| "result.json".to_string());
+                    let filename = path.file_name().map_or_else(
+                        || "result.json".to_string(),
+                        |n| n.to_string_lossy().into_owned(),
+                    );
                     let msg = format!(
                         "JSON result '{filename}' could not be read.\n\n\
                          Error: {err}\n\n\
@@ -1876,23 +1847,25 @@ async fn artifact_handler(
         }
         "scan-config" => {
             let path = artifact_set.output_dir.join("scan-config.json");
-            match fs::read(&path) {
-                Ok(bytes) => (
-                    [
-                        (
-                            header::CONTENT_TYPE,
-                            "application/json; charset=utf-8".to_string(),
-                        ),
-                        (
-                            header::CONTENT_DISPOSITION,
-                            "attachment; filename=\"scan-config.json\"".to_string(),
-                        ),
-                    ],
-                    bytes,
-                )
-                    .into_response(),
-                Err(_) => StatusCode::NOT_FOUND.into_response(),
-            }
+            fs::read(&path).map_or_else(
+                |_| StatusCode::NOT_FOUND.into_response(),
+                |bytes| {
+                    (
+                        [
+                            (
+                                header::CONTENT_TYPE,
+                                "application/json; charset=utf-8".to_string(),
+                            ),
+                            (
+                                header::CONTENT_DISPOSITION,
+                                "attachment; filename=\"scan-config.json\"".to_string(),
+                            ),
+                        ],
+                        bytes,
+                    )
+                        .into_response()
+                },
+            )
         }
         _ if artifact.starts_with("sub_") => {
             if artifact.len() > 128
@@ -1902,17 +1875,15 @@ async fn artifact_handler(
             {
                 return StatusCode::BAD_REQUEST.into_response();
             }
-            let filename = format!("{}.html", artifact);
+            let filename = format!("{artifact}.html");
             let path = artifact_set.output_dir.join(&filename);
-            match fs::read_to_string(&path) {
-                Ok(content) => Html(content).into_response(),
-                Err(_) => {
+            fs::read_to_string(&path).map_or_else(
+                |_| {
                     let html = ErrorTemplate {
                         message: format!(
-                            "Sub-report '{}' was not found in the run directory.\n\
+                            "Sub-report '{artifact}' was not found in the run directory.\n\
                              Re-run the analysis with 'Detect and separate git submodules' \
-                             and HTML output enabled.",
-                            artifact
+                             and HTML output enabled."
                         ),
                         last_report_url: Some("/view-reports".to_string()),
                         last_report_label: Some("View Reports".to_string()),
@@ -1921,8 +1892,9 @@ async fn artifact_handler(
                     .render()
                     .unwrap_or_else(|_| "<pre>Sub-report not found.</pre>".to_string());
                     (StatusCode::NOT_FOUND, Html(html)).into_response()
-                }
-            }
+                },
+                |content| Html(content).into_response(),
+            )
         }
         _ => StatusCode::NOT_FOUND.into_response(),
     }
@@ -1989,9 +1961,9 @@ fn make_history_rows(reg: &ScanRegistry) -> Vec<HistoryEntryRow> {
             imports: e.summary.imports,
             git_branch: e.git_branch.clone().unwrap_or_default(),
             git_commit: e.git_commit.clone().unwrap_or_default(),
-            has_html: e.html_path.as_ref().map(|p| p.exists()).unwrap_or(false),
-            has_json: e.json_path.as_ref().map(|p| p.exists()).unwrap_or(false),
-            has_pdf: e.pdf_path.as_ref().map(|p| p.exists()).unwrap_or(false),
+            has_html: e.html_path.as_ref().is_some_and(|p| p.exists()),
+            has_json: e.json_path.as_ref().is_some_and(|p| p.exists()),
+            has_pdf: e.pdf_path.as_ref().is_some_and(|p| p.exists()),
         })
         .collect()
 }
@@ -2081,24 +2053,24 @@ fn fmt_delta(n: i64) -> String {
 }
 
 fn delta_class(n: i64) -> &'static str {
-    if n > 0 {
-        "pos"
-    } else if n < 0 {
-        "neg"
-    } else {
-        "zero"
+    use std::cmp::Ordering;
+    match n.cmp(&0) {
+        Ordering::Greater => "pos",
+        Ordering::Less => "neg",
+        Ordering::Equal => "zero",
     }
 }
 
-/// Returns (display_string, css_class) for a numeric change column cell.
+/// Returns (`display_string`, `css_class`) for a numeric change column cell.
 fn summary_delta(curr: u64, prev: Option<u64>) -> (String, &'static str) {
-    match prev {
-        Some(p) => {
+    prev.map_or_else(
+        || ("—".to_string(), "na"),
+        |p| {
+            #[allow(clippy::cast_possible_wrap)]
             let d = curr as i64 - p as i64;
             (fmt_delta(d), delta_class(d))
-        }
-        None => ("—".to_string(), "na"),
-    }
+        },
+    )
 }
 
 async fn compare_handler(
@@ -2331,7 +2303,7 @@ fn format_number(n: u64) -> String {
     out
 }
 
-fn badge_char_width(c: char) -> f64 {
+const fn badge_char_width(c: char) -> f64 {
     match c {
         'f' | 'i' | 'j' | 'l' | 'r' | 't' => 5.0,
         'm' | 'w' => 9.0,
@@ -2340,6 +2312,7 @@ fn badge_char_width(c: char) -> f64 {
     }
 }
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn badge_text_px(text: &str) -> u32 {
     text.chars().map(badge_char_width).sum::<f64>().ceil() as u32
 }
@@ -2354,7 +2327,7 @@ fn render_badge_svg(label: &str, value: &str, color: &str) -> String {
     let ve = escape_html(value);
     let ce = escape_html(color);
     format!(
-        r###"<svg xmlns="http://www.w3.org/2000/svg" width="{total}" height="20">
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{total}" height="20">
   <rect width="{total}" height="20" fill="#555"/>
   <rect x="{lw}" width="{rw}" height="20" fill="{ce}"/>
   <g fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11">
@@ -2363,7 +2336,7 @@ fn render_badge_svg(label: &str, value: &str, color: &str) -> String {
     <text x="{rx}" y="14" fill="#010101" fill-opacity=".3">{ve}</text>
     <text x="{rx}" y="13">{ve}</text>
   </g>
-</svg>"###
+</svg>"##
     )
 }
 
@@ -2481,14 +2454,16 @@ async fn api_metrics_latest_handler(State(state): State<AppState>) -> Response {
         let reg = state.registry.lock().await;
         reg.entries.first().cloned()
     };
-    match entry {
-        Some(e) => build_metrics_response(&e),
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "no scans recorded yet"})),
-        )
-            .into_response(),
-    }
+    entry.map_or_else(
+        || {
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "no scans recorded yet"})),
+            )
+                .into_response()
+        },
+        |e| build_metrics_response(&e),
+    )
 }
 
 async fn api_metrics_run_handler(
@@ -2499,14 +2474,16 @@ async fn api_metrics_run_handler(
         let reg = state.registry.lock().await;
         reg.find_by_run_id(&run_id).cloned()
     };
-    match entry {
-        Some(e) => build_metrics_response(&e),
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "run not found"})),
-        )
-            .into_response(),
-    }
+    entry.map_or_else(
+        || {
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "run not found"})),
+            )
+                .into_response()
+        },
+        |e| build_metrics_response(&e),
+    )
 }
 
 fn build_metrics_response(entry: &RegistryEntry) -> Response {
@@ -2583,23 +2560,29 @@ async fn project_history_handler(
     let resolved = resolve_input_path(&path);
     let root_str = resolved.to_string_lossy().replace('\\', "/");
 
-    let reg = state.registry.lock().await;
-    let entries: Vec<_> = reg
-        .entries
-        .iter()
-        .filter(|e| e.input_roots.iter().any(|r| r == &root_str))
-        .collect();
-
+    let entries: Vec<_> = {
+        let reg = state.registry.lock().await;
+        reg.entries
+            .iter()
+            .filter(|e| e.input_roots.iter().any(|r| r == &root_str))
+            .cloned()
+            .collect()
+    };
     let scan_count = entries.len();
     let last = entries.first();
+    let last_scan_id = last.map(|e| e.run_id.clone());
+    let last_scan_timestamp = last.map(|e| fmt_pst(e.timestamp_utc));
+    let last_scan_code_lines = last.map(|e| e.summary.code_lines);
+    let last_git_branch = last.and_then(|e| e.git_branch.clone());
+    let last_git_commit = last.and_then(|e| e.git_commit.clone());
 
     Json(ProjectHistoryResponse {
         scan_count,
-        last_scan_id: last.map(|e| e.run_id.clone()),
-        last_scan_timestamp: last.map(|e| fmt_pst(e.timestamp_utc)),
-        last_scan_code_lines: last.map(|e| e.summary.code_lines),
-        last_git_branch: last.and_then(|e| e.git_branch.clone()),
-        last_git_commit: last.and_then(|e| e.git_commit.clone()),
+        last_scan_id,
+        last_scan_timestamp,
+        last_scan_code_lines,
+        last_git_branch,
+        last_git_commit,
     })
     .into_response()
 }
@@ -2623,11 +2606,10 @@ async fn embed_handler(
 ) -> Response {
     let entry = {
         let reg = state.registry.lock().await;
-        if let Some(id) = &query.run_id {
-            reg.find_by_run_id(id).cloned()
-        } else {
-            reg.entries.first().cloned()
-        }
+        query.run_id.as_ref().map_or_else(
+            || reg.entries.first().cloned(),
+            |id| reg.find_by_run_id(id).cloned(),
+        )
     };
 
     let Some(entry) = entry else {
@@ -2674,17 +2656,17 @@ fn render_embed_widget(
         ("#f8f5f2", "#43342d", "#ffffff", "#7b675b", "#e6d0bf")
     };
 
-    let lang_rows: String = languages
-        .iter()
-        .map(|(name, files, code)| {
-            format!(
-                "<tr><td>{}</td><td class='n'>{}</td><td class='n'>{}</td></tr>",
-                escape_html(name),
-                format_number(*files),
-                format_number(*code),
-            )
-        })
-        .collect();
+    let mut lang_rows = String::new();
+    for (name, files, code) in languages {
+        write!(
+            lang_rows,
+            "<tr><td>{}</td><td class='n'>{}</td><td class='n'>{}</td></tr>",
+            escape_html(name),
+            format_number(*files),
+            format_number(*code),
+        )
+        .ok();
+    }
 
     let lang_table = if lang_rows.is_empty() {
         String::new()
@@ -2705,7 +2687,7 @@ fn render_embed_widget(
     let blank_raw = s.blank_lines;
 
     format!(
-        r##"<!doctype html>
+        r#"<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -2759,7 +2741,7 @@ fn render_embed_widget(
     }});
   </script>
 </body>
-</html>"##
+</html>"#
     )
 }
 
@@ -2828,7 +2810,7 @@ fn persist_run_artifacts(
     ))
 }
 
-fn resolve_output_root(raw: Option<&str>) -> Result<PathBuf> {
+fn resolve_output_root(raw: Option<&str>) -> PathBuf {
     let value = raw.unwrap_or("out/web").trim();
     let path = if value.is_empty() {
         PathBuf::from("out/web")
@@ -2837,9 +2819,9 @@ fn resolve_output_root(raw: Option<&str>) -> Result<PathBuf> {
     };
 
     if path.is_absolute() {
-        Ok(path)
+        path
     } else {
-        Ok(workspace_root().join(path))
+        workspace_root().join(path)
     }
 }
 
@@ -2847,7 +2829,7 @@ fn split_patterns(raw: Option<&str>) -> Vec<String> {
     raw.unwrap_or("")
         .lines()
         .flat_map(|line| line.split(','))
-        .map(|part| part.trim())
+        .map(str::trim)
         .filter(|part| !part.is_empty())
         .map(ToOwned::to_owned)
         .collect()
@@ -3042,23 +3024,21 @@ fn build_preview_html(
     };
     let mut next_row_id = 1usize;
 
-    let root_name = root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| name.to_string())
-        .unwrap_or_else(|| root.to_string_lossy().into_owned());
+    let root_name = root.file_name().and_then(|name| name.to_str()).map_or_else(
+        || root.to_string_lossy().into_owned(),
+        std::string::ToString::to_string,
+    );
     let root_modified = root
         .metadata()
         .ok()
         .and_then(|meta| meta.modified().ok())
-        .map(format_system_time)
-        .unwrap_or_else(|| "-".to_string());
+        .map_or_else(|| "-".to_string(), format_system_time);
 
     rows.push(PreviewRow {
         row_id: 0,
         parent_row_id: None,
         depth: 0,
-        name: format!("{}/", root_name),
+        name: format!("{root_name}/"),
         kind: PreviewKind::Dir,
         is_dir: true,
         language: None,
@@ -3085,16 +3065,16 @@ fn build_preview_html(
     out.push_str(r#"<div class="explorer-title-group">"#);
     out.push_str(r#"<div class="explorer-title">Project scope preview</div>"#);
     out.push_str(r#"<div class="explorer-subtitle wide">Pre-scan explorer view for the current built-in analyzers and default skip rules.</div>"#);
-    out.push_str(r#"</div></div>"#);
+    out.push_str(r"</div></div>");
 
     out.push_str(r#"<div class="scope-stats">"#);
-    out.push_str(&format!(r#"<button type="button" class="scope-stat-button" data-filter="dir" data-tooltip="Total directories in the project scope. Click to filter the explorer to directories only."><span class="scope-stat-label">Directories</span><span class="scope-stat-value">{}</span></button>"#, stats.directories));
-    out.push_str(&format!(r#"<button type="button" class="scope-stat-button" data-filter="file" data-tooltip="Total files found in the project scope. Click to show only files in the explorer."><span class="scope-stat-label">Files</span><span class="scope-stat-value">{}</span></button>"#, stats.files));
-    out.push_str(&format!(r#"<button type="button" class="scope-stat-button supported" data-filter="supported" data-tooltip="Files with a supported language analyzer — counted in SLOC totals. Click to filter to supported files."><span class="scope-stat-label">Supported files</span><span class="scope-stat-value">{}</span></button>"#, stats.supported));
-    out.push_str(&format!(r#"<button type="button" class="scope-stat-button skipped" data-filter="skipped" data-tooltip="Files excluded by a policy rule such as vendor, generated, or minified detection. Click to see skipped files."><span class="scope-stat-label">Skipped by policy</span><span class="scope-stat-value">{}</span></button>"#, stats.skipped));
-    out.push_str(&format!(r#"<button type="button" class="scope-stat-button unsupported" data-filter="unsupported" data-tooltip="Files outside the supported language set — listed but not counted. Click to filter to unsupported files."><span class="scope-stat-label">Unsupported files</span><span class="scope-stat-value">{}</span></button>"#, stats.unsupported));
+    write!(out, r#"<button type="button" class="scope-stat-button" data-filter="dir" data-tooltip="Total directories in the project scope. Click to filter the explorer to directories only."><span class="scope-stat-label">Directories</span><span class="scope-stat-value">{}</span></button>"#, stats.directories).ok();
+    write!(out, r#"<button type="button" class="scope-stat-button" data-filter="file" data-tooltip="Total files found in the project scope. Click to show only files in the explorer."><span class="scope-stat-label">Files</span><span class="scope-stat-value">{}</span></button>"#, stats.files).ok();
+    write!(out, r#"<button type="button" class="scope-stat-button supported" data-filter="supported" data-tooltip="Files with a supported language analyzer — counted in SLOC totals. Click to filter to supported files."><span class="scope-stat-label">Supported files</span><span class="scope-stat-value">{}</span></button>"#, stats.supported).ok();
+    write!(out, r#"<button type="button" class="scope-stat-button skipped" data-filter="skipped" data-tooltip="Files excluded by a policy rule such as vendor, generated, or minified detection. Click to see skipped files."><span class="scope-stat-label">Skipped by policy</span><span class="scope-stat-value">{}</span></button>"#, stats.skipped).ok();
+    write!(out, r#"<button type="button" class="scope-stat-button unsupported" data-filter="unsupported" data-tooltip="Files outside the supported language set — listed but not counted. Click to filter to unsupported files."><span class="scope-stat-label">Unsupported files</span><span class="scope-stat-value">{}</span></button>"#, stats.unsupported).ok();
     out.push_str(r#"<button type="button" class="scope-stat-button reset" data-filter="reset-view" data-tooltip="Clear all filters and return to the full project view."><span class="scope-stat-label">Reset view</span><span class="scope-stat-value">All</span></button>"#);
-    out.push_str(r#"</div>"#);
+    out.push_str(r"</div>");
 
     out.push_str(r#"<div class="scope-info-row">"#);
     out.push_str(r#"<div class="explorer-language-strip"><div class="meta-label">Detected languages</div><div class="language-pill-row iconified">"#);
@@ -3106,21 +3086,23 @@ fn build_preview_html(
         out.push_str(r#"<button type="button" class="language-pill detected-language-chip active" data-language-filter=""><span>All languages</span></button>"#);
         for language in &languages {
             if let Some(icon) = language_icon_file(language) {
-                out.push_str(&format!(r#"<button type="button" class="language-pill has-icon detected-language-chip" data-language-filter="{}"><img src="/images/icons/{}" alt="{} icon" /><span>{}</span></button>"#, escape_html(&language.to_ascii_lowercase()), icon, escape_html(language), escape_html(language)));
+                write!(out, r#"<button type="button" class="language-pill has-icon detected-language-chip" data-language-filter="{}"><img src="/images/icons/{}" alt="{} icon" /><span>{}</span></button>"#, escape_html(&language.to_ascii_lowercase()), icon, escape_html(language), escape_html(language)).ok();
             } else if let Some(svg) = language_inline_svg(language) {
-                out.push_str(&format!(r#"<button type="button" class="language-pill has-icon detected-language-chip" data-language-filter="{}">{}<span>{}</span></button>"#, escape_html(&language.to_ascii_lowercase()), svg, escape_html(language)));
+                write!(out, r#"<button type="button" class="language-pill has-icon detected-language-chip" data-language-filter="{}">{}<span>{}</span></button>"#, escape_html(&language.to_ascii_lowercase()), svg, escape_html(language)).ok();
             } else {
-                out.push_str(&format!(
+                write!(
+                    out,
                     r#"<button type="button" class="language-pill detected-language-chip" data-language-filter="{}">{}</button>"#,
                     escape_html(&language.to_ascii_lowercase()),
                     escape_html(language)
-                ));
+                )
+                .ok();
             }
         }
     }
-    out.push_str(r#"</div></div>"#);
+    out.push_str(r"</div></div>");
     out.push_str(r#"<div class="preview-note stronger">This preview is generated before the run starts. It shows what is currently supported, what default policies skip, and which files are outside the enabled analyzer set for this build.</div>"#);
-    out.push_str(r#"</div>"#);
+    out.push_str(r"</div>");
 
     out.push_str(r#"<div class="file-explorer-shell">"#);
     out.push_str(r#"<div class="file-explorer-controls"><div class="file-explorer-actions"><button type="button" class="mini-button explorer-action" data-explorer-action="expand-all">Expand all</button><button type="button" class="mini-button explorer-action" data-explorer-action="collapse-all">Collapse all</button><button type="button" class="mini-button explorer-action" data-explorer-action="clear-filters">Reset view</button></div><div class="file-explorer-search-row"><select class="explorer-filter-select" id="explorer-filter-select"><option value="all">All rows</option><option value="dir">Directories only</option><option value="file">Files only</option><option value="supported">Supported only</option><option value="skipped">Skipped by policy</option><option value="unsupported">Unsupported only</option></select><input type="text" class="explorer-search" id="explorer-search" placeholder="Filter by file or folder name" /></div></div>"#);
@@ -3135,12 +3117,12 @@ fn build_preview_html(
         } else {
             r#"<span class="tree-bullet">•</span>"#.to_string()
         };
-        out.push_str(&format!(r#"<div class="tree-row kind-{} status-{}" data-kind="{}" data-status="{}" data-language="{}" data-row-id="{}" data-parent-id="{}" data-dir="{}" data-expanded="true" data-name-lower="{}" data-sort-name="{}" data-sort-date="{}" data-sort-type="{}" data-sort-status="{}"><div class="tree-name-cell" style="--depth:{}">{}<span class="tree-node {}">{}</span></div><div class="tree-date-cell">{}</div><div class="tree-type-cell">{}</div><div class="tree-status-cell"><span class="badge {}">{}</span></div></div>"#, if row.is_dir { "dir" } else { "file" }, row.kind.filter_key(), if row.is_dir { "dir" } else { "file" }, row.kind.filter_key(), escape_html(lang_attr), row.row_id, row.parent_row_id.map(|id| id.to_string()).unwrap_or_default(), if row.is_dir { "true" } else { "false" }, escape_html(&row.name.to_ascii_lowercase()), escape_html(&row.name.to_ascii_lowercase()), escape_html(&row.modified), escape_html(&row.type_label.to_ascii_lowercase()), escape_html(status_label), row.depth, toggle_html, if row.is_dir { "tree-node-dir" } else { row.kind.node_class() }, escape_html(&row.name), escape_html(&row.modified), escape_html(&row.type_label), row.kind.badge_class(), status_label));
+        write!(out, r#"<div class="tree-row kind-{} status-{}" data-kind="{}" data-status="{}" data-language="{}" data-row-id="{}" data-parent-id="{}" data-dir="{}" data-expanded="true" data-name-lower="{}" data-sort-name="{}" data-sort-date="{}" data-sort-type="{}" data-sort-status="{}"><div class="tree-name-cell" style="--depth:{}">{}<span class="tree-node {}">{}</span></div><div class="tree-date-cell">{}</div><div class="tree-type-cell">{}</div><div class="tree-status-cell"><span class="badge {}">{}</span></div></div>"#, if row.is_dir { "dir" } else { "file" }, row.kind.filter_key(), if row.is_dir { "dir" } else { "file" }, row.kind.filter_key(), escape_html(lang_attr), row.row_id, row.parent_row_id.map(|id| id.to_string()).unwrap_or_default(), if row.is_dir { "true" } else { "false" }, escape_html(&row.name.to_ascii_lowercase()), escape_html(&row.name.to_ascii_lowercase()), escape_html(&row.modified), escape_html(&row.type_label.to_ascii_lowercase()), escape_html(status_label), row.depth, toggle_html, if row.is_dir { "tree-node-dir" } else { row.kind.node_class() }, escape_html(&row.name), escape_html(&row.modified), escape_html(&row.type_label), row.kind.badge_class(), status_label).ok();
     }
     if budget.shown >= budget.max_entries {
         out.push_str(r#"<div class="tree-row more-row" data-kind="file" data-status="more" data-row-id="999999" data-parent-id="" data-dir="false" data-expanded="true" data-name-lower="preview truncated"><div class="tree-name-cell" style="--depth:0"><span class="tree-bullet">•</span><span class="tree-node tree-node-more">... preview truncated for readability ...</span></div><div class="tree-date-cell">-</div><div class="tree-type-cell">Preview note</div><div class="tree-status-cell"></div></div>"#);
     }
-    out.push_str(r#"</div></div></div>"#);
+    out.push_str(r"</div></div></div>");
 
     Ok(out)
 }
@@ -3175,39 +3157,39 @@ enum PreviewKind {
 }
 
 impl PreviewKind {
-    fn filter_key(self) -> &'static str {
+    const fn filter_key(self) -> &'static str {
         match self {
-            PreviewKind::Dir => "dir",
-            PreviewKind::Supported => "supported",
-            PreviewKind::Skipped => "skipped",
-            PreviewKind::Unsupported => "unsupported",
+            Self::Dir => "dir",
+            Self::Supported => "supported",
+            Self::Skipped => "skipped",
+            Self::Unsupported => "unsupported",
         }
     }
 
-    fn label(self) -> &'static str {
+    const fn label(self) -> &'static str {
         match self {
-            PreviewKind::Dir => "dir",
-            PreviewKind::Supported => "supported",
-            PreviewKind::Skipped => "skipped by policy",
-            PreviewKind::Unsupported => "unsupported",
+            Self::Dir => "dir",
+            Self::Supported => "supported",
+            Self::Skipped => "skipped by policy",
+            Self::Unsupported => "unsupported",
         }
     }
 
-    fn badge_class(self) -> &'static str {
+    const fn badge_class(self) -> &'static str {
         match self {
-            PreviewKind::Dir => "badge badge-dir",
-            PreviewKind::Supported => "badge badge-scan",
-            PreviewKind::Skipped => "badge badge-skip",
-            PreviewKind::Unsupported => "badge badge-unsupported",
+            Self::Dir => "badge badge-dir",
+            Self::Supported => "badge badge-scan",
+            Self::Skipped => "badge badge-skip",
+            Self::Unsupported => "badge badge-unsupported",
         }
     }
 
-    fn node_class(self) -> &'static str {
+    const fn node_class(self) -> &'static str {
         match self {
-            PreviewKind::Dir => "tree-node-dir",
-            PreviewKind::Supported => "tree-node-supported",
-            PreviewKind::Skipped => "tree-node-skipped",
-            PreviewKind::Unsupported => "tree-node-unsupported",
+            Self::Dir => "tree-node-dir",
+            Self::Supported => "tree-node-supported",
+            Self::Skipped => "tree-node-skipped",
+            Self::Unsupported => "tree-node-unsupported",
         }
     }
 }
@@ -3238,7 +3220,7 @@ fn collect_preview_rows(
 
     let mut entries = fs::read_dir(dir)
         .with_context(|| format!("failed to read directory {}", dir.display()))?
-        .filter_map(|entry| entry.ok())
+        .filter_map(std::result::Result::ok)
         .collect::<Vec<_>>();
     entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase());
 
@@ -3249,17 +3231,15 @@ fn collect_preview_rows(
 
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
-        let metadata = match entry.metadata() {
-            Ok(meta) => meta,
-            Err(_) => continue,
+        let Ok(metadata) = entry.metadata() else {
+            continue;
         };
         let row_id = *next_row_id;
         *next_row_id += 1;
         let modified = metadata
             .modified()
             .ok()
-            .map(format_system_time)
-            .unwrap_or_else(|| "-".to_string());
+            .map_or_else(|| "-".to_string(), format_system_time);
 
         if metadata.is_dir() {
             let relative = preview_relative_path(root, &path);
@@ -3272,7 +3252,7 @@ fn collect_preview_rows(
                 row_id,
                 parent_row_id,
                 depth: depth + 1,
-                name: format!("{}/", name),
+                name: format!("{name}/"),
                 kind: PreviewKind::Dir,
                 is_dir: true,
                 language: None,
@@ -3338,7 +3318,7 @@ fn collect_preview_rows(
 
 fn preview_type_label(name: &str, language: Option<&'static str>, kind: PreviewKind) -> String {
     if let Some(language) = language {
-        return format!("{} source", language);
+        return format!("{language} source");
     }
     let lower = name.to_ascii_lowercase();
     let ext = Path::new(&lower)
@@ -3372,6 +3352,7 @@ fn preview_type_label(name: &str, language: Option<&'static str>, kind: PreviewK
 }
 
 fn format_system_time(time: SystemTime) -> String {
+    #[allow(clippy::cast_possible_wrap)]
     let secs = match time.duration_since(UNIX_EPOCH) {
         Ok(duration) => duration.as_secs() as i64,
         Err(_) => return "-".to_string(),
@@ -3381,12 +3362,10 @@ fn format_system_time(time: SystemTime) -> String {
     let (year, month, day) = civil_from_days(days);
     let hour = secs_of_day / 3_600;
     let minute = (secs_of_day % 3_600) / 60;
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}",
-        year, month, day, hour, minute
-    )
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
 }
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn civil_from_days(days: i64) -> (i32, u32, u32) {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -3397,10 +3376,13 @@ fn civil_from_days(days: i64) -> (i32, u32, u32) {
     let mp = (5 * doy + 2) / 153;
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = mp + if mp < 10 { 3 } else { -9 };
-    let year = y + if m <= 2 { 1 } else { 0 };
+    let year = y + i64::from(m <= 2);
     (year as i32, m as u32, d as u32)
 }
 
+// The input is already lowercased via `to_ascii_lowercase()` before calling
+// `ends_with`, so the comparisons are inherently case-insensitive.
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
 fn detect_language_name(name: &str) -> Option<&'static str> {
     let lower = name.to_ascii_lowercase();
     if lower.ends_with(".c") || lower.ends_with(".h") {
@@ -3461,6 +3443,9 @@ fn language_inline_svg(language: &str) -> Option<&'static str> {
     }
 }
 
+// The input is already lowercased via `to_ascii_lowercase()` before the
+// `ends_with` calls, so these comparisons are inherently case-insensitive.
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
 fn classify_preview_file(name: &str) -> PreviewKind {
     let lower = name.to_ascii_lowercase();
 

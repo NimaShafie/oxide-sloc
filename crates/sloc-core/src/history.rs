@@ -62,6 +62,7 @@ pub struct ScanRegistry {
 
 impl ScanRegistry {
     /// Load from disk; returns an empty registry on missing file or parse error.
+    #[must_use]
     pub fn load(registry_path: &Path) -> Self {
         std::fs::read_to_string(registry_path)
             .ok()
@@ -69,6 +70,9 @@ impl ScanRegistry {
             .unwrap_or_default()
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the parent directory cannot be created or the file cannot be written.
     pub fn save(&self, registry_path: &Path) -> Result<()> {
         if let Some(parent) = registry_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -85,6 +89,7 @@ impl ScanRegistry {
     }
 
     /// All entries whose `input_roots` exactly match, newest first.
+    #[must_use]
     pub fn entries_for_roots(&self, roots: &[String]) -> Vec<&RegistryEntry> {
         self.entries
             .iter()
@@ -92,11 +97,12 @@ impl ScanRegistry {
             .collect()
     }
 
+    #[must_use]
     pub fn find_by_run_id(&self, run_id: &str) -> Option<&RegistryEntry> {
         self.entries.iter().find(|e| e.run_id == run_id)
     }
 
-    /// Remove entries whose json_path no longer exists on disk.
+    /// Remove entries whose `json_path` no longer exists on disk.
     pub fn prune_stale(&mut self) {
         self.entries
             .retain(|e| e.json_path.as_ref().is_none_or(|p| p.exists()));

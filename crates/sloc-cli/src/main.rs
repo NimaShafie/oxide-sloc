@@ -288,16 +288,16 @@ struct SendArgs {
     /// Sender address (From:). Required when --smtp-to is set.
     #[arg(long, value_name = "EMAIL")]
     smtp_from: Option<String>,
-    /// SMTP host. Defaults to SLOC_SMTP_HOST env var.
+    /// SMTP host. Defaults to `SLOC_SMTP_HOST` env var.
     #[arg(long, value_name = "HOST", env = "SLOC_SMTP_HOST")]
     smtp_host: Option<String>,
     /// SMTP port (default 587).
     #[arg(long, value_name = "PORT", default_value = "587")]
     smtp_port: u16,
-    /// SMTP username. Defaults to SLOC_SMTP_USER env var.
+    /// SMTP username. Defaults to `SLOC_SMTP_USER` env var.
     #[arg(long, value_name = "USER", env = "SLOC_SMTP_USER")]
     smtp_user: Option<String>,
-    /// SMTP password. Defaults to SLOC_SMTP_PASS env var.
+    /// SMTP password. Defaults to `SLOC_SMTP_PASS` env var.
     #[arg(long, value_name = "PASS", env = "SLOC_SMTP_PASS")]
     smtp_pass: Option<String>,
 
@@ -305,7 +305,7 @@ struct SendArgs {
     /// POST the JSON result to this URL (repeatable).
     #[arg(long, value_name = "URL")]
     webhook_url: Vec<String>,
-    /// Bearer token for webhook auth. Defaults to SLOC_WEBHOOK_TOKEN env var.
+    /// Bearer token for webhook auth. Defaults to `SLOC_WEBHOOK_TOKEN` env var.
     #[arg(long, value_name = "TOKEN", env = "SLOC_WEBHOOK_TOKEN")]
     webhook_token: Option<String>,
 }
@@ -328,11 +328,11 @@ async fn main() -> Result<()> {
         server: false,
     })) {
         Commands::Analyze(args) => run_analyze(args).await,
-        Commands::Report(args) => run_report(args),
-        Commands::Diff(args) => run_diff(args),
+        Commands::Report(args) => run_report(&args),
+        Commands::Diff(args) => run_diff(&args),
         Commands::Serve(args) => run_serve(args).await,
-        Commands::Init(args) => run_init(args),
-        Commands::Validate(args) => run_validate(args),
+        Commands::Init(args) => run_init(&args),
+        Commands::Validate(args) => run_validate(&args),
         Commands::Send(args) => run_send(args).await,
     }
 }
@@ -413,7 +413,7 @@ async fn run_analyze(args: AnalyzeArgs) -> Result<()> {
 
 // ── report handler ────────────────────────────────────────────────────────────
 
-fn run_report(args: ReportArgs) -> Result<()> {
+fn run_report(args: &ReportArgs) -> Result<()> {
     let run = read_json(&args.input)?;
 
     if args.html_out.is_none()
@@ -453,7 +453,7 @@ fn run_report(args: ReportArgs) -> Result<()> {
 
 // ── diff handler ──────────────────────────────────────────────────────────────
 
-fn run_diff(args: DiffArgs) -> Result<()> {
+fn run_diff(args: &DiffArgs) -> Result<()> {
     let baseline = read_json(&args.baseline)
         .with_context(|| format!("failed to read baseline: {}", args.baseline.display()))?;
     let current = read_json(&args.current)
@@ -514,7 +514,7 @@ async fn run_serve(args: ServeArgs) -> Result<()> {
 
 // ── init handler ──────────────────────────────────────────────────────────────
 
-fn run_init(args: InitArgs) -> Result<()> {
+fn run_init(args: &InitArgs) -> Result<()> {
     if args.output.exists() && !args.force {
         anyhow::bail!(
             "{} already exists; use --force to overwrite",
@@ -583,16 +583,12 @@ fn run_init(args: InitArgs) -> Result<()> {
 
 // ── validate handler ──────────────────────────────────────────────────────────
 
-fn run_validate(args: ValidateArgs) -> Result<()> {
+fn run_validate(args: &ValidateArgs) -> Result<()> {
     let corpus = args
         .corpus
         .as_ref()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "<not provided>".into());
-    anyhow::bail!(
-        "validate is scaffolded but not yet implemented; corpus = {}",
-        corpus
-    )
+        .map_or_else(|| "<not provided>".into(), |p| p.display().to_string());
+    anyhow::bail!("validate is scaffolded but not yet implemented; corpus = {corpus}")
 }
 
 // ── send handler ──────────────────────────────────────────────────────────────
@@ -700,7 +696,7 @@ fn validate_webhook_url(raw: &str) -> Result<()> {
     if matches!(
         host,
         "169.254.169.254" | "metadata.google.internal" | "metadata.internal" | "instance-data"
-    ) || host.ends_with(".local")
+    ) || host.to_ascii_lowercase().ends_with(".local")
     {
         anyhow::bail!("webhook URL host is blocked: {host}");
     }
@@ -750,26 +746,32 @@ async fn send_webhook(url: &str, token: Option<&str>, run: &AnalysisRun) -> Resu
 // ── config helpers ────────────────────────────────────────────────────────────
 
 fn load_base_config(config_path: Option<&Path>) -> Result<AppConfig> {
-    match config_path {
-        Some(path) => AppConfig::load_from_file(path),
-        None => Ok(AppConfig::default()),
-    }
+    config_path.map_or_else(|| Ok(AppConfig::default()), AppConfig::load_from_file)
 }
 
 fn resolve_analyze_config(args: &AnalyzeArgs) -> Result<AppConfig> {
     let mut config = load_base_config(args.config.as_deref())?;
 
     if !args.paths.is_empty() {
-        config.discovery.root_paths = args.paths.clone();
+        config.discovery.root_paths.clone_from(&args.paths);
     }
     if !args.include_glob.is_empty() {
-        config.discovery.include_globs = args.include_glob.clone();
+        config
+            .discovery
+            .include_globs
+            .clone_from(&args.include_glob);
     }
     if !args.exclude_glob.is_empty() {
-        config.discovery.exclude_globs = args.exclude_glob.clone();
+        config
+            .discovery
+            .exclude_globs
+            .clone_from(&args.exclude_glob);
     }
     if !args.enabled_language.is_empty() {
-        config.analysis.enabled_languages = args.enabled_language.clone();
+        config
+            .analysis
+            .enabled_languages
+            .clone_from(&args.enabled_language);
     }
     if args.no_ignore_files {
         config.discovery.honor_ignore_files = false;
@@ -793,7 +795,7 @@ fn resolve_analyze_config(args: &AnalyzeArgs) -> Result<AppConfig> {
         config.analysis.count_compiler_directives = false;
     }
     if let Some(title) = &args.report_title {
-        config.reporting.report_title = title.clone();
+        config.reporting.report_title.clone_from(title);
     }
     if args.submodule_breakdown {
         config.discovery.submodule_breakdown = true;
@@ -915,8 +917,7 @@ fn print_summary(run: &AnalysisRun, per_file: bool, plain: bool) {
                 "  {:<50} {:<14} code={:<6} comment={:<6} blank={:<6}",
                 truncate(&format!("{sub_tag}{}", file.relative_path), 50),
                 file.language
-                    .map(|l| l.display_name().to_string())
-                    .unwrap_or_else(|| "-".into()),
+                    .map_or_else(|| "-".into(), |l| l.display_name().to_string()),
                 file.effective_counts.code_lines,
                 file.effective_counts.comment_lines,
                 file.effective_counts.blank_lines,
@@ -949,6 +950,14 @@ fn print_summary(run: &AnalysisRun, per_file: bool, plain: bool) {
     }
 }
 
+fn fmt_delta(col: bool, v: i64) -> String {
+    match v.cmp(&0) {
+        std::cmp::Ordering::Greater => paint!(col, "32", format!("+{v}")),
+        std::cmp::Ordering::Less => paint!(col, "31", v.to_string()),
+        std::cmp::Ordering::Equal => paint!(col, "2", "0"),
+    }
+}
+
 fn print_diff_summary(cmp: &ScanComparison, plain: bool) {
     let s = &cmp.summary;
 
@@ -967,16 +976,6 @@ fn print_diff_summary(cmp: &ScanComparison, plain: bool) {
     }
 
     let col = color_enabled();
-
-    fn fmt_delta(col: bool, v: i64) -> String {
-        if v > 0 {
-            paint!(col, "32", format!("+{v}"))
-        } else if v < 0 {
-            paint!(col, "31", v.to_string())
-        } else {
-            paint!(col, "2", "0")
-        }
-    }
 
     println!("{}", paint!(col, "1", "SLOC Diff"));
     println!("  Baseline : {}", s.baseline_run_id);

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Nima Shafie <nimzshafie@gmail.com>
 
 use std::collections::BTreeMap;
+use std::fmt::Write as FmtWrite;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -25,9 +26,17 @@ fn base64_encode(data: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let b0 = u32::from(chunk[0]);
+        let b1 = if chunk.len() > 1 {
+            u32::from(chunk[1])
+        } else {
+            0
+        };
+        let b2 = if chunk.len() > 2 {
+            u32::from(chunk[2])
+        } else {
+            0
+        };
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(CHARS[((n >> 18) & 63) as usize] as char);
         out.push(CHARS[((n >> 12) & 63) as usize] as char);
@@ -45,10 +54,20 @@ fn base64_encode(data: &[u8]) -> String {
     out
 }
 
+/// Render a full standalone HTML report for the given analysis run.
+///
+/// # Errors
+///
+/// Returns an error if template rendering or configuration serialization fails.
 pub fn render_html(run: &AnalysisRun) -> Result<String> {
     render_html_inner(run, false)
 }
 
+/// Render an embedded sub-report HTML fragment for the given analysis run.
+///
+/// # Errors
+///
+/// Returns an error if template rendering or configuration serialization fails.
 pub fn render_sub_report_html(run: &AnalysisRun) -> Result<String> {
     render_html_inner(run, true)
 }
@@ -131,12 +150,23 @@ fn render_html_inner(run: &AnalysisRun, is_sub_report: bool) -> Result<String> {
     template.render().context("failed to render HTML report")
 }
 
+/// Render an HTML report and write it to `output_path`.
+///
+/// # Errors
+///
+/// Returns an error if rendering fails or the file cannot be written.
 pub fn write_html(run: &AnalysisRun, output_path: &Path) -> Result<()> {
     let html = render_html(run)?;
     fs::write(output_path, html)
         .with_context(|| format!("failed to write HTML report to {}", output_path.display()))
 }
 
+/// Launch a headless Chromium-based browser to print `html_path` as a PDF to `pdf_path`.
+///
+/// # Errors
+///
+/// Returns an error if no supported browser is found, the browser process fails to start,
+/// or the PDF file is not produced within the timeout.
 pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
     eprintln!("[oxide-sloc][pdf] starting");
 
@@ -172,12 +202,11 @@ pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
             .to_string(),
     );
     let file_url = file_url(&html_for_url);
-    eprintln!("[oxide-sloc][pdf] url = {}", file_url);
+    eprintln!("[oxide-sloc][pdf] url = {file_url}");
 
     let html_parent = absolute_html
         .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
 
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -205,7 +234,7 @@ pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
     }
 
     let run_once = |headless_flag: &str| -> Result<()> {
-        eprintln!("[oxide-sloc][pdf] launching {}", headless_flag);
+        eprintln!("[oxide-sloc][pdf] launching {headless_flag}");
 
         if absolute_pdf.exists() {
             let _ = fs::remove_file(&absolute_pdf);
@@ -261,7 +290,7 @@ pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
                     }
 
                     if stable_polls >= 3 {
-                        eprintln!("[oxide-sloc][pdf] file ready at {} bytes", size);
+                        eprintln!("[oxide-sloc][pdf] file ready at {size} bytes");
                         let _ = child.kill();
                         let _ = child.wait();
                         return Ok(());
@@ -291,8 +320,7 @@ pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
                     "browser exited with status {} while generating PDF",
                     status
                         .code()
-                        .map(|code| code.to_string())
-                        .unwrap_or_else(|| "unknown".into())
+                        .map_or_else(|| "unknown".into(), |code| code.to_string())
                 );
             }
 
@@ -323,7 +351,7 @@ pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
     });
 
     if let Err(err) = &result {
-        eprintln!("[oxide-sloc][pdf] --headless failed: {}", err);
+        eprintln!("[oxide-sloc][pdf] --headless failed: {err}");
     }
 
     let _ = fs::remove_dir_all(&profile_dir);
@@ -345,7 +373,7 @@ fn normalize_browser_env_path(raw: &str) -> PathBuf {
         {
             let drive = (bytes[1] as char).to_ascii_uppercase();
             let rest = &trimmed[3..];
-            return PathBuf::from(format!("{drive}:/{}", rest));
+            return PathBuf::from(format!("{drive}:/{rest}"));
         }
     }
     PathBuf::from(trimmed)
@@ -456,9 +484,11 @@ fn file_url(path: &Path) -> String {
     for byte in normalized.bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' | b':' => {
-                encoded.push(byte as char)
+                encoded.push(byte as char);
             }
-            _ => encoded.push_str(&format!("%{byte:02X}")),
+            _ => {
+                let _ = write!(encoded, "%{byte:02X}");
+            }
         }
     }
 
@@ -468,10 +498,10 @@ fn file_url(path: &Path) -> String {
 fn file_row_view(file: &FileRecord) -> FileRow {
     FileRow {
         relative_path: file.relative_path.clone(),
-        language: file
-            .language
-            .map(|language| language.display_name().to_string())
-            .unwrap_or_else(|| "-".into()),
+        language: file.language.map_or_else(
+            || "-".into(),
+            |language| language.display_name().to_string(),
+        ),
         total_physical_lines: file.raw_line_categories.total_physical_lines,
         code_lines: file.effective_counts.code_lines,
         comment_lines: file.effective_counts.comment_lines,
@@ -619,36 +649,34 @@ fn build_support_opportunities(warnings: &[String]) -> Vec<WarningOpportunityRow
             continue;
         }
 
-        let bucket = if path.ends_with(".md")
+        let path_obj = Path::new(path);
+        let ext_lc = path_obj
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_default();
+        let bucket = if ext_lc == "md"
             || path.ends_with("README")
             || path.ends_with("README.md")
             || path.ends_with("LICENSE")
         {
             "Documentation / text"
-        } else if path.ends_with(".json")
-            || path.ends_with(".spdx.json")
-            || path.ends_with("devkit.json")
+        } else if ext_lc == "json" || path.ends_with(".spdx.json") || path.ends_with("devkit.json")
         {
             "JSON manifests and config"
-        } else if path.ends_with(".toml")
+        } else if ext_lc == "toml"
             || path.ends_with("MANIFEST.in")
             || path.ends_with("requirements.txt")
         {
             "Project metadata and packaging"
-        } else if path.ends_with(".html") {
+        } else if ext_lc == "html" {
             "HTML templates"
-        } else if path.ends_with(".txt") {
+        } else if ext_lc == "txt" {
             "Plain text assets"
+        } else if ext_lc.is_empty() {
+            "Extensionless or custom text files"
         } else {
-            let ext = Path::new(path)
-                .extension()
-                .and_then(|value| value.to_str())
-                .unwrap_or("");
-            if ext.is_empty() {
-                "Extensionless or custom text files"
-            } else {
-                "Other unsupported text formats"
-            }
+            "Other unsupported text formats"
         };
 
         *counts.entry(bucket.to_string()).or_default() += 1;
@@ -1707,14 +1735,19 @@ fn csv_escape(s: &str) -> String {
 }
 
 /// Write a two-section CSV: language summary followed by per-file detail.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be written.
 pub fn write_csv(run: &AnalysisRun, path: &Path) -> Result<()> {
     let mut out = String::new();
 
     // ── Section 1: Summary ──────────────────────────────────────────────────
     out.push_str("# Summary\r\n");
     out.push_str("Metric,Value\r\n");
-    out.push_str(&format!("Run ID,{}\r\n", csv_escape(&run.tool.run_id)));
-    out.push_str(&format!(
+    let _ = write!(out, "Run ID,{}\r\n", csv_escape(&run.tool.run_id));
+    let _ = write!(
+        out,
         "Timestamp,{}\r\n",
         csv_escape(
             &run.tool
@@ -1722,36 +1755,39 @@ pub fn write_csv(run: &AnalysisRun, path: &Path) -> Result<()> {
                 .format("%Y-%m-%d %H:%M:%S UTC")
                 .to_string()
         )
-    ));
-    out.push_str(&format!(
+    );
+    let _ = write!(
+        out,
         "Report Title,{}\r\n",
         csv_escape(&run.effective_configuration.reporting.report_title)
-    ));
-    out.push_str(&format!(
+    );
+    let _ = write!(
+        out,
         "Files Analyzed,{}\r\n",
         run.summary_totals.files_analyzed
-    ));
-    out.push_str(&format!(
+    );
+    let _ = write!(
+        out,
         "Files Skipped,{}\r\n",
         run.summary_totals.files_skipped
-    ));
-    out.push_str(&format!(
+    );
+    let _ = write!(
+        out,
         "Physical Lines,{}\r\n",
         run.summary_totals.total_physical_lines
-    ));
-    out.push_str(&format!("Code Lines,{}\r\n", run.summary_totals.code_lines));
-    out.push_str(&format!(
+    );
+    let _ = write!(out, "Code Lines,{}\r\n", run.summary_totals.code_lines);
+    let _ = write!(
+        out,
         "Comment Lines,{}\r\n",
         run.summary_totals.comment_lines
-    ));
-    out.push_str(&format!(
-        "Blank Lines,{}\r\n",
-        run.summary_totals.blank_lines
-    ));
-    out.push_str(&format!(
+    );
+    let _ = write!(out, "Blank Lines,{}\r\n", run.summary_totals.blank_lines);
+    let _ = write!(
+        out,
         "Mixed Lines (separate),{}\r\n",
         run.summary_totals.mixed_lines_separate
-    ));
+    );
 
     // ── Section 2: Language breakdown ───────────────────────────────────────
     out.push_str("\r\n# By Language\r\n");
@@ -1759,7 +1795,8 @@ pub fn write_csv(run: &AnalysisRun, path: &Path) -> Result<()> {
         "Language,Files,Physical Lines,Code Lines,Comment Lines,Blank Lines,Mixed Lines\r\n",
     );
     for lang in &run.totals_by_language {
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             "{},{},{},{},{},{},{}\r\n",
             csv_escape(lang.language.display_name()),
             lang.files,
@@ -1768,7 +1805,7 @@ pub fn write_csv(run: &AnalysisRun, path: &Path) -> Result<()> {
             lang.comment_lines,
             lang.blank_lines,
             lang.mixed_lines_separate,
-        ));
+        );
     }
 
     // ── Section 3: Per-file detail (if present) ─────────────────────────────
@@ -1778,7 +1815,8 @@ pub fn write_csv(run: &AnalysisRun, path: &Path) -> Result<()> {
             "Path,Language,Size (bytes),Code Lines,Comment Lines,Blank Lines,Physical Lines,Generated,Minified,Vendor\r\n",
         );
         for rec in &run.per_file_records {
-            out.push_str(&format!(
+            let _ = write!(
+                out,
                 "{},{},{},{},{},{},{},{},{},{}\r\n",
                 csv_escape(&rec.relative_path),
                 csv_escape(
@@ -1794,7 +1832,7 @@ pub fn write_csv(run: &AnalysisRun, path: &Path) -> Result<()> {
                 rec.generated,
                 rec.minified,
                 rec.vendor,
-            ));
+            );
         }
     }
 
@@ -1802,28 +1840,26 @@ pub fn write_csv(run: &AnalysisRun, path: &Path) -> Result<()> {
 }
 
 /// Write a diff/delta as CSV.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be written.
 pub fn write_diff_csv(cmp: &sloc_core::ScanComparison, path: &Path) -> Result<()> {
     let s = &cmp.summary;
     let mut out = String::new();
 
     out.push_str("# Diff Summary\r\n");
     out.push_str("Metric,Value\r\n");
-    out.push_str(&format!(
-        "Baseline Run,{}\r\n",
-        csv_escape(&s.baseline_run_id)
-    ));
-    out.push_str(&format!(
-        "Current Run,{}\r\n",
-        csv_escape(&s.current_run_id)
-    ));
-    out.push_str(&format!("Files Added,{}\r\n", cmp.files_added));
-    out.push_str(&format!("Files Removed,{}\r\n", cmp.files_removed));
-    out.push_str(&format!("Files Modified,{}\r\n", cmp.files_modified));
-    out.push_str(&format!("Files Unchanged,{}\r\n", cmp.files_unchanged));
-    out.push_str(&format!("Code Δ,{}\r\n", s.code_lines_delta));
-    out.push_str(&format!("Comment Δ,{}\r\n", s.comment_lines_delta));
-    out.push_str(&format!("Blank Δ,{}\r\n", s.blank_lines_delta));
-    out.push_str(&format!("Total Δ,{}\r\n", s.total_lines_delta));
+    let _ = write!(out, "Baseline Run,{}\r\n", csv_escape(&s.baseline_run_id));
+    let _ = write!(out, "Current Run,{}\r\n", csv_escape(&s.current_run_id));
+    let _ = write!(out, "Files Added,{}\r\n", cmp.files_added);
+    let _ = write!(out, "Files Removed,{}\r\n", cmp.files_removed);
+    let _ = write!(out, "Files Modified,{}\r\n", cmp.files_modified);
+    let _ = write!(out, "Files Unchanged,{}\r\n", cmp.files_unchanged);
+    let _ = write!(out, "Code Δ,{}\r\n", s.code_lines_delta);
+    let _ = write!(out, "Comment Δ,{}\r\n", s.comment_lines_delta);
+    let _ = write!(out, "Blank Δ,{}\r\n", s.blank_lines_delta);
+    let _ = write!(out, "Total Δ,{}\r\n", s.total_lines_delta);
 
     out.push_str("\r\n# File Deltas\r\n");
     out.push_str("Status,Path,Language,Baseline Code,Current Code,Code Δ,Baseline Comment,Current Comment,Comment Δ,Baseline Blank,Current Blank,Blank Δ,Total Δ\r\n");
@@ -1834,7 +1870,8 @@ pub fn write_diff_csv(cmp: &sloc_core::ScanComparison, path: &Path) -> Result<()
             sloc_core::FileChangeStatus::Modified => "Modified",
             sloc_core::FileChangeStatus::Unchanged => "Unchanged",
         };
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             "{},{},{},{},{},{},{},{},{},{},{},{},{}\r\n",
             status,
             csv_escape(&f.relative_path),
@@ -1849,7 +1886,7 @@ pub fn write_diff_csv(cmp: &sloc_core::ScanComparison, path: &Path) -> Result<()
             f.current_blank,
             f.blank_delta,
             f.total_delta,
-        ));
+        );
     }
 
     fs::write(path, out).with_context(|| format!("failed to write diff CSV to {}", path.display()))
@@ -1885,6 +1922,7 @@ struct ZipEntry {
     offset: u32,
 }
 
+#[allow(clippy::cast_possible_truncation)] // deliberate ZIP format construction: sizes are bounded by caller
 fn zip_add(entries: &mut Vec<ZipEntry>, buf: &mut Vec<u8>, name: &str, data: Vec<u8>) {
     let crc = crc32(&data);
     let offset = buf.len() as u32;
@@ -1892,7 +1930,7 @@ fn zip_add(entries: &mut Vec<ZipEntry>, buf: &mut Vec<u8>, name: &str, data: Vec
     let size = data.len() as u32;
 
     // Local file header (signature 0x04034b50)
-    buf.extend_from_slice(&0x04034b50u32.to_le_bytes());
+    buf.extend_from_slice(&0x0403_4b50_u32.to_le_bytes());
     buf.extend_from_slice(&20u16.to_le_bytes()); // version needed
     buf.extend_from_slice(&0u16.to_le_bytes()); // flags
     buf.extend_from_slice(&0u16.to_le_bytes()); // compression: STORE
@@ -1914,12 +1952,13 @@ fn zip_add(entries: &mut Vec<ZipEntry>, buf: &mut Vec<u8>, name: &str, data: Vec
     });
 }
 
-fn zip_finish(mut buf: Vec<u8>, entries: Vec<ZipEntry>) -> Vec<u8> {
+#[allow(clippy::cast_possible_truncation)] // deliberate ZIP format construction: sizes are bounded by ZIP spec limits
+fn zip_finish(mut buf: Vec<u8>, entries: &[ZipEntry]) -> Vec<u8> {
     let central_start = buf.len() as u32;
 
-    for e in &entries {
+    for e in entries {
         let size = e.data.len() as u32;
-        buf.extend_from_slice(&0x02014b50u32.to_le_bytes()); // central dir sig
+        buf.extend_from_slice(&0x0201_4b50_u32.to_le_bytes()); // central dir sig
         buf.extend_from_slice(&20u16.to_le_bytes()); // version made by
         buf.extend_from_slice(&20u16.to_le_bytes()); // version needed
         buf.extend_from_slice(&0u16.to_le_bytes()); // flags
@@ -1943,7 +1982,7 @@ fn zip_finish(mut buf: Vec<u8>, entries: Vec<ZipEntry>) -> Vec<u8> {
     let n = entries.len() as u16;
 
     // End of central directory record
-    buf.extend_from_slice(&0x06054b50u32.to_le_bytes());
+    buf.extend_from_slice(&0x0605_4b50_u32.to_le_bytes());
     buf.extend_from_slice(&0u16.to_le_bytes()); // disk number
     buf.extend_from_slice(&0u16.to_le_bytes()); // disk with central dir
     buf.extend_from_slice(&n.to_le_bytes()); // entries on this disk
@@ -1967,6 +2006,7 @@ fn xml_escape(s: &str) -> String {
 /// String cells use `t="inlineStr"` (no shared-strings table needed).
 /// Numeric cells use plain `<v>`.
 fn build_sheet(headers: &[&str], rows: &[Vec<String>], style_header: bool) -> Vec<u8> {
+    #[allow(clippy::cast_possible_truncation)] // n % 26 is always in 0..=25, fits in u8
     fn col_name(idx: usize) -> String {
         // Convert 0-based column index to Excel column letters (A, B, … Z, AA, …)
         let mut n = idx + 1;
@@ -1990,31 +2030,30 @@ fn build_sheet(headers: &[&str], rows: &[Vec<String>], style_header: bool) -> Ve
     for (ci, &h) in headers.iter().enumerate() {
         let cell_ref = format!("{}1", col_name(ci));
         let style = if style_header { " s=\"1\"" } else { "" };
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<c r=\"{}\" t=\"inlineStr\"{style}><is><t>{}</t></is></c>",
             cell_ref,
             xml_escape(h)
-        ));
+        );
     }
     xml.push_str("</row>\n");
 
     // Data rows
     for (ri, row) in rows.iter().enumerate() {
         let row_num = ri + 2;
-        xml.push_str(&format!("<row r=\"{row_num}\">"));
+        let _ = write!(xml, "<row r=\"{row_num}\">");
         for (ci, cell) in row.iter().enumerate() {
             let cell_ref = format!("{}{}", col_name(ci), row_num);
             // Try to detect if the value is purely numeric
             if cell.parse::<f64>().is_ok() && !cell.is_empty() {
-                xml.push_str(&format!(
-                    "<c r=\"{cell_ref}\"><v>{}</v></c>",
-                    xml_escape(cell)
-                ));
+                let _ = write!(xml, "<c r=\"{cell_ref}\"><v>{}</v></c>", xml_escape(cell));
             } else {
-                xml.push_str(&format!(
+                let _ = write!(
+                    xml,
                     "<c r=\"{cell_ref}\" t=\"inlineStr\"><is><t>{}</t></is></c>",
                     xml_escape(cell)
-                ));
+                );
             }
         }
         xml.push_str("</row>\n");
@@ -2038,10 +2077,11 @@ fn build_xlsx_archive(sheets: &[SheetDef<'_>]) -> Vec<u8> {
     ct.push_str("  <Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>\n");
     ct.push_str("  <Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>\n");
     for (i, _) in sheets.iter().enumerate() {
-        ct.push_str(&format!(
-            "  <Override PartName=\"/xl/worksheets/sheet{}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>\n",
+        let _ = writeln!(
+            ct,
+            "  <Override PartName=\"/xl/worksheets/sheet{}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>",
             i + 1
-        ));
+        );
     }
     ct.push_str("</Types>");
     zip_add(
@@ -2068,12 +2108,13 @@ fn build_xlsx_archive(sheets: &[SheetDef<'_>]) -> Vec<u8> {
     wb.push_str("<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">\n");
     wb.push_str("  <sheets>\n");
     for (i, (name, _, _)) in sheets.iter().enumerate() {
-        wb.push_str(&format!(
-            "    <sheet name=\"{}\" sheetId=\"{}\" r:id=\"rId{}\"/>\n",
+        let _ = writeln!(
+            wb,
+            "    <sheet name=\"{}\" sheetId=\"{}\" r:id=\"rId{}\"/>",
             xml_escape(name),
             i + 1,
             i + 1
-        ));
+        );
     }
     wb.push_str("  </sheets>\n</workbook>");
     zip_add(&mut entries, &mut buf, "xl/workbook.xml", wb.into_bytes());
@@ -2084,15 +2125,17 @@ fn build_xlsx_archive(sheets: &[SheetDef<'_>]) -> Vec<u8> {
         "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n",
     );
     for (i, _) in sheets.iter().enumerate() {
-        wbr.push_str(&format!(
-            "  <Relationship Id=\"rId{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet{}.xml\"/>\n",
+        let _ = writeln!(
+            wbr,
+            "  <Relationship Id=\"rId{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet{}.xml\"/>",
             i + 1, i + 1
-        ));
+        );
     }
-    wbr.push_str(&format!(
-        "  <Relationship Id=\"rId{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>\n",
+    let _ = writeln!(
+        wbr,
+        "  <Relationship Id=\"rId{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>",
         sheets.len() + 1
-    ));
+    );
     wbr.push_str("</Relationships>");
     zip_add(
         &mut entries,
@@ -2133,10 +2176,14 @@ fn build_xlsx_archive(sheets: &[SheetDef<'_>]) -> Vec<u8> {
         zip_add(&mut entries, &mut buf, &name, sheet_xml);
     }
 
-    zip_finish(buf, entries)
+    zip_finish(buf, &entries)
 }
 
 /// Write an analysis run as a multi-sheet Excel workbook.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be written.
 pub fn write_xlsx(run: &AnalysisRun, path: &Path) -> Result<()> {
     // Sheet 1 — Summary
     let summary_rows: Vec<Vec<String>> = vec![
@@ -2270,6 +2317,10 @@ pub fn write_xlsx(run: &AnalysisRun, path: &Path) -> Result<()> {
 }
 
 /// Write a diff comparison as an Excel workbook.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be written.
 pub fn write_diff_xlsx(cmp: &sloc_core::ScanComparison, path: &Path) -> Result<()> {
     let s = &cmp.summary;
 

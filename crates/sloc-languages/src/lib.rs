@@ -54,141 +54,144 @@ pub enum Language {
 }
 
 impl Language {
-    pub fn display_name(&self) -> &'static str {
+    #[must_use]
+    pub const fn display_name(&self) -> &'static str {
         match self {
-            Language::C => "C",
-            Language::Cpp => "C++",
-            Language::CSharp => "C#",
-            Language::Go => "Go",
-            Language::Java => "Java",
-            Language::JavaScript => "JavaScript",
-            Language::Python => "Python",
-            Language::Rust => "Rust",
-            Language::Shell => "Shell",
-            Language::PowerShell => "PowerShell",
-            Language::TypeScript => "TypeScript",
-            Language::Assembly => "Assembly",
-            Language::Clojure => "Clojure",
-            Language::Css => "CSS",
-            Language::Dart => "Dart",
-            Language::Dockerfile => "Dockerfile",
-            Language::Elixir => "Elixir",
-            Language::Erlang => "Erlang",
-            Language::FSharp => "F#",
-            Language::Groovy => "Groovy",
-            Language::Haskell => "Haskell",
-            Language::Html => "HTML",
-            Language::Julia => "Julia",
-            Language::Kotlin => "Kotlin",
-            Language::Lua => "Lua",
-            Language::Makefile => "Makefile",
-            Language::Nim => "Nim",
-            Language::ObjectiveC => "Objective-C",
-            Language::Ocaml => "OCaml",
-            Language::Perl => "Perl",
-            Language::Php => "PHP",
-            Language::R => "R",
-            Language::Ruby => "Ruby",
-            Language::Scala => "Scala",
-            Language::Scss => "SCSS",
-            Language::Sql => "SQL",
-            Language::Svelte => "Svelte",
-            Language::Swift => "Swift",
-            Language::Vue => "Vue",
-            Language::Xml => "XML",
-            Language::Zig => "Zig",
+            Self::C => "C",
+            Self::Cpp => "C++",
+            Self::CSharp => "C#",
+            Self::Go => "Go",
+            Self::Java => "Java",
+            Self::JavaScript => "JavaScript",
+            Self::Python => "Python",
+            Self::Rust => "Rust",
+            Self::Shell => "Shell",
+            Self::PowerShell => "PowerShell",
+            Self::TypeScript => "TypeScript",
+            Self::Assembly => "Assembly",
+            Self::Clojure => "Clojure",
+            Self::Css => "CSS",
+            Self::Dart => "Dart",
+            Self::Dockerfile => "Dockerfile",
+            Self::Elixir => "Elixir",
+            Self::Erlang => "Erlang",
+            Self::FSharp => "F#",
+            Self::Groovy => "Groovy",
+            Self::Haskell => "Haskell",
+            Self::Html => "HTML",
+            Self::Julia => "Julia",
+            Self::Kotlin => "Kotlin",
+            Self::Lua => "Lua",
+            Self::Makefile => "Makefile",
+            Self::Nim => "Nim",
+            Self::ObjectiveC => "Objective-C",
+            Self::Ocaml => "OCaml",
+            Self::Perl => "Perl",
+            Self::Php => "PHP",
+            Self::R => "R",
+            Self::Ruby => "Ruby",
+            Self::Scala => "Scala",
+            Self::Scss => "SCSS",
+            Self::Sql => "SQL",
+            Self::Svelte => "Svelte",
+            Self::Swift => "Swift",
+            Self::Vue => "Vue",
+            Self::Xml => "XML",
+            Self::Zig => "Zig",
         }
     }
 
-    pub fn as_slug(&self) -> &'static str {
+    #[must_use]
+    pub const fn as_slug(&self) -> &'static str {
         match self {
-            Language::C => "c",
-            Language::Cpp => "cpp",
-            Language::CSharp => "csharp",
-            Language::Go => "go",
-            Language::Java => "java",
-            Language::JavaScript => "javascript",
-            Language::Python => "python",
-            Language::Rust => "rust",
-            Language::Shell => "shell",
-            Language::PowerShell => "powershell",
-            Language::TypeScript => "typescript",
-            Language::Assembly => "assembly",
-            Language::Clojure => "clojure",
-            Language::Css => "css",
-            Language::Dart => "dart",
-            Language::Dockerfile => "dockerfile",
-            Language::Elixir => "elixir",
-            Language::Erlang => "erlang",
-            Language::FSharp => "fsharp",
-            Language::Groovy => "groovy",
-            Language::Haskell => "haskell",
-            Language::Html => "html",
-            Language::Julia => "julia",
-            Language::Kotlin => "kotlin",
-            Language::Lua => "lua",
-            Language::Makefile => "makefile",
-            Language::Nim => "nim",
-            Language::ObjectiveC => "objectivec",
-            Language::Ocaml => "ocaml",
-            Language::Perl => "perl",
-            Language::Php => "php",
-            Language::R => "r",
-            Language::Ruby => "ruby",
-            Language::Scala => "scala",
-            Language::Scss => "scss",
-            Language::Sql => "sql",
-            Language::Svelte => "svelte",
-            Language::Swift => "swift",
-            Language::Vue => "vue",
-            Language::Xml => "xml",
-            Language::Zig => "zig",
+            Self::C => "c",
+            Self::Cpp => "cpp",
+            Self::CSharp => "csharp",
+            Self::Go => "go",
+            Self::Java => "java",
+            Self::JavaScript => "javascript",
+            Self::Python => "python",
+            Self::Rust => "rust",
+            Self::Shell => "shell",
+            Self::PowerShell => "powershell",
+            Self::TypeScript => "typescript",
+            Self::Assembly => "assembly",
+            Self::Clojure => "clojure",
+            Self::Css => "css",
+            Self::Dart => "dart",
+            Self::Dockerfile => "dockerfile",
+            Self::Elixir => "elixir",
+            Self::Erlang => "erlang",
+            Self::FSharp => "fsharp",
+            Self::Groovy => "groovy",
+            Self::Haskell => "haskell",
+            Self::Html => "html",
+            Self::Julia => "julia",
+            Self::Kotlin => "kotlin",
+            Self::Lua => "lua",
+            Self::Makefile => "makefile",
+            Self::Nim => "nim",
+            Self::ObjectiveC => "objectivec",
+            Self::Ocaml => "ocaml",
+            Self::Perl => "perl",
+            Self::Php => "php",
+            Self::R => "r",
+            Self::Ruby => "ruby",
+            Self::Scala => "scala",
+            Self::Scss => "scss",
+            Self::Sql => "sql",
+            Self::Svelte => "svelte",
+            Self::Swift => "swift",
+            Self::Vue => "vue",
+            Self::Xml => "xml",
+            Self::Zig => "zig",
         }
     }
 
+    #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         match name.trim().to_ascii_lowercase().as_str() {
-            "c" => Some(Language::C),
-            "cpp" | "c++" | "cplusplus" => Some(Language::Cpp),
-            "csharp" | "c#" | "cs" => Some(Language::CSharp),
-            "go" | "golang" => Some(Language::Go),
-            "java" => Some(Language::Java),
-            "javascript" | "js" => Some(Language::JavaScript),
-            "python" | "py" => Some(Language::Python),
-            "rust" | "rs" => Some(Language::Rust),
-            "shell" | "sh" | "bash" => Some(Language::Shell),
-            "powershell" | "pwsh" | "ps" => Some(Language::PowerShell),
-            "typescript" | "ts" => Some(Language::TypeScript),
-            "assembly" | "asm" => Some(Language::Assembly),
-            "clojure" | "clj" => Some(Language::Clojure),
-            "css" => Some(Language::Css),
-            "dart" => Some(Language::Dart),
-            "dockerfile" | "docker" => Some(Language::Dockerfile),
-            "elixir" | "ex" => Some(Language::Elixir),
-            "erlang" | "erl" => Some(Language::Erlang),
-            "fsharp" | "f#" | "fs" => Some(Language::FSharp),
-            "groovy" => Some(Language::Groovy),
-            "haskell" | "hs" => Some(Language::Haskell),
-            "html" | "htm" => Some(Language::Html),
-            "julia" | "jl" => Some(Language::Julia),
-            "kotlin" | "kt" => Some(Language::Kotlin),
-            "lua" => Some(Language::Lua),
-            "makefile" | "make" | "mk" => Some(Language::Makefile),
-            "nim" => Some(Language::Nim),
-            "objectivec" | "objc" | "objective-c" => Some(Language::ObjectiveC),
-            "ocaml" | "ml" => Some(Language::Ocaml),
-            "perl" | "pl" => Some(Language::Perl),
-            "php" => Some(Language::Php),
-            "r" => Some(Language::R),
-            "ruby" | "rb" => Some(Language::Ruby),
-            "scala" => Some(Language::Scala),
-            "scss" | "sass" => Some(Language::Scss),
-            "sql" => Some(Language::Sql),
-            "svelte" => Some(Language::Svelte),
-            "swift" => Some(Language::Swift),
-            "vue" => Some(Language::Vue),
-            "xml" => Some(Language::Xml),
-            "zig" => Some(Language::Zig),
+            "c" => Some(Self::C),
+            "cpp" | "c++" | "cplusplus" => Some(Self::Cpp),
+            "csharp" | "c#" | "cs" => Some(Self::CSharp),
+            "go" | "golang" => Some(Self::Go),
+            "java" => Some(Self::Java),
+            "javascript" | "js" => Some(Self::JavaScript),
+            "python" | "py" => Some(Self::Python),
+            "rust" | "rs" => Some(Self::Rust),
+            "shell" | "sh" | "bash" => Some(Self::Shell),
+            "powershell" | "pwsh" | "ps" => Some(Self::PowerShell),
+            "typescript" | "ts" => Some(Self::TypeScript),
+            "assembly" | "asm" => Some(Self::Assembly),
+            "clojure" | "clj" => Some(Self::Clojure),
+            "css" => Some(Self::Css),
+            "dart" => Some(Self::Dart),
+            "dockerfile" | "docker" => Some(Self::Dockerfile),
+            "elixir" | "ex" => Some(Self::Elixir),
+            "erlang" | "erl" => Some(Self::Erlang),
+            "fsharp" | "f#" | "fs" => Some(Self::FSharp),
+            "groovy" => Some(Self::Groovy),
+            "haskell" | "hs" => Some(Self::Haskell),
+            "html" | "htm" => Some(Self::Html),
+            "julia" | "jl" => Some(Self::Julia),
+            "kotlin" | "kt" => Some(Self::Kotlin),
+            "lua" => Some(Self::Lua),
+            "makefile" | "make" | "mk" => Some(Self::Makefile),
+            "nim" => Some(Self::Nim),
+            "objectivec" | "objc" | "objective-c" => Some(Self::ObjectiveC),
+            "ocaml" | "ml" => Some(Self::Ocaml),
+            "perl" | "pl" => Some(Self::Perl),
+            "php" => Some(Self::Php),
+            "r" => Some(Self::R),
+            "ruby" | "rb" => Some(Self::Ruby),
+            "scala" => Some(Self::Scala),
+            "scss" | "sass" => Some(Self::Scss),
+            "sql" => Some(Self::Sql),
+            "svelte" => Some(Self::Svelte),
+            "swift" => Some(Self::Swift),
+            "vue" => Some(Self::Vue),
+            "xml" => Some(Self::Xml),
+            "zig" => Some(Self::Zig),
             _ => None,
         }
     }
@@ -262,6 +265,7 @@ impl Default for AnalysisOptions {
     }
 }
 
+#[must_use]
 pub fn supported_languages() -> BTreeSet<Language> {
     [
         Language::Assembly,
@@ -310,6 +314,7 @@ pub fn supported_languages() -> BTreeSet<Language> {
     .collect()
 }
 
+#[must_use]
 pub fn detect_language(
     path: &Path,
     first_line: Option<&str>,
@@ -319,7 +324,7 @@ pub fn detect_language(
     let extension = path
         .extension()
         .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_ascii_lowercase());
+        .map(str::to_ascii_lowercase);
 
     // Extension override check (user-configured mappings win over everything)
     if let Some(ext) = extension.as_ref() {
@@ -450,6 +455,7 @@ pub fn detect_language(
     None
 }
 
+#[must_use]
 pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) -> RawFileAnalysis {
     // IEEE flags shared by all non-preprocessor languages.
     let base = IeeeFlags {
@@ -482,7 +488,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                     skip_lines: HashSet::new(),
                     symbol_patterns: SP_C,
                 },
-                cpp,
+                &cpp,
             )
         }
         Language::Cpp => {
@@ -503,7 +509,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                     skip_lines: HashSet::new(),
                     symbol_patterns: SP_CPP,
                 },
-                cpp,
+                &cpp,
             )
         }
         Language::CSharp => analyze_generic(
@@ -518,7 +524,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_CSHARP,
             },
-            base,
+            &base,
         ),
         Language::Go => analyze_generic(
             text,
@@ -532,7 +538,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_GO,
             },
-            base,
+            &base,
         ),
         Language::Java => analyze_generic(
             text,
@@ -546,9 +552,9 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_JAVA,
             },
-            base,
+            &base,
         ),
-        Language::JavaScript => analyze_generic(
+        Language::JavaScript | Language::Svelte | Language::Vue => analyze_generic(
             text,
             ScanConfig {
                 line_comments: &["//"],
@@ -560,7 +566,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_JS,
             },
-            base,
+            &base,
         ),
         Language::Rust => analyze_generic(
             text,
@@ -575,7 +581,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_RUST,
             },
-            base,
+            &base,
         ),
         Language::Shell => analyze_generic(
             text,
@@ -589,7 +595,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_SHELL,
             },
-            base,
+            &base,
         ),
         Language::PowerShell => analyze_generic(
             text,
@@ -603,7 +609,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_POWERSHELL,
             },
-            base,
+            &base,
         ),
         Language::TypeScript => analyze_generic(
             text,
@@ -617,7 +623,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_TS,
             },
-            base,
+            &base,
         ),
         Language::Python => {
             #[cfg(feature = "tree-sitter")]
@@ -637,7 +643,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                     skip_lines: docstring_lines,
                     symbol_patterns: SP_PYTHON,
                 },
-                base,
+                &base,
             )
         }
         // --- Extended language analyzers ---
@@ -653,7 +659,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_ASSEMBLY,
             },
-            base,
+            &base,
         ),
         Language::Clojure => analyze_generic(
             text,
@@ -667,7 +673,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_CLOJURE,
             },
-            base,
+            &base,
         ),
         Language::Css => analyze_generic(
             text,
@@ -681,7 +687,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_NONE,
             },
-            base,
+            &base,
         ),
         Language::Dart => analyze_generic(
             text,
@@ -695,9 +701,9 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_DART,
             },
-            base,
+            &base,
         ),
-        Language::Dockerfile => analyze_generic(
+        Language::Dockerfile | Language::Makefile => analyze_generic(
             text,
             ScanConfig {
                 line_comments: &["#"],
@@ -709,7 +715,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_NONE,
             },
-            base,
+            &base,
         ),
         Language::Elixir => analyze_generic(
             text,
@@ -723,7 +729,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_ELIXIR,
             },
-            base,
+            &base,
         ),
         Language::Erlang => analyze_generic(
             text,
@@ -737,7 +743,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_ERLANG,
             },
-            base,
+            &base,
         ),
         Language::FSharp => analyze_generic(
             text,
@@ -751,7 +757,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_FSHARP,
             },
-            base,
+            &base,
         ),
         Language::Groovy => analyze_generic(
             text,
@@ -765,7 +771,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_GROOVY,
             },
-            base,
+            &base,
         ),
         Language::Haskell => analyze_generic(
             text,
@@ -779,7 +785,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_HASKELL,
             },
-            base,
+            &base,
         ),
         Language::Html | Language::Xml => analyze_generic(
             text,
@@ -793,7 +799,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_NONE,
             },
-            base,
+            &base,
         ),
         Language::Julia => analyze_generic(
             text,
@@ -807,7 +813,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_JULIA,
             },
-            base,
+            &base,
         ),
         Language::Kotlin => analyze_generic(
             text,
@@ -821,7 +827,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_KOTLIN,
             },
-            base,
+            &base,
         ),
         Language::Lua => analyze_generic(
             text,
@@ -835,21 +841,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_LUA,
             },
-            base,
-        ),
-        Language::Makefile => analyze_generic(
-            text,
-            ScanConfig {
-                line_comments: &["#"],
-                block_comment: None,
-                allow_single_quote_strings: false,
-                allow_double_quote_strings: false,
-                allow_triple_quote_strings: false,
-                allow_csharp_verbatim_strings: false,
-                skip_lines: HashSet::new(),
-                symbol_patterns: SP_NONE,
-            },
-            base,
+            &base,
         ),
         Language::Nim => analyze_generic(
             text,
@@ -863,7 +855,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_NIM,
             },
-            base,
+            &base,
         ),
         Language::ObjectiveC => analyze_generic(
             text,
@@ -877,7 +869,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_OBJECTIVEC,
             },
-            cpp,
+            &cpp,
         ),
         Language::Ocaml => analyze_generic(
             text,
@@ -891,7 +883,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_OCAML,
             },
-            base,
+            &base,
         ),
         Language::Perl => analyze_generic(
             text,
@@ -905,7 +897,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_PERL,
             },
-            base,
+            &base,
         ),
         Language::Php => analyze_generic(
             text,
@@ -919,7 +911,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_PHP,
             },
-            base,
+            &base,
         ),
         Language::R => analyze_generic(
             text,
@@ -933,7 +925,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_R,
             },
-            base,
+            &base,
         ),
         Language::Ruby => analyze_generic(
             text,
@@ -947,7 +939,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_RUBY,
             },
-            base,
+            &base,
         ),
         Language::Scala => analyze_generic(
             text,
@@ -961,7 +953,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_SCALA,
             },
-            base,
+            &base,
         ),
         Language::Scss => analyze_generic(
             text,
@@ -975,7 +967,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_NONE,
             },
-            base,
+            &base,
         ),
         Language::Sql => analyze_generic(
             text,
@@ -989,21 +981,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_SQL,
             },
-            base,
-        ),
-        Language::Svelte => analyze_generic(
-            text,
-            ScanConfig {
-                line_comments: &["//"],
-                block_comment: Some(("/*", "*/")),
-                allow_single_quote_strings: true,
-                allow_double_quote_strings: true,
-                allow_triple_quote_strings: false,
-                allow_csharp_verbatim_strings: false,
-                skip_lines: HashSet::new(),
-                symbol_patterns: SP_JS,
-            },
-            base,
+            &base,
         ),
         Language::Swift => analyze_generic(
             text,
@@ -1017,21 +995,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_SWIFT,
             },
-            base,
-        ),
-        Language::Vue => analyze_generic(
-            text,
-            ScanConfig {
-                line_comments: &["//"],
-                block_comment: Some(("/*", "*/")),
-                allow_single_quote_strings: true,
-                allow_double_quote_strings: true,
-                allow_triple_quote_strings: false,
-                allow_csharp_verbatim_strings: false,
-                skip_lines: HashSet::new(),
-                symbol_patterns: SP_JS,
-            },
-            base,
+            &base,
         ),
         Language::Zig => analyze_generic(
             text,
@@ -1045,7 +1009,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_ZIG,
             },
-            base,
+            &base,
         ),
     }
 }
@@ -1568,15 +1532,15 @@ struct ScanConfig {
     symbol_patterns: SymbolPatterns,
 }
 
-/// Per-call IEEE 1045-1992 flags derived from AnalysisOptions plus per-language properties.
-/// Private to this crate; constructed inside analyze_text.
+/// Per-call IEEE 1045-1992 flags derived from `AnalysisOptions` plus per-language properties.
+/// Private to this crate; constructed inside `analyze_text`.
 #[derive(Debug, Clone, Copy)]
 struct IeeeFlags {
     /// True for C, C++, and Objective-C — languages with a C preprocessor.
     has_preprocessor_directives: bool,
-    /// Mirrors AnalysisOptions::blank_in_block_comment_as_comment.
+    /// Mirrors `AnalysisOptions::blank_in_block_comment_as_comment`.
     blank_in_block_comment_as_comment: bool,
-    /// Mirrors AnalysisOptions::collapse_continuation_lines.
+    /// Mirrors `AnalysisOptions::collapse_continuation_lines`.
     collapse_continuation_lines: bool,
 }
 
@@ -1595,7 +1559,8 @@ struct LineFacts {
     has_docstring: bool,
 }
 
-fn analyze_generic(text: &str, config: ScanConfig, ieee: IeeeFlags) -> RawFileAnalysis {
+#[allow(clippy::needless_pass_by_value)]
+fn analyze_generic(text: &str, config: ScanConfig, ieee: &IeeeFlags) -> RawFileAnalysis {
     let normalized = if text.is_empty() {
         String::new()
     } else {
@@ -1829,7 +1794,7 @@ fn analyze_generic(text: &str, config: ScanConfig, ieee: IeeeFlags) -> RawFileAn
     }
 }
 
-fn classify_line(raw: &mut RawLineCounts, facts: &LineFacts, trimmed: &str) {
+const fn classify_line(raw: &mut RawLineCounts, facts: &LineFacts, trimmed: &str) {
     if facts.has_docstring {
         raw.docstring_comment_lines += 1;
     } else if !facts.has_code
@@ -1856,7 +1821,7 @@ fn classify_line(raw: &mut RawLineCounts, facts: &LineFacts, trimmed: &str) {
 }
 
 fn count_symbols(patterns: &SymbolPatterns, trimmed: &str) -> (u64, u64, u64, u64) {
-    let hit = |pats: &[&str]| pats.iter().any(|p| trimmed.starts_with(p)) as u64;
+    let hit = |pats: &[&str]| u64::from(pats.iter().any(|p| trimmed.starts_with(p)));
     (
         hit(patterns.functions),
         hit(patterns.classes),
@@ -1871,6 +1836,12 @@ fn starts_with(chars: &[char], index: usize, needle: &str) -> bool {
 }
 
 fn detect_python_docstring_lines(text: &str) -> HashSet<usize> {
+    #[derive(Debug, Clone)]
+    struct PyContext {
+        indent: usize,
+        expect_docstring: bool,
+    }
+
     let normalized = if text.is_empty() {
         String::new()
     } else {
@@ -1882,12 +1853,6 @@ fn detect_python_docstring_lines(text: &str) -> HashSet<usize> {
     } else {
         normalized.split_terminator('\n').collect()
     };
-
-    #[derive(Debug, Clone)]
-    struct PyContext {
-        indent: usize,
-        expect_docstring: bool,
-    }
 
     let mut docstring_lines = HashSet::new();
     let mut contexts = vec![PyContext {
@@ -1913,7 +1878,7 @@ fn detect_python_docstring_lines(text: &str) -> HashSet<usize> {
             continue;
         }
 
-        while contexts.len() > 1 && indent < contexts.last().map(|c| c.indent).unwrap_or(0) {
+        while contexts.len() > 1 && indent < contexts.last().map_or(0, |c| c.indent) {
             contexts.pop();
         }
 
@@ -2173,14 +2138,14 @@ mod tests {
 
     #[test]
     fn python_docstrings_are_separated() {
-        let input = r####""""module docs""""
+        let input = r#""""module docs""""
 
 
 def fn_a():
     """function docs"""
     value = 1  # trailing comment
     return value
-"####;
+"#;
 
         let result = analyze_text(Language::Python, input, AnalysisOptions::default());
         assert_eq!(result.raw.docstring_comment_lines, 2);

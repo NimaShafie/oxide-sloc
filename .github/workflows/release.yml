@@ -162,7 +162,6 @@ jobs:
         with:
           files: |
             artifacts/*
-            artifacts/SHA256SUMS.txt
           prerelease: ${{ steps.pre.outputs.is_prerelease }}
           generate_release_notes: true
           body: |

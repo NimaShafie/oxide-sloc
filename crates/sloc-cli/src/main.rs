@@ -499,8 +499,6 @@ async fn run_serve(args: ServeArgs) -> Result<()> {
     if let Some(bind) = args.bind {
         config.web.bind_address = bind;
     }
-    // SLOC_ALLOWED_ROOTS overrides allowed_scan_roots from TOML config.
-    // Colon-separated list of directories the web UI is permitted to scan.
     if let Ok(roots_env) = std::env::var("SLOC_ALLOWED_ROOTS") {
         let roots: Vec<std::path::PathBuf> = roots_env
             .split(':')

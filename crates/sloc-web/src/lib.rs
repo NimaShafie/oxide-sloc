@@ -28,9 +28,6 @@ use tower_http::cors::CorsLayer;
 
 use sloc_config::{AppConfig, BinaryFileBehavior, MixedLinePolicy};
 
-/// Per-request Content-Security-Policy nonce, inserted into request extensions by
-/// `add_security_headers` and extracted by handlers that render templates with inline
-/// `<script>` or `<style>` blocks.
 #[derive(Clone)]
 struct CspNonce(String);
 
@@ -120,7 +117,6 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         );
     }
 
-    // FIND-012: warn when TLS is not configured in server mode.
     let tls_cert = std::env::var("SLOC_TLS_CERT").ok();
     let tls_key = std::env::var("SLOC_TLS_KEY").ok();
     let tls_enabled = tls_cert.is_some() && tls_key.is_some();

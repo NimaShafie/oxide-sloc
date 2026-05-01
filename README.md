@@ -75,6 +75,7 @@ The script tries in order: existing binary → `dist/` bundle → offline Rust b
 ```bash
 docker pull ghcr.io/nimashafie/oxide-sloc:latest
 # or build locally
+export SLOC_API_KEY=$(openssl rand -hex 32)
 docker compose up
 ```
 
@@ -83,6 +84,15 @@ docker compose up
 docker run --rm -v /path/to/your/repo:/repo:ro \
   ghcr.io/nimashafie/oxide-sloc:latest analyze /repo --plain
 ```
+
+**Environment variables for `docker compose`:**
+
+| Variable | Required | Description |
+|---|---|---|
+| `SLOC_API_KEY` | Yes | Bearer token for all web endpoints. Generate: `openssl rand -hex 32` |
+| `SLOC_ALLOWED_ROOTS` | No | Colon-separated list of paths the web UI may scan. Default: unrestricted |
+| `SLOC_TARGET` | No | Host directory to mount as `/repo`. Default: `./tmp-sloc` |
+| `SLOC_TLS_CERT` / `SLOC_TLS_KEY` | No | Paths to PEM certificate and key for HTTPS |
 
 See [`docs/airgap.md`](./docs/airgap.md) for air-gapped setup and [`docs/server-deployment.md`](./docs/server-deployment.md) for persistent deployments.
 
@@ -418,8 +428,11 @@ oxide-sloc diff baseline.json current.json -c delta.csv -x delta.xlsx
 | Workflow | Trigger | What it does |
 |---|---|---|
 | `ci.yml` | push to `main`, all PRs | fmt → clippy → build → tests → CLI smoke → web health check |
-| `release.yml` | `v*` tag | Cross-compile for 4 platforms → sign Windows binary → GitHub Release |
+| `release.yml` | `v*` tag | Cross-compile for 5 platforms → sign Windows binary → GitHub Release |
 | `docker.yml` | push to `main`, `v*` tag | Build and push Docker image to GHCR |
+| `update-dist.yml` | `v*` tag, manual | Build platform bundles and commit to `dist/` |
+
+All workflows run on Node 24.
 
 To cut a release:
 

@@ -1,4 +1,4 @@
-.PHONY: help dev check fmt lint test build serve analyze bundle docker-build docker-run clean
+.PHONY: help dev check fmt lint test build serve analyze bundle docker-build docker-run clean ci-lint
 
 help:
 	@echo ""
@@ -67,3 +67,6 @@ docker-run:
 
 clean:
 	cargo clean
+
+ci-lint:
+	python3 -c "import xml.etree.ElementTree as ET; ET.parse('ci/jenkins/job-config.xml')"

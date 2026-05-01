@@ -30,6 +30,6 @@ tokio-rustls.workspace = true
 tower.workspace = true
 tower-http.workspace = true
 uuid = { workspace = true }
-sloc-config = { path = "../sloc-config", version = "1.2.5" }
-sloc-core = { path = "../sloc-core", version = "1.2.5" }
-sloc-report = { path = "../sloc-report", version = "1.2.5" }
+sloc-config = { path = "../sloc-config", version = "1.2.6" }
+sloc-core = { path = "../sloc-core", version = "1.2.6" }
+sloc-report = { path = "../sloc-report", version = "1.2.6" }

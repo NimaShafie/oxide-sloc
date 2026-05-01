@@ -19,6 +19,7 @@ Thumbs.db
 
 # Secrets / local env
 .env
+ci/jenkins/.env
 
 # Local test output (not for commit)
 out/

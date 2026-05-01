@@ -8,10 +8,14 @@ This document covers how to wire oxide-sloc into your CI/CD pipelines and how to
 
 1. [General approach](#general-approach)
 2. [Jenkins](#jenkins)
+   - [Obtaining credentials](#obtaining-credentials)
+   - [Local credential storage](#local-credential-storage)
+   - [Pre-flight check](#pre-flight-check)
+   - [Installing plugins](#installing-plugins)
    - [Basic pipeline](#basic-pipeline)
    - [Publishing to Confluence](#publishing-to-confluence)
      - [CLI bootstrap](#option-b----cli-bootstrap-one-command)
-     - [First-build note](#first-build-note)
+     - [First-build trigger](#first-build-trigger)
      - [Build parameters](#build-parameters)
      - [Required plugins](#required-plugins)
      - [Trend charts](#trend-charts-plot-plugin)
@@ -57,6 +61,81 @@ The JSON output (`result.json`) is machine-readable and stable across versions �
 
 ## Jenkins
 
+### Obtaining credentials
+
+#### Initial admin password
+
+If Jenkins was just installed and has never been unlocked:
+
+**Native install (systemd / RPM / DEB package):**
+```bash
+sudo cat /var/lib/jenkins/secrets/initialAdminPassword
+# some installs use /var/jenkins_home instead:
+sudo cat /var/jenkins_home/secrets/initialAdminPassword
+```
+
+**Docker install:**
+```bash
+docker exec <container-name-or-id> cat /var/jenkins_home/secrets/initialAdminPassword
+```
+
+Paste this password into the Jenkins setup wizard at `http://<host>:8080/`.
+
+#### Minting a long-lived API token
+
+After the initial setup wizard is complete:
+
+1. Open **Manage Jenkins → Users → admin → Configure**
+2. Scroll to **API Token → Add new Token**
+3. Give it a name (e.g. `bootstrap-token`) and click **Generate**
+4. **Copy the token now** — it is shown only once and cannot be retrieved later
+
+### Local credential storage
+
+```bash
+cp ci/jenkins/.env.example ci/jenkins/.env
+# Open ci/jenkins/.env and fill in JENKINS_TOKEN with the value from above.
+```
+
+`ci/jenkins/.env` is listed in `.gitignore` — it will never be committed.
+
+**URL note:** LAN/remote addresses (e.g., `http://10.0.0.8:8080`) are valid substitutions for `http://localhost:8080`. Strip any trailing slash — `${JENKINS_URL}/createItem` would otherwise produce `//createItem`, which some reverse proxies reject.
+
+**Job name:** Use `oxide-sloc` for the SCM-driven job created from `ci/jenkins/job-config.xml`. Use `oxide-sloc-manual` only if you also intend to maintain a hand-edited copy of the pipeline in the same Jenkins instance and need to disambiguate.
+
+### Pre-flight check
+
+Run this before `createItem`. It verifies reachability, authentication, plugin presence, and that no conflicting job exists:
+
+```bash
+source ci/jenkins/.env && bash ci/jenkins/preflight.sh
+```
+
+All lines must print `[ok]`. Fix any `[fail]` before continuing.
+
+### Installing plugins
+
+All 7 required plugins are listed in `ci/jenkins/plugins.txt`.
+
+**Path 1 — Docker (online):**
+```bash
+docker exec -u root <container> jenkins-plugin-cli \
+  --plugins $(grep -Ev '^#|^$' ci/jenkins/plugins.txt | awk '{print $1}' | tr '\n' ' ')
+```
+
+**Path 2 — Docker (air-gapped):** download `.hpi` files on a networked machine, transfer, and copy into `/var/jenkins_home/plugins/`. See `ci/jenkins/plugins.txt` for the download loop.
+
+**Path 3 — Native / systemd install (Jenkins CLI jar):**
+```bash
+source ci/jenkins/.env
+curl -sS -o jenkins-cli.jar "${JENKINS_URL}/jnlpJars/jenkins-cli.jar"
+java -jar jenkins-cli.jar -s "${JENKINS_URL}" -auth "${JENKINS_USER}:${JENKINS_TOKEN}" \
+    install-plugin $(grep -Ev '^#|^$' ci/jenkins/plugins.txt | awk '{print $1}')
+java -jar jenkins-cli.jar -s "${JENKINS_URL}" -auth "${JENKINS_USER}:${JENKINS_TOKEN}" safe-restart
+```
+
+After any install, re-run `preflight.sh` — check (c) asserts all plugins are active before you proceed.
+
 ### Basic pipeline
 
 The `Jenkinsfile` shipped at the repo root is a ready-to-use, fully-parameterized pipeline covering setup, quality gates, analysis, web UI health check, optional delivery (webhook/email), and artifact publishing with build-over-build trend charts.
@@ -69,33 +148,36 @@ The `Jenkinsfile` shipped at the repo root is a ready-to-use, fully-parameterize
 
 #### Option B — CLI bootstrap (one command)
 
-Use the importable job definition at `ci/jenkins/job-config.xml`:
+Use the importable job definition at `ci/jenkins/job-config.xml`. Source your credentials file first (see [Local credential storage](#local-credential-storage)):
 
 ```bash
-JENKINS_URL=http://localhost:8080
-JENKINS_USER=admin
-JENKINS_PASS=<password-or-api-token>
-JOB_NAME=oxide-sloc           # change to oxide-sloc-manual etc. if desired
-JAR=$(mktemp)
+source ci/jenkins/.env
 
-# 1. Obtain a CSRF crumb (must share session with the POST below)
-CRUMB=$(curl -su "${JENKINS_USER}:${JENKINS_PASS}" -c "$JAR" -b "$JAR" \
+# 1. Obtain a CSRF crumb
+CRUMB=$(curl -sS -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
     "${JENKINS_URL}/crumbIssuer/api/xml?xpath=concat(//crumbRequestField,\":\",//crumb)")
 
 # 2. Create the job
-curl -su "${JENKINS_USER}:${JENKINS_PASS}" -c "$JAR" -b "$JAR" \
+curl -sS -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
     -H "${CRUMB}" -H "Content-Type: application/xml" \
     --data-binary @ci/jenkins/job-config.xml \
     "${JENKINS_URL}/createItem?name=${JOB_NAME}"
 ```
 
-> **Note:** If you authenticate with a Jenkins API token (not a password), the crumb is not session-bound and the cookie jar is unnecessary — use the token in the Authorization header and skip `-c`/`-b`.
+A 200 response with an empty body means success. A 400 with `job already exists` means the job name is taken.
 
 For **Job DSL** plugin users, `ci/jenkins/seed-job.groovy` achieves the same result as a seed job or via Manage Jenkins → Script Console.
 
-#### First-build note
+#### First-build trigger
 
-The first build of a Pipeline-from-SCM job is unparameterized — Jenkins only discovers the `parameters {}` block after running the Jenkinsfile once. **Run the first build with no parameters** to seed the form. From build #2 onward, **Build with Parameters** in the left-hand sidebar shows the full configurable form.
+Trigger the first build immediately after `createItem`:
+
+```bash
+curl -sS -X POST -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
+    "${JENKINS_URL}/job/${JOB_NAME}/build"
+```
+
+The first build runs with no parameters — Jenkins uses it to discover the `parameters {}` block in the Jenkinsfile. From build #2 onward, **Build with Parameters** in the left-hand sidebar shows the full configurable form.
 
 #### Build parameters
 

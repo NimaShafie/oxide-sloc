@@ -6,6 +6,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Documentation
+
+- **Jenkins bootstrap gaps closed**: Added `ci/jenkins/.env.example` for local credential storage and `ci/jenkins/preflight.sh` pre-flight check script.
+- Added "Obtaining credentials" section to `ci/jenkins/README.md` and `docs/ci-integrations.md` covering initial admin password retrieval (native and Docker installs) and API token minting click-path.
+- Added native/systemd plugin install path (Jenkins CLI jar) as Path 3 in `ci/jenkins/plugins.txt` and `ci/jenkins/README.md`.
+- Rewrote the CLI bootstrap snippet in both docs to use `JENKINS_TOKEN` (sourced from `ci/jenkins/.env`) instead of the bare `JENKINS_PASS` placeholder; dropped the unnecessary cookie jar from token-based authentication.
+- Added explicit seed-build curl (`POST /job/${JOB_NAME}/build`) with note that the first build seeds the parameters form.
+- Added note that LAN/remote URLs (e.g., `http://10.0.0.8:8080`) are valid and that trailing slashes must be stripped.
+- Added job-name decision rule: use `oxide-sloc` for the SCM-driven job; use `oxide-sloc-manual` only when maintaining a parallel hand-edited job in the same instance.
+- Added `ci/jenkins/.env` to `.gitignore`.
+
+---
+
 ## [1.2.7] — 2026-05-01
 
 ### Changed

@@ -16,6 +16,7 @@ categories.workspace = true
 [dependencies]
 rfd = "0.14"
 serde_json = "1"
+subtle = "2"
 anyhow.workspace = true
 askama.workspace = true
 axum.workspace = true
@@ -28,6 +29,7 @@ tokio.workspace = true
 tokio-rustls.workspace = true
 tower.workspace = true
 tower-http.workspace = true
-sloc-config = { path = "../sloc-config", version = "1.2.3" }
-sloc-core = { path = "../sloc-core", version = "1.2.3" }
-sloc-report = { path = "../sloc-report", version = "1.2.3" }
+uuid = { workspace = true }
+sloc-config = { path = "../sloc-config", version = "1.2.4" }
+sloc-core = { path = "../sloc-core", version = "1.2.4" }
+sloc-report = { path = "../sloc-report", version = "1.2.4" }

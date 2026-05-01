@@ -28,6 +28,12 @@ use tower_http::cors::CorsLayer;
 
 use sloc_config::{AppConfig, BinaryFileBehavior, MixedLinePolicy};
 
+/// Per-request Content-Security-Policy nonce, inserted into request extensions by
+/// `add_security_headers` and extracted by handlers that render templates with inline
+/// `<script>` or `<style>` blocks.
+#[derive(Clone)]
+struct CspNonce(String);
+
 static CHART_JS: &[u8] = include_bytes!("../static/chart.umd.min.js");
 
 use sloc_core::{
@@ -393,20 +399,17 @@ async fn require_api_key(
 }
 
 fn ct_eq(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.bytes()
-        .zip(b.bytes())
-        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
-        == 0
+    use subtle::ConstantTimeEq;
+    a.as_bytes().ct_eq(b.as_bytes()).into()
 }
 
 async fn add_security_headers(
     State(state): State<AppState>,
-    req: Request<Body>,
+    mut req: Request<Body>,
     next: Next,
 ) -> Response {
+    let nonce = uuid::Uuid::new_v4().to_string().replace('-', "");
+    req.extensions_mut().insert(CspNonce(nonce.clone()));
     let mut resp = next.run(req).await;
     let h = resp.headers_mut();
     h.insert("X-Frame-Options", HeaderValue::from_static("DENY"));
@@ -418,17 +421,22 @@ async fn add_security_headers(
         "Referrer-Policy",
         HeaderValue::from_static("strict-origin-when-cross-origin"),
     );
+    let csp = format!(
+        "default-src 'self'; \
+         style-src 'self' 'nonce-{nonce}'; \
+         img-src 'self' data: blob:; \
+         script-src 'self' 'nonce-{nonce}'; \
+         font-src 'self' data:; \
+         object-src 'none'; \
+         frame-ancestors 'none'"
+    );
     h.insert(
         "Content-Security-Policy",
-        HeaderValue::from_static(
-            "default-src 'self'; \
-             style-src 'self' 'unsafe-inline'; \
-             img-src 'self' data: blob:; \
-             script-src 'self' 'unsafe-inline'; \
-             font-src 'self' data:; \
-             object-src 'none'; \
-             frame-ancestors 'none'",
-        ),
+        HeaderValue::from_str(&csp).unwrap_or_else(|_| {
+            HeaderValue::from_static(
+                "default-src 'self'; object-src 'none'; frame-ancestors 'none'",
+            )
+        }),
     );
     h.insert(
         "X-Permitted-Cross-Domain-Policies",
@@ -480,8 +488,10 @@ async fn rate_limit(State(state): State<AppState>, req: Request<Body>, next: Nex
     next.run(req).await
 }
 
-async fn splash() -> impl IntoResponse {
-    let template = SplashTemplate {};
+async fn splash(
+    axum::extract::Extension(CspNonce(csp_nonce)): axum::extract::Extension<CspNonce>,
+) -> impl IntoResponse {
+    let template = SplashTemplate { csp_nonce };
     Html(
         template
             .render()
@@ -489,7 +499,10 @@ async fn splash() -> impl IntoResponse {
     )
 }
 
-async fn index(Query(query): Query<IndexQuery>) -> impl IntoResponse {
+async fn index(
+    axum::extract::Extension(CspNonce(csp_nonce)): axum::extract::Extension<CspNonce>,
+    Query(query): Query<IndexQuery>,
+) -> impl IntoResponse {
     let prefill_json = if query.prefilled.as_deref() == Some("1") || query.path.is_some() {
         let policy = query
             .mixed_line_policy
@@ -532,6 +545,7 @@ async fn index(Query(query): Query<IndexQuery>) -> impl IntoResponse {
     let template = IndexTemplate {
         version: env!("CARGO_PKG_VERSION"),
         prefill_json,
+        csp_nonce,
     };
 
     Html(
@@ -541,7 +555,10 @@ async fn index(Query(query): Query<IndexQuery>) -> impl IntoResponse {
     )
 }
 
-async fn scan_setup_handler(State(state): State<AppState>) -> impl IntoResponse {
+async fn scan_setup_handler(
+    State(state): State<AppState>,
+    axum::extract::Extension(CspNonce(csp_nonce)): axum::extract::Extension<CspNonce>,
+) -> impl IntoResponse {
     let recent_scans_json = {
         let reg = state.registry.lock().await;
         let arr: Vec<serde_json::Value> = reg
@@ -571,7 +588,10 @@ async fn scan_setup_handler(State(state): State<AppState>) -> impl IntoResponse 
         serde_json::to_string(&arr).unwrap_or_else(|_| "[]".to_string())
     };
 
-    let template = ScanSetupTemplate { recent_scans_json };
+    let template = ScanSetupTemplate {
+        recent_scans_json,
+        csp_nonce,
+    };
     Html(
         template
             .render()
@@ -733,6 +753,7 @@ struct LocateReportForm {
 
 async fn locate_report_handler(
     State(state): State<AppState>,
+    axum::extract::Extension(CspNonce(csp_nonce)): axum::extract::Extension<CspNonce>,
     Form(form): Form<LocateReportForm>,
 ) -> impl IntoResponse {
     let file_ext = Path::new(&form.file_path)
@@ -745,6 +766,7 @@ async fn locate_report_handler(
             message: "Only .html report files can be located via this form.".to_string(),
             last_report_url: Some("/view-reports".to_string()),
             last_report_label: Some("View Reports".to_string()),
+            csp_nonce: csp_nonce.clone(),
         }
         .render()
         .unwrap_or_else(|_| "<pre>Invalid file type.</pre>".to_string());
@@ -757,6 +779,7 @@ async fn locate_report_handler(
                 message: "Report file not found or path is invalid.".to_string(),
                 last_report_url: Some("/view-reports".to_string()),
                 last_report_label: Some("View Reports".to_string()),
+                csp_nonce: csp_nonce.clone(),
             }
             .render()
             .unwrap_or_else(|_| "<pre>Invalid path.</pre>".to_string());
@@ -772,6 +795,7 @@ async fn locate_report_handler(
                 message: "Report file must be within the configured output directory.".to_string(),
                 last_report_url: Some("/view-reports".to_string()),
                 last_report_label: Some("View Reports".to_string()),
+                csp_nonce: csp_nonce.clone(),
             }
             .render()
             .unwrap_or_else(|_| "<pre>Invalid path.</pre>".to_string());
@@ -785,6 +809,7 @@ async fn locate_report_handler(
                 message: "Report file has no parent directory.".to_string(),
                 last_report_url: Some("/view-reports".to_string()),
                 last_report_label: Some("View Reports".to_string()),
+                csp_nonce: csp_nonce.clone(),
             }
             .render()
             .unwrap_or_else(|_| "<pre>Invalid path.</pre>".to_string());
@@ -866,6 +891,7 @@ async fn locate_report_handler(
                     ),
                     last_report_url: Some("/view-reports".to_string()),
                     last_report_label: Some("View Reports".to_string()),
+                    csp_nonce: csp_nonce.clone(),
                 }
                 .render()
                 .unwrap_or_else(|_| "<pre>Link failed.</pre>".to_string());
@@ -885,6 +911,7 @@ async fn locate_report_handler(
         ),
         last_report_url: Some("/view-reports".to_string()),
         last_report_label: Some("View Reports".to_string()),
+        csp_nonce: csp_nonce.clone(),
     }
     .render()
     .unwrap_or_else(|_| "<pre>Link failed.</pre>".to_string());
@@ -1029,6 +1056,7 @@ async fn preview_handler(
 
 async fn analyze_handler(
     State(state): State<AppState>,
+    axum::extract::Extension(CspNonce(csp_nonce)): axum::extract::Extension<CspNonce>,
     Form(form): Form<AnalyzeForm>,
 ) -> impl IntoResponse {
     let _permit = match Arc::clone(&state.analyze_semaphore).try_acquire_owned() {
@@ -1040,6 +1068,7 @@ async fn analyze_handler(
                         .to_string(),
                 last_report_url: None,
                 last_report_label: None,
+                csp_nonce: csp_nonce.clone(),
             };
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -1064,6 +1093,7 @@ async fn analyze_handler(
                     .to_string(),
                 last_report_url: None,
                 last_report_label: None,
+                csp_nonce: csp_nonce.clone(),
             };
             return (
                 StatusCode::FORBIDDEN,
@@ -1087,6 +1117,7 @@ async fn analyze_handler(
                 message: "The requested path is not within an allowed scan directory.".to_string(),
                 last_report_url: None,
                 last_report_label: None,
+                csp_nonce: csp_nonce.clone(),
             };
             return (
                 StatusCode::FORBIDDEN,
@@ -1180,6 +1211,7 @@ async fn analyze_handler(
                 message: "Analysis failed. Check that the path exists and is readable.".to_string(),
                 last_report_url: None,
                 last_report_label: None,
+                csp_nonce: csp_nonce.clone(),
             };
             return Html(
                 template
@@ -1232,6 +1264,7 @@ async fn analyze_handler(
                     .to_string(),
                 last_report_url: None,
                 last_report_label: None,
+                csp_nonce: csp_nonce.clone(),
             };
             return Html(
                 template
@@ -1263,6 +1296,7 @@ async fn analyze_handler(
                 message: "Failed to save report artifacts. Check available disk space.".to_string(),
                 last_report_url: None,
                 last_report_label: None,
+                csp_nonce: csp_nonce.clone(),
             };
             return Html(
                 template
@@ -1575,6 +1609,7 @@ async fn analyze_handler(
             })
             .collect(),
         scan_config_url: format!("/runs/{run_id}/scan-config"),
+        csp_nonce,
     };
 
     Html(
@@ -1612,6 +1647,7 @@ fn build_pdf_filename(report_title: &str, run_id: &str) -> String {
 
 async fn artifact_handler(
     State(state): State<AppState>,
+    axum::extract::Extension(CspNonce(csp_nonce)): axum::extract::Extension<CspNonce>,
     AxumPath((run_id, artifact)): AxumPath<(String, String)>,
     Query(query): Query<ArtifactQuery>,
 ) -> Response {
@@ -1663,6 +1699,7 @@ async fn artifact_handler(
                         ),
                         last_report_url: Some("/view-reports".to_string()),
                         last_report_label: Some("View Reports".to_string()),
+                        csp_nonce: csp_nonce.clone(),
                     }
                     .render()
                     .unwrap_or_else(|_| "<pre>Report not found.</pre>".to_string());
@@ -1716,6 +1753,7 @@ async fn artifact_handler(
                         message: msg,
                         last_report_url: Some("/view-reports".to_string()),
                         last_report_label: Some("View Reports".to_string()),
+                        csp_nonce: csp_nonce.clone(),
                     }
                     .render()
                     .unwrap_or_else(|_| "<pre>File not found.</pre>".to_string());
@@ -1732,6 +1770,7 @@ async fn artifact_handler(
                     message: msg,
                     last_report_url: Some("/view-reports".to_string()),
                     last_report_label: Some("View Reports".to_string()),
+                    csp_nonce: csp_nonce.clone(),
                 }
                 .render()
                 .unwrap_or_else(|_| "<pre>PDF not available.</pre>".to_string());
@@ -1770,6 +1809,7 @@ async fn artifact_handler(
                         message: msg,
                         last_report_url: Some("/view-reports".to_string()),
                         last_report_label: Some("View Reports".to_string()),
+                        csp_nonce: csp_nonce.clone(),
                     }
                     .render()
                     .unwrap_or_else(|_| "<pre>File not found.</pre>".to_string());
@@ -1786,6 +1826,7 @@ async fn artifact_handler(
                     message: msg,
                     last_report_url: Some("/view-reports".to_string()),
                     last_report_label: Some("View Reports".to_string()),
+                    csp_nonce: csp_nonce.clone(),
                 }
                 .render()
                 .unwrap_or_else(|_| "<pre>JSON not available.</pre>".to_string());
@@ -1829,6 +1870,7 @@ async fn artifact_handler(
                         message: msg,
                         last_report_url: Some("/view-reports".to_string()),
                         last_report_label: Some("View Reports".to_string()),
+                        csp_nonce: csp_nonce.clone(),
                     }
                     .render()
                     .unwrap_or_else(|_| "<pre>File not found.</pre>".to_string());
@@ -1878,6 +1920,7 @@ async fn artifact_handler(
                         ),
                         last_report_url: Some("/view-reports".to_string()),
                         last_report_label: Some("View Reports".to_string()),
+                        csp_nonce: csp_nonce.clone(),
                     }
                     .render()
                     .unwrap_or_else(|_| "<pre>Sub-report not found.</pre>".to_string());
@@ -1964,6 +2007,7 @@ struct HistoryQuery {
 
 async fn history_handler(
     State(state): State<AppState>,
+    axum::extract::Extension(CspNonce(csp_nonce)): axum::extract::Extension<CspNonce>,
     Query(query): Query<HistoryQuery>,
 ) -> impl IntoResponse {
     let mut entries = {
@@ -1977,6 +2021,7 @@ async fn history_handler(
         entries,
         total_scans,
         linked,
+        csp_nonce,
     };
     Html(
         template
@@ -1986,7 +2031,10 @@ async fn history_handler(
     .into_response()
 }
 
-async fn compare_select_handler(State(state): State<AppState>) -> impl IntoResponse {
+async fn compare_select_handler(
+    State(state): State<AppState>,
+    axum::extract::Extension(CspNonce(csp_nonce)): axum::extract::Extension<CspNonce>,
+) -> impl IntoResponse {
     let mut entries = {
         let reg = state.registry.lock().await;
         make_history_rows(&reg)
@@ -1996,6 +2044,7 @@ async fn compare_select_handler(State(state): State<AppState>) -> impl IntoRespo
     let template = CompareSelectTemplate {
         entries,
         total_scans,
+        csp_nonce,
     };
     Html(
         template
@@ -2058,6 +2107,7 @@ fn summary_delta(curr: u64, prev: Option<u64>) -> (String, &'static str) {
 
 async fn compare_handler(
     State(state): State<AppState>,
+    axum::extract::Extension(CspNonce(csp_nonce)): axum::extract::Extension<CspNonce>,
     Query(query): Query<CompareQuery>,
 ) -> impl IntoResponse {
     // When invoked without run IDs (e.g. clicking the Compare nav link directly)
@@ -2082,6 +2132,7 @@ async fn compare_handler(
                 .to_string(),
             last_report_url: Some("/compare-scans".to_string()),
             last_report_label: Some("Compare Scans".to_string()),
+            csp_nonce: csp_nonce.clone(),
         }
         .render()
         .unwrap_or_else(|_| "<pre>Run not found.</pre>".to_string());
@@ -2117,6 +2168,7 @@ async fn compare_handler(
                 .to_string(),
             last_report_url: Some("/compare-scans".to_string()),
             last_report_label: Some("Compare Scans".to_string()),
+            csp_nonce: csp_nonce.clone(),
         }
         .render()
         .unwrap_or_else(|_| "<pre>JSON data missing.</pre>".to_string());
@@ -2142,6 +2194,7 @@ async fn compare_handler(
                 message,
                 last_report_url: Some("/compare-scans".to_string()),
                 last_report_label: Some("Compare Scans".to_string()),
+                csp_nonce: csp_nonce.clone(),
             }
             .render()
             .unwrap_or_else(|_| "<pre>Baseline load failed.</pre>".to_string());
@@ -2167,6 +2220,7 @@ async fn compare_handler(
                 message,
                 last_report_url: Some("/compare-scans".to_string()),
                 last_report_label: Some("Compare Scans".to_string()),
+                csp_nonce: csp_nonce.clone(),
             }
             .render()
             .unwrap_or_else(|_| "<pre>Current load failed.</pre>".to_string());
@@ -2250,6 +2304,7 @@ async fn compare_handler(
         current_git_branch: current_entry.git_branch.clone().unwrap_or_default(),
         baseline_git_tags: baseline_entry.git_tags.clone(),
         current_git_tags: current_entry.git_tags.clone(),
+        csp_nonce,
     };
 
     Html(
@@ -2565,7 +2620,11 @@ struct EmbedQuery {
     theme: Option<String>,
 }
 
-async fn embed_handler(State(state): State<AppState>, Query(query): Query<EmbedQuery>) -> Response {
+async fn embed_handler(
+    State(state): State<AppState>,
+    axum::extract::Extension(CspNonce(csp_nonce)): axum::extract::Extension<CspNonce>,
+    Query(query): Query<EmbedQuery>,
+) -> Response {
     let entry = {
         let reg = state.registry.lock().await;
         if let Some(id) = &query.run_id {
@@ -2596,13 +2655,14 @@ async fn embed_handler(State(state): State<AppState>, Query(query): Query<EmbedQ
         })
         .unwrap_or_default();
 
-    Html(render_embed_widget(&entry, &languages, dark)).into_response()
+    Html(render_embed_widget(&entry, &languages, dark, &csp_nonce)).into_response()
 }
 
 fn render_embed_widget(
     entry: &RegistryEntry,
     languages: &[(String, u64, u64)],
     dark: bool,
+    csp_nonce: &str,
 ) -> String {
     let s = &entry.summary;
     let total = s.code_lines + s.comment_lines + s.blank_lines;
@@ -2656,7 +2716,7 @@ fn render_embed_widget(
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>OxideSLOC &mdash; {project_esc}</title>
   <script src="/static/chart.js"></script>
-  <style>
+  <style nonce="{csp_nonce}">
     *{{box-sizing:border-box;margin:0;padding:0}}
     body{{background:{bg};color:{fg};font-family:system-ui,sans-serif;font-size:13px;padding:12px}}
     h2{{font-size:15px;font-weight:700;margin-bottom:2px}}
@@ -2688,7 +2748,7 @@ fn render_embed_widget(
     {lang_table}
   </div>
   <div class="footer">oxide-sloc</div>
-  <script>
+  <script nonce="{csp_nonce}">
     new Chart(document.getElementById('c'),{{
       type:'doughnut',
       data:{{
@@ -3559,7 +3619,7 @@ struct SubmoduleRow {
   <meta charset="utf-8">
   <title>OxideSLOC | samples/basic</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
-  <style>
+  <style nonce="{{ csp_nonce }}">
     :root {
       --bg: #efe9e2;
       --surface: #fcfaf7;
@@ -4568,7 +4628,7 @@ struct SubmoduleRow {
     </div>
   </div>
 
-  <script>
+  <script nonce="{{ csp_nonce }}">
     (function () {
       var form = document.getElementById("analyze-form");
       var loading = document.getElementById("loading");
@@ -5604,7 +5664,7 @@ struct SubmoduleRow {
       })();
     })();
   </script>
-  <script>
+  <script nonce="{{ csp_nonce }}">
     (function () {
       var raw = {{ prefill_json|safe }};
       if (!raw || typeof raw !== 'object' || !raw.path) return;
@@ -5649,6 +5709,7 @@ struct SubmoduleRow {
 struct IndexTemplate {
     version: &'static str,
     prefill_json: String,
+    csp_nonce: String,
 }
 
 // ── SplashTemplate ────────────────────────────────────────────────────────────
@@ -5663,7 +5724,7 @@ struct IndexTemplate {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC — Source Line Analysis Workbench</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
-  <style>
+  <style nonce="{{ csp_nonce }}">
     :root {
       --radius:18px; --bg:#f5efe8; --surface:rgba(255,255,255,0.86); --surface-2:#fbf7f2;
       --line:#e6d0bf; --line-strong:#d8bfad; --text:#43342d; --muted:#7b675b; --muted-2:#a08878;
@@ -5856,7 +5917,7 @@ struct IndexTemplate {
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
   </footer>
 
-  <script>
+  <script nonce="{{ csp_nonce }}">
     (function () {
       var storageKey = 'oxide-sloc-theme';
       var body = document.body;
@@ -5935,7 +5996,9 @@ struct IndexTemplate {
 "##,
     ext = "html"
 )]
-struct SplashTemplate {}
+struct SplashTemplate {
+    csp_nonce: String,
+}
 
 // ── ScanSetupTemplate ─────────────────────────────────────────────────────────
 
@@ -5949,7 +6012,7 @@ struct SplashTemplate {}
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC — Start a Scan</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
-  <style>
+  <style nonce="{{ csp_nonce }}">
     :root {
       --radius:18px; --bg:#f5efe8; --surface:rgba(255,255,255,0.86); --surface-2:#fbf7f2;
       --line:#e6d0bf; --line-strong:#d8bfad; --text:#43342d; --muted:#7b675b; --muted-2:#a08878;
@@ -6173,7 +6236,7 @@ struct SplashTemplate {}
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
   </footer>
 
-  <script>
+  <script nonce="{{ csp_nonce }}">
     (function () {
       var storageKey = 'oxide-sloc-theme';
       var body = document.body;
@@ -6297,6 +6360,7 @@ struct SplashTemplate {}
 )]
 struct ScanSetupTemplate {
     recent_scans_json: String,
+    csp_nonce: String,
 }
 
 #[derive(Template)]
@@ -6309,7 +6373,7 @@ struct ScanSetupTemplate {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC | {{ report_title }} | Report</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
-  <style>
+  <style nonce="{{ csp_nonce }}">
     :root {
       --radius: 18px;
       --bg: #f5efe8;
@@ -6932,7 +6996,7 @@ struct ScanSetupTemplate {
 
   </div>
 
-  <script>
+  <script nonce="{{ csp_nonce }}">
     (function () {
       var body = document.body;
       var themeToggle = document.getElementById('theme-toggle');
@@ -7115,6 +7179,7 @@ struct ResultTemplate {
     // submodule breakdown (empty when not requested)
     submodule_rows: Vec<SubmoduleRow>,
     scan_config_url: String,
+    csp_nonce: String,
 }
 
 #[derive(Template)]
@@ -7127,7 +7192,7 @@ struct ResultTemplate {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC | Error</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
-  <style>
+  <style nonce="{{ csp_nonce }}">
     :root {
       --radius:18px; --bg:#f5efe8; --surface:rgba(255,255,255,0.86); --surface-2:#fbf7f2;
       --line:#e6d0bf; --line-strong:#dcb89f; --text:#43342d; --muted:#7b675b; --muted-2:#a08878;
@@ -7212,7 +7277,7 @@ struct ResultTemplate {
       </div>
     </div>
   </div>
-  <script>
+  <script nonce="{{ csp_nonce }}">
     (function(){var k="oxide-theme",b=document.body,s=localStorage.getItem(k);if(s==="dark")b.classList.add("dark-theme");document.getElementById("theme-toggle").addEventListener("click",function(){var d=b.classList.toggle("dark-theme");localStorage.setItem(k,d?"dark":"light");});})();
     (function spawnCodeParticles() {
       var container = document.getElementById('code-particles');
@@ -7246,6 +7311,7 @@ struct ErrorTemplate {
     last_report_url: Option<String>,
     /// Label for the secondary action button; defaults to "View last report" when None.
     last_report_label: Option<String>,
+    csp_nonce: String,
 }
 
 // ── HistoryTemplate (View Reports) ────────────────────────────────────────────
@@ -7260,7 +7326,7 @@ struct ErrorTemplate {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC | View Reports</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
-  <style>
+  <style nonce="{{ csp_nonce }}">
     :root {
       --radius:18px; --bg:#f5efe8; --surface:rgba(255,255,255,0.82); --surface-2:#fbf7f2;
       --line:#e6d0bf; --line-strong:#d8bfad; --text:#43342d; --muted:#7b675b; --muted-2:#a08878;
@@ -7545,7 +7611,7 @@ struct ErrorTemplate {
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
   </footer>
 
-  <script>
+  <script nonce="{{ csp_nonce }}">
     (function () {
       // ── Theme ──────────────────────────────────────────────────────────────
       var storageKey = 'oxide-sloc-theme';
@@ -7774,6 +7840,7 @@ struct HistoryTemplate {
     entries: Vec<HistoryEntryRow>,
     total_scans: usize,
     linked: bool,
+    csp_nonce: String,
 }
 
 // ── CompareSelectTemplate ──────────────────────────────────────────────────────
@@ -7788,7 +7855,7 @@ struct HistoryTemplate {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC | Compare Scans</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
-  <style>
+  <style nonce="{{ csp_nonce }}">
     :root {
       --radius:18px; --bg:#f5efe8; --surface:rgba(255,255,255,0.82); --surface-2:#fbf7f2;
       --line:#e6d0bf; --line-strong:#d8bfad; --text:#43342d; --muted:#7b675b; --muted-2:#a08878;
@@ -8033,7 +8100,7 @@ struct HistoryTemplate {
     &nbsp;·&nbsp; <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
   </footer>
 
-  <script>
+  <script nonce="{{ csp_nonce }}">
     (function () {
       // ── Theme ──────────────────────────────────────────────────────────────
       var storageKey = 'oxide-sloc-theme';
@@ -8267,6 +8334,7 @@ struct HistoryTemplate {
 struct CompareSelectTemplate {
     entries: Vec<HistoryEntryRow>,
     total_scans: usize,
+    csp_nonce: String,
 }
 
 // ── CompareTemplate ────────────────────────────────────────────────────────────
@@ -8281,7 +8349,7 @@ struct CompareSelectTemplate {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OxideSLOC | Scan Delta</title>
   <link rel="icon" type="image/png" href="/images/logo/small-logo.png">
-  <style>
+  <style nonce="{{ csp_nonce }}">
     :root {
       --radius:18px; --bg:#f5efe8; --surface:#fbf7f2; --surface-2:#f4ede4;
       --line:#e6d0bf; --line-strong:#d8bfad; --text:#43342d; --muted:#7b675b; --muted-2:#a08777;
@@ -8645,7 +8713,7 @@ struct CompareSelectTemplate {
     &nbsp;·&nbsp; <a href="https://github.com/oxide-sloc/oxide-sloc" target="_blank" rel="noopener">View on GitHub</a>
   </footer>
 
-  <script>
+  <script nonce="{{ csp_nonce }}">
     (function () {
       var storageKey = 'oxide-sloc-theme';
       var body = document.body;
@@ -9147,4 +9215,5 @@ struct CompareTemplate {
     current_git_branch: String,
     baseline_git_tags: Option<String>,
     current_git_tags: Option<String>,
+    csp_nonce: String,
 }

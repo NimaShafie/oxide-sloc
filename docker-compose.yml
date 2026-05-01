@@ -8,6 +8,15 @@ services:
     environment:
       - SLOC_BROWSER=/usr/bin/chromium
       - RUST_LOG=info
+      # SECURITY (REQUIRED for server deployments): set a strong random API key.
+      # Generate one with: openssl rand -hex 32
+      # All protected endpoints will require: Authorization: Bearer <key>
+      # Leaving this unset logs a warning and runs unauthenticated — safe only
+      # on localhost or behind a trusted network boundary.
+      - SLOC_API_KEY=${SLOC_API_KEY:?SLOC_API_KEY must be set — run: export SLOC_API_KEY=$(openssl rand -hex 32)}
+      # SECURITY: restrict the web UI to scanning only the mounted /repo path.
+      # Add more colon-separated roots if you mount additional volumes.
+      - SLOC_ALLOWED_ROOTS=/repo
     deploy:
       resources:
         limits:

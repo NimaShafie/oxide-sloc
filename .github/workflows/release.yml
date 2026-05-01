@@ -34,7 +34,7 @@ jobs:
             artifact: oxide-sloc-windows-x86_64.exe
             binary: oxide-sloc.exe
 
-          - os: macos-13
+          - os: macos-latest
             target: x86_64-apple-darwin
             artifact: oxide-sloc-macos-x86_64
             binary: oxide-sloc

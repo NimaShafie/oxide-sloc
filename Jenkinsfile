@@ -234,6 +234,14 @@ pipeline {
                     AGENT_ARCHIVE="${CARGO_HOME}/../vendor.tar.xz"
                     AGENT_SHA="${CARGO_HOME}/../vendor.tar.xz.sha256"
 
+                    # Stale vendor/ from a recycled workspace (cleanWs only runs in
+                    # post{}; a prior session may have crashed before cleanup).  If
+                    # vendor.tar.xz is alongside it, the tarball is authoritative —
+                    # re-extract to guarantee Cargo.lock-aligned versions.
+                    if [ -d vendor ] && [ -f vendor.tar.xz ]; then
+                        echo "vendor/ exists alongside a tarball — wiping and re-extracting for freshness."
+                        rm -rf vendor
+                    fi
                     if [ -d vendor ]; then
                         echo "vendor/ already present — skipping extraction."
                     elif [ -f vendor.tar.xz ]; then

@@ -2294,14 +2294,14 @@ pub mod ts {
 
     /// Parse C or C++ source with tree-sitter-c.
     pub fn analyze_c(text: &str) -> Option<RawFileAnalysis> {
-        analyze_lines(text, tree_sitter_c::language(), &["comment"], None)
+        analyze_lines(text, tree_sitter_c::LANGUAGE.into(), &["comment"], None)
     }
 
     /// Parse Python source with tree-sitter-python.
     pub fn analyze_python(text: &str) -> Option<RawFileAnalysis> {
         analyze_lines(
             text,
-            tree_sitter_python::language(),
+            tree_sitter_python::LANGUAGE.into(),
             &["comment"],
             Some("expression_statement"),
         )
@@ -2314,7 +2314,7 @@ mod tests {
 
     #[test]
     fn python_docstrings_are_separated() {
-        let input = r#""""module docs""""
+        let input = r#""""module docs"""
 
 
 def fn_a():

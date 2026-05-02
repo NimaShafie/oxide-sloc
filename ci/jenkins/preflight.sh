@@ -177,7 +177,7 @@ if [ -n "$crumb" ]; then
     SYSLIB_OUT=$(curl -sS -b "$cookies" --max-time 15 \
         -u "${JENKINS_USER}:${JENKINS_TOKEN}" -H "$crumb" \
         --data-urlencode 'script=
-            def proc = ["sh","-c","pkg-config --exists wayland-client gtk+-3.0 && echo OK || echo MISSING:$(pkg-config --print-errors wayland-client gtk+-3.0 2>&1 | head -1)"].execute()
+            def proc = ["sh","-c","pkg-config --exists wayland-client gtk+-3.0 && echo OK || echo MISSING:\$(pkg-config --print-errors wayland-client gtk+-3.0 2>&1 | head -1)"].execute()
             proc.waitFor()
             print proc.in.text.trim()
         ' \

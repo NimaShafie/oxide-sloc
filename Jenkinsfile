@@ -228,13 +228,15 @@ pipeline {
                     cargo --version
                 '''
                 sh '''
-                    if [ ! -d vendor ]; then
+                    if [ -d vendor ]; then
+                        echo "vendor/ already present — skipping extraction."
+                    elif [ -f vendor.tar.xz ]; then
                         echo "Verifying vendor.tar.xz integrity..."
                         sha256sum -c vendor.tar.xz.sha256
                         echo "Decompressing vendor.tar.xz (22 MB → 362 MB)..."
                         tar -xJf vendor.tar.xz
                     else
-                        echo "vendor/ already present — skipping extraction."
+                        echo "No vendor.tar.xz present — cargo will fetch from crates.io (online mode)."
                     fi
                 '''
             }

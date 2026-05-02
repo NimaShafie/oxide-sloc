@@ -353,10 +353,13 @@ pipeline {
                             | sh -s -- -y --default-toolchain stable
                         export PATH="$HOME/.cargo/bin:$PATH"
                     fi
-                    if [ ! -d vendor ]; then
+                    if [ -d vendor ]; then
+                        :   # already present
+                    elif [ -f vendor.tar.xz ]; then
                         sha256sum -c vendor.tar.xz.sha256
                         tar -xJf vendor.tar.xz
                     fi
+                    # No vendor.tar.xz → cargo fetches from crates.io (online mode).
                 '''
             }
         }

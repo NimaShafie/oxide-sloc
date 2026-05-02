@@ -186,12 +186,6 @@ pipeline {
         RUST_LOG      = 'warn'
     }
 
-    triggers {
-        // Bitbucket Cloud/Server webhook — requires Bitbucket Branch Source plugin.
-        // Configure webhook in Bitbucket to POST to <JENKINS_URL>/bitbucket-hook/
-        // For pull requests: install the "Bitbucket Pull Request Builder" plugin.
-    }
-
     stages {
 
         // ── 0. Checkout ────────────────────────────────────────────────────────

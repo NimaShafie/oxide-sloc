@@ -8,6 +8,18 @@ on:
 permissions:
   contents: write
 
+# Required secrets (all optional — steps skip gracefully if not set):
+#   WINDOWS_CERTIFICATE          — base64-encoded PFX for Windows Authenticode signing
+#   WINDOWS_CERTIFICATE_PASSWORD — password for the PFX
+#   APPLE_DEVELOPER_ID_CERT      — base64-encoded PFX for macOS Developer ID signing
+#   APPLE_DEVELOPER_ID_CERT_PASSWORD — password for the macOS PFX
+#   APPLE_NOTARIZE_APPLE_ID      — Apple ID email for notarization
+#   APPLE_NOTARIZE_PASSWORD      — app-specific password for notarization
+#   APPLE_NOTARIZE_TEAM_ID       — Apple Developer Team ID
+#   GPG_PRIVATE_KEY              — armored GPG private key (gpg --export-secret-key --armor)
+#   GPG_PASSPHRASE               — passphrase protecting the GPG key
+#   VT_API_KEY                   — VirusTotal API v3 key for malware scanning
+
 jobs:
   build:
     name: Build ${{ matrix.target }}
@@ -80,6 +92,87 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: bash ci/release.sh ${{ matrix.target }}
 
+      # ── macOS code signing + notarization ──────────────────────────────────
+
+      - name: Check for macOS signing certificate
+        id: cert_mac
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          if [ -n "$CERT" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          CERT: ${{ secrets.APPLE_DEVELOPER_ID_CERT }}
+
+      - name: Import macOS signing certificate into temporary keychain
+        if: runner.os == 'macOS' && steps.cert_mac.outputs.available == 'true'
+        shell: bash
+        env:
+          APPLE_DEVELOPER_ID_CERT: ${{ secrets.APPLE_DEVELOPER_ID_CERT }}
+          APPLE_DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          CERT_PATH="$RUNNER_TEMP/signing.p12"
+          echo "$APPLE_DEVELOPER_ID_CERT" | base64 --decode > "$CERT_PATH"
+          security import "$CERT_PATH" -P "$APPLE_DEVELOPER_ID_CERT_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          rm -f "$CERT_PATH"
+          # Persist keychain path for subsequent steps
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Sign macOS binary
+        if: runner.os == 'macOS' && steps.cert_mac.outputs.available == 'true'
+        shell: bash
+        run: |
+          codesign \
+            --sign "Developer ID Application" \
+            --timestamp \
+            --options runtime \
+            --force \
+            "./target/${{ matrix.target }}/release/oxide-sloc"
+
+      - name: Verify macOS code signature
+        if: runner.os == 'macOS' && steps.cert_mac.outputs.available == 'true'
+        shell: bash
+        run: |
+          codesign \
+            --verify \
+            --deep \
+            --strict \
+            --verbose=2 \
+            "./target/${{ matrix.target }}/release/oxide-sloc"
+
+      - name: Notarize macOS binary
+        if: runner.os == 'macOS' && steps.cert_mac.outputs.available == 'true'
+        shell: bash
+        env:
+          APPLE_NOTARIZE_APPLE_ID: ${{ secrets.APPLE_NOTARIZE_APPLE_ID }}
+          APPLE_NOTARIZE_PASSWORD: ${{ secrets.APPLE_NOTARIZE_PASSWORD }}
+          APPLE_NOTARIZE_TEAM_ID: ${{ secrets.APPLE_NOTARIZE_TEAM_ID }}
+        run: |
+          xcrun notarytool submit \
+            "./target/${{ matrix.target }}/release/oxide-sloc" \
+            --apple-id "$APPLE_NOTARIZE_APPLE_ID" \
+            --password "$APPLE_NOTARIZE_PASSWORD" \
+            --team-id "$APPLE_NOTARIZE_TEAM_ID" \
+            --wait
+
+      - name: Remove temporary macOS keychain
+        if: runner.os == 'macOS' && steps.cert_mac.outputs.available == 'true'
+        shell: bash
+        run: |
+          security delete-keychain "$KEYCHAIN_PATH"
+
+      # ── End macOS signing ──────────────────────────────────────────────────
+
       - name: Rename binary
         shell: bash
         run: cp target/${{ matrix.target }}/release/${{ matrix.binary }} ${{ matrix.artifact }}
@@ -150,9 +243,285 @@ jobs:
             vendor.tar.xz
             vendor.tar.xz.sha256
 
+  sign:
+    name: Sign release artifacts
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # required for cosign OIDC keyless signing
+      contents: read
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      # ── GPG signing ────────────────────────────────────────────────────────
+
+      - name: Check for GPG private key
+        id: gpg_check
+        shell: bash
+        run: |
+          if [ -n "$GPG_KEY" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GPG_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+
+      - name: Import GPG key
+        if: steps.gpg_check.outputs.available == 'true'
+        shell: bash
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+
+      - name: GPG sign binaries
+        if: steps.gpg_check.outputs.available == 'true'
+        shell: bash
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          for f in artifacts/oxide-sloc-*; do
+            fname="$(basename "$f")"
+            # Skip any existing signature/bundle files and non-binary files
+            case "$fname" in
+              *.sig|*.bundle|*.asc|*.sha256|*.txt|*.md) continue ;;
+            esac
+            echo "GPG-signing: $fname"
+            gpg --batch --yes --pinentry-mode loopback \
+              --passphrase "$GPG_PASSPHRASE" \
+              --detach-sign --armor \
+              --output "artifacts/${fname}.sig" \
+              "artifacts/${fname}"
+          done
+
+      - name: Export GPG public key
+        if: steps.gpg_check.outputs.available == 'true'
+        shell: bash
+        run: |
+          gpg --armor --export > artifacts/oxide-sloc-signing-key.asc
+
+      # ── Cosign keyless signing ─────────────────────────────────────────────
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@3454372f43399081ed03b604cb2d021dabca52bb  # v3.8.2
+
+      - name: Cosign sign binaries (keyless / OIDC)
+        shell: bash
+        run: |
+          for f in artifacts/oxide-sloc-*; do
+            fname="$(basename "$f")"
+            # Skip signature/bundle/metadata files
+            case "$fname" in
+              *.sig|*.bundle|*.asc|*.sha256|*.txt|*.md) continue ;;
+            esac
+            echo "Cosign signing: $fname"
+            cosign sign-blob \
+              --yes \
+              --bundle "artifacts/${fname}.bundle" \
+              "artifacts/${fname}"
+          done
+
+      # ── Upload signed artifacts ────────────────────────────────────────────
+
+      - name: Upload signed artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: signed-artifacts
+          path: artifacts/
+
+  virustotal:
+    name: VirusTotal scan
+    needs: [build]
+    runs-on: ubuntu-latest
+    # Don't fail the release if VT is unavailable or flags something
+    continue-on-error: true
+    env:
+      VT_API_KEY: ${{ secrets.VT_API_KEY }}
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: Run VirusTotal scan
+        shell: bash
+        run: |
+          mkdir -p vt-report
+          python3 << 'PYEOF'
+          import glob
+          import json
+          import os
+          import sys
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          VT_API_KEY = os.environ.get("VT_API_KEY", "")
+          ARTIFACTS_DIR = "artifacts"
+          REPORT_PATH = "vt-report/vt-scan-summary.md"
+
+          if not VT_API_KEY:
+              with open(REPORT_PATH, "w") as fh:
+                  fh.write("## VirusTotal Scan Results\n\n")
+                  fh.write("*Skipped — VT_API_KEY secret not configured.*\n")
+              print("VT_API_KEY not set — skipping scan.")
+              sys.exit(0)
+
+          # Collect target binaries
+          patterns = [
+              os.path.join(ARTIFACTS_DIR, "oxide-sloc-linux-*"),
+              os.path.join(ARTIFACTS_DIR, "oxide-sloc-windows-*"),
+              os.path.join(ARTIFACTS_DIR, "oxide-sloc-macos-*"),
+          ]
+          binaries = []
+          for pat in patterns:
+              binaries.extend(glob.glob(pat))
+          # Exclude signature/bundle/metadata files
+          skip_exts = (".sig", ".bundle", ".asc", ".sha256", ".txt", ".md")
+          binaries = [b for b in binaries if not any(b.endswith(ext) for ext in skip_exts)]
+          binaries.sort()
+
+          if not binaries:
+              with open(REPORT_PATH, "w") as fh:
+                  fh.write("## VirusTotal Scan Results\n\n")
+                  fh.write("*No binaries found to scan.*\n")
+              sys.exit(0)
+
+          def vt_request(method, url, data=None, headers=None, files=None):
+              """Minimal HTTP helper using only stdlib."""
+              req_headers = {"x-apikey": VT_API_KEY}
+              if headers:
+                  req_headers.update(headers)
+              if files:
+                  # Build multipart/form-data manually
+                  boundary = "----VTBoundary1234567890"
+                  body_parts = []
+                  for field_name, (filename, file_bytes, content_type) in files.items():
+                      part = (
+                          f"--{boundary}\r\n"
+                          f'Content-Disposition: form-data; name="{field_name}"; filename="{filename}"\r\n'
+                          f"Content-Type: {content_type}\r\n"
+                          f"\r\n"
+                      ).encode() + file_bytes + b"\r\n"
+                      body_parts.append(part)
+                  body = b"".join(body_parts) + f"--{boundary}--\r\n".encode()
+                  req_headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+                  req = urllib.request.Request(url, data=body, headers=req_headers, method=method)
+              elif data:
+                  req = urllib.request.Request(url, data=data, headers=req_headers, method=method)
+              else:
+                  req = urllib.request.Request(url, headers=req_headers, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as resp:
+                      return json.loads(resp.read().decode())
+              except urllib.error.HTTPError as exc:
+                  body = exc.read().decode(errors="replace")
+                  print(f"  HTTP {exc.code}: {body[:300]}", file=sys.stderr)
+                  raise
+
+          rows = []
+          timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+
+          for idx, binary_path in enumerate(binaries):
+              binary_name = os.path.basename(binary_path)
+              print(f"Uploading {binary_name} to VirusTotal...")
+
+              with open(binary_path, "rb") as fh:
+                  file_bytes = fh.read()
+
+              try:
+                  upload_resp = vt_request(
+                      "POST",
+                      "https://www.virustotal.com/api/v3/files",
+                      files={"file": (binary_name, file_bytes, "application/octet-stream")},
+                  )
+              except Exception as exc:
+                  print(f"  Upload failed: {exc}", file=sys.stderr)
+                  rows.append(f"| `{binary_name}` | N/A | N/A | N/A | N/A | upload failed |")
+                  time.sleep(15)
+                  continue
+
+              analysis_id = upload_resp.get("data", {}).get("id", "")
+              if not analysis_id:
+                  print("  No analysis ID returned.", file=sys.stderr)
+                  rows.append(f"| `{binary_name}` | N/A | N/A | N/A | N/A | no analysis ID |")
+                  time.sleep(15)
+                  continue
+
+              print(f"  Analysis ID: {analysis_id}")
+              print("  Polling for completion (max 10 attempts, 30s each)...")
+
+              stats = None
+              for attempt in range(10):
+                  time.sleep(30)
+                  try:
+                      poll_resp = vt_request(
+                          "GET",
+                          f"https://www.virustotal.com/api/v3/analyses/{analysis_id}",
+                      )
+                  except Exception as exc:
+                      print(f"  Poll attempt {attempt + 1} failed: {exc}", file=sys.stderr)
+                      continue
+                  status = poll_resp.get("data", {}).get("attributes", {}).get("status", "")
+                  print(f"  Attempt {attempt + 1}: status={status}")
+                  if status == "completed":
+                      stats = poll_resp["data"]["attributes"].get("stats", {})
+                      break
+
+              vt_url = f"https://www.virustotal.com/gui/analysis/{analysis_id}"
+              if stats is not None:
+                  malicious = stats.get("malicious", 0)
+                  suspicious = stats.get("suspicious", 0)
+                  undetected = stats.get("undetected", 0)
+                  harmless = stats.get("harmless", 0)
+                  rows.append(
+                      f"| `{binary_name}` | {malicious} | {suspicious} | {undetected} | {harmless} | [View]({vt_url}) |"
+                  )
+              else:
+                  rows.append(
+                      f"| `{binary_name}` | N/A | N/A | N/A | N/A | [View]({vt_url}) |"
+                  )
+
+              # Sleep between uploads to respect free-tier rate limit (4 req/min)
+              if idx < len(binaries) - 1:
+                  print("  Sleeping 15s before next upload...")
+                  time.sleep(15)
+
+          # Write markdown report
+          table_header = (
+              "| Binary | Malicious | Suspicious | Undetected | Harmless | Report |\n"
+              "|--------|-----------|------------|------------|---------|--------|"
+          )
+          with open(REPORT_PATH, "w") as fh:
+              fh.write("## VirusTotal Scan Results\n\n")
+              fh.write(table_header + "\n")
+              fh.write("\n".join(rows) + "\n\n")
+              fh.write(f"*Scanned at: {timestamp} UTC*\n\n")
+              fh.write(
+                  "*False positives are common for freshly compiled Rust binaries. "
+                  "Zero malicious detections is the expected result.*\n"
+              )
+
+          print("Scan complete. Report written to", REPORT_PATH)
+          sys.exit(0)
+          PYEOF
+
+      - name: Upload VT scan report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: vt-scan-report
+          path: vt-report/
+
   publish:
     name: Publish GitHub Release
-    needs: [build, vendor]
+    needs: [build, vendor, sign, virustotal]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -171,11 +540,34 @@ jobs:
             echo "label=" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Download all artifacts
+      - name: Download build artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           path: artifacts/
           merge-multiple: true
+
+      - name: Download signed artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: signed-artifacts
+          path: signed-artifacts/
+        continue-on-error: true
+
+      - name: Download VT scan report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: vt-scan-report
+          path: vt-report/
+        continue-on-error: true
+
+      - name: Merge signed artifacts into artifacts dir
+        shell: bash
+        run: |
+          if [ -d signed-artifacts ]; then
+            # Copy .sig, .bundle, and .asc files produced by the sign job
+            find signed-artifacts -maxdepth 1 \( -name "*.sig" -o -name "*.bundle" -o -name "*.asc" \) \
+              -exec cp -v {} artifacts/ \;
+          fi
 
       - name: Generate SHA-256 checksums
         shell: bash
@@ -183,6 +575,21 @@ jobs:
           cd artifacts
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
+
+      - name: Prepare VT summary for release body
+        id: vt
+        shell: bash
+        run: |
+          if [ -f vt-report/vt-scan-summary.md ]; then
+            VT_SUMMARY="$(cat vt-report/vt-scan-summary.md)"
+          else
+            VT_SUMMARY="## VirusTotal Scan Results
+
+          *Scan results unavailable.*"
+          fi
+          # Write to a file to avoid quoting issues in GITHUB_OUTPUT
+          echo "$VT_SUMMARY" > /tmp/vt-summary.md
+          echo "summary_file=/tmp/vt-summary.md" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda  # v3.0.0
@@ -206,6 +613,8 @@ jobs:
             | Vendor archive | `vendor.tar.xz` + `vendor.tar.xz.sha256` | Rust dependency sources for air-gapped builds |
 
             Checksums for all release assets are in `SHA256SUMS.txt`.
+            GPG detached signatures (`.sig`) and Sigstore cosign bundles (`.bundle`) are included for each binary.
+            The GPG public key used for signing is `oxide-sloc-signing-key.asc`.
 
             ## Quick install
 
@@ -231,6 +640,15 @@ jobs:
 
             # Verify checksum (Linux / macOS)
             sha256sum --check SHA256SUMS.txt
+
+            # Verify GPG signature (Linux / macOS)
+            gpg --import oxide-sloc-signing-key.asc
+            gpg --verify oxide-sloc-linux-x86_64.sig oxide-sloc-linux-x86_64
+
+            # Verify cosign bundle (requires cosign installed)
+            cosign verify-blob \
+              --bundle oxide-sloc-linux-x86_64.bundle \
+              oxide-sloc-linux-x86_64
             ```
 
             ## Air-gapped build

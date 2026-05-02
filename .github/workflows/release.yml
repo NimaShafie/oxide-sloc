@@ -277,14 +277,19 @@ jobs:
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
         run: |
-          # Write the raw armored key to a temp file and import from there.
-          # This avoids all echo/printf newline edge cases and is tolerant of
-          # CRLF line endings (GPG's armored-format parser accepts both LF and CRLF).
-          # The secret must be the raw armored output of:
-          #   gpg --export-secret-key --armor <key-id>
-          # It must NOT be base64-encoded — store the armor text directly.
           GPG_KEY_FILE="$(mktemp)"
-          printf '%s' "$GPG_PRIVATE_KEY" > "$GPG_KEY_FILE"
+          # Auto-detect format: raw armor starts with "-----BEGIN"; anything else
+          # is assumed to be base64-encoded armor (the most common mis-store pattern).
+          first10="${GPG_PRIVATE_KEY:0:10}"
+          echo "GPG key format probe — first 10 chars: '${first10}'"
+          if [[ "$first10" == "-----BEGIN" ]]; then
+            echo "Format: raw armored key"
+            printf '%s\n' "$GPG_PRIVATE_KEY" > "$GPG_KEY_FILE"
+          else
+            echo "Format: base64-encoded armored key — decoding"
+            printf '%s' "$GPG_PRIVATE_KEY" | base64 --decode > "$GPG_KEY_FILE"
+          fi
+          echo "First line of decoded key: $(head -1 "$GPG_KEY_FILE")"
           gpg --batch --import "$GPG_KEY_FILE"
           rm -f "$GPG_KEY_FILE"
 

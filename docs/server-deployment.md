@@ -1,6 +1,6 @@
 # Server deployment (alternative install)
 
-> **Default install:** run `bash run.sh` (or `cargo run`) for personal local use.
+> **Default install:** run `bash scripts/run.sh` (or `cargo run`) for personal local use.
 > This guide is for hosting oxide-sloc persistently so **other users** can reach it.
 
 ---
@@ -70,9 +70,9 @@ sudo install -m 755 target/release/oxide-sloc /usr/local/bin/oxide-sloc
 
 ```bash
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin oxide-sloc
-sudo mkdir -p /opt/oxide-sloc/{images,out}
+sudo mkdir -p /opt/oxide-sloc/{docs/assets,out}
 sudo chown -R oxide-sloc:oxide-sloc /opt/oxide-sloc
-sudo cp -r images/ /opt/oxide-sloc/images/
+sudo cp -r docs/assets/ /opt/oxide-sloc/docs/assets/
 ```
 
 ### 3. Optional: install a config file
@@ -161,7 +161,7 @@ A sliding-window rate limiter enforces **60 requests per 60-second window per cl
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `OXIDE_SLOC_ROOT` | Directory containing `images/` assets | binary directory |
+| `OXIDE_SLOC_ROOT` | Directory whose `docs/assets/` subtree the web server serves as `/images/*` | binary directory |
 | `SLOC_BROWSER` | Path to Chromium-based browser for PDF export | auto-detected |
 | `SLOC_BROWSER_NOSANDBOX` | Set to `1` to add `--no-sandbox` to Chromium args (required in Docker) | unset |
 | `SLOC_REGISTRY_PATH` | Override path for `registry.json` | `<out-dir>/registry.json` |

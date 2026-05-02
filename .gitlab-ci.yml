@@ -29,14 +29,18 @@ cache:
     - vendor/
 
 before_script:
-  - apt-get update -qq && apt-get install -y -qq build-essential pkg-config libssl-dev ca-certificates xz-utils
+  - apt-get update -qq && apt-get install -y -qq build-essential pkg-config libssl-dev ca-certificates
   - rustup show
+  # For air-gapped runners: place vendor.tar.xz in the workspace before the job runs.
+  # Internet-connected runners download crates from crates.io via cargo's built-in caching.
   - |
-    if [ ! -d vendor ]; then
+    if [ -f vendor.tar.xz ] && [ ! -d vendor ]; then
       echo "Verifying vendor.tar.xz integrity..."
       sha256sum -c vendor.tar.xz.sha256
-      echo "Decompressing vendor.tar.xz (22 MB → 362 MB)..."
+      echo "Decompressing vendor.tar.xz..."
       tar -xJf vendor.tar.xz
+      mkdir -p .cargo
+      printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "vendor"\n' > .cargo/config.toml
     fi
 
 stages:
@@ -89,13 +93,13 @@ smoke:plain:
   stage: smoke
   needs: [build]
   script:
-    - ./target/release/oxide-sloc analyze samples/basic --plain
+    - ./target/release/oxide-sloc analyze tests/fixtures/basic --plain
 
 smoke:per-file:
   stage: smoke
   needs: [build]
   script:
-    - ./target/release/oxide-sloc analyze samples/basic --per-file --plain
+    - ./target/release/oxide-sloc analyze tests/fixtures/basic --per-file --plain
 
 smoke:reports:
   stage: smoke
@@ -103,7 +107,7 @@ smoke:reports:
   script:
     - mkdir -p "${OUT_DIR}"
     - |
-      ./target/release/oxide-sloc analyze samples/basic \
+      ./target/release/oxide-sloc analyze tests/fixtures/basic \
         --report-title "GitLab CI run ${CI_PIPELINE_IID}" \
         --json-out "${OUT_DIR}/result.json" \
         --html-out "${OUT_DIR}/report.html"
@@ -131,7 +135,7 @@ smoke:policies:
     - |
       for policy in code-only code-and-comment comment-only separate-mixed-category; do
         echo "--- policy: $policy ---"
-        ./target/release/oxide-sloc analyze samples/basic \
+        ./target/release/oxide-sloc analyze tests/fixtures/basic \
           --plain --mixed-line-policy "$policy"
       done
 

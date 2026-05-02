@@ -1000,7 +1000,8 @@ async fn image_handler(AxumPath((folder, file)): AxumPath<(String, String)>) -> 
     };
 
     let path = workspace_root()
-        .join("images")
+        .join("docs")
+        .join("assets")
         .join(safe_folder)
         .join(safe_name);
     fs::read(path).map_or_else(
@@ -1013,7 +1014,7 @@ async fn preview_handler(
     State(state): State<AppState>,
     Query(query): Query<PreviewQuery>,
 ) -> impl IntoResponse {
-    let raw_path = query.path.unwrap_or_else(|| "samples/basic".to_string());
+    let raw_path = query.path.unwrap_or_else(|| "tests/fixtures/basic".to_string());
     let resolved = resolve_input_path(&raw_path);
 
     if state.server_mode {
@@ -3025,23 +3026,22 @@ fn workspace_root() -> PathBuf {
         }
     }
 
-    // Binary's parent directory — works when install.sh places the binary
-    // next to the images/ folder, regardless of where the project lives.
-    // This is the primary fix for cross-machine / moved-directory deployments;
+    // Binary's parent directory — works when the binary is co-located with
+    // docs/assets/, regardless of where the project lives.
     // env!("CARGO_MANIFEST_DIR") bakes the compile-time path into the binary,
     // which breaks on any machine other than the one that compiled it.
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            if dir.join("images").is_dir() {
+            if dir.join("docs").join("assets").is_dir() {
                 return dir.to_path_buf();
             }
         }
     }
 
     // Current working directory — works for `cargo run` invocations launched
-    // from the project root, and for run.sh which cds there first.
+    // from the project root, and for scripts/run.sh which cds there first.
     if let Ok(cwd) = std::env::current_dir() {
-        if cwd.join("images").is_dir() {
+        if cwd.join("docs").join("assets").is_dir() {
             return cwd;
         }
     }

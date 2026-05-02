@@ -8,10 +8,7 @@ Thank you for your interest in improving oxide-sloc. This guide covers everythin
 git clone https://github.com/oxide-sloc/oxide-sloc.git
 cd oxide-sloc
 
-# Decompress vendored dependencies (required for offline CI builds)
-tar -xJf vendor.tar.xz
-
-# Build the full workspace
+# Build the full workspace (cargo downloads dependencies from crates.io)
 cargo build --workspace
 
 # Run the CI gates locally before pushing
@@ -47,7 +44,7 @@ Language support touches two crates and must be kept in sync:
 
 2. **`crates/sloc-config/src/lib.rs`** — verify that the new language name is accepted via `enabled_languages` filtering (it uses `Language::from_name` so no change is usually needed).
 
-3. Add a small test file for the new language under `samples/basic/` so the smoke test covers it.
+3. Add a small test file for the new language under `tests/fixtures/basic/` so the smoke test covers it.
 
 ## Adding a new CLI flag
 
@@ -66,18 +63,20 @@ oxide-sloc implements **physical SLOC** per **IEEE Std 1045-1992**. The configur
 - `effective_counts.code_lines` must never go negative — use `saturating_sub` when subtracting directive lines.
 - All new counting options must be mirrored in three places: `AnalysisConfig` (config + TOML), `AnalysisOptions` / `IeeeFlags` in `sloc-languages` (state machine), and the CLI `AnalyzeArgs` struct (flag).
 
-## Vendor directory
+## Vendor archive (for air-gapped builds and releases)
 
-The `vendor/` directory is an offline mirror of all Cargo dependencies. When you add or upgrade a dependency:
+The `vendor/` directory is an offline mirror of all Cargo dependencies. It is **not** committed to git — instead, `vendor.tar.xz` is generated and attached to each GitHub release automatically by the release workflow.
+
+For normal development, cargo downloads from crates.io and no vendor setup is needed. When you add or upgrade a dependency, regenerate the archive so the next release includes updated vendored sources:
 
 ```bash
 # Regenerate the vendor snapshot and repack the archive
-cargo vendor vendor
-tar -cJf vendor.tar.xz vendor/
-git add vendor.tar.xz
+bash scripts/update-vendor.sh
 ```
 
-The CI decompresses `vendor.tar.xz` and builds entirely offline. Do not commit the expanded `vendor/` directory — only `vendor.tar.xz`.
+The archive (`vendor.tar.xz`) and its checksum (`vendor.tar.xz.sha256`) are gitignored. Do not commit them — the release workflow uploads them automatically when a version tag is pushed.
+
+For air-gapped builds, see [`docs/airgap.md`](./docs/airgap.md).
 
 ## Commit messages
 
@@ -92,8 +91,8 @@ Common types: `feat`, `fix`, `refactor`, `docs`, `chore`, `ci`, `test`.
 ## Pull request checklist
 
 - [ ] All four CI gates pass locally
-- [ ] New language support updates both `sloc-languages` and has a sample file
-- [ ] New dependencies are vendored (`vendor.tar.xz` updated)
+- [ ] New language support updates both `sloc-languages` and has a fixture file in `tests/fixtures/basic/`
+- [ ] New dependencies: run `bash scripts/update-vendor.sh` so the next release bundles them
 - [ ] `CHANGELOG.md` updated under `[Unreleased]`
 - [ ] No `#[allow(...)]` without a comment explaining why
 - [ ] No `.unwrap()` or `.expect()` in library code

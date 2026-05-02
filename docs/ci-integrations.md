@@ -43,20 +43,26 @@ Every CI integration follows the same three-step pattern:
 
 ### Vendor sources note
 
-All crate dependencies live in `vendor.tar.xz` (22 MB, xz-compressed) rather than as raw files. `.cargo/config.toml` redirects every `cargo` command to `vendor/`, so the archive must be decompressed before any `cargo` invocation:
+`vendor.tar.xz` contains all Rust crate dependencies (~27 MB, xz-compressed). It is **not** committed to git — it is attached to each GitHub release as a downloadable asset alongside the binaries.
+
+For **internet-connected** CI runners, no vendor setup is needed — cargo downloads from crates.io automatically. For **air-gapped** runners, download `vendor.tar.xz` and `vendor.tar.xz.sha256` from the release page and place them in the workspace. The pipeline files then decompress and cache `vendor/` automatically:
 
 ```bash
-tar -xJf vendor.tar.xz   # one-time per workspace; vendor/ is then reusable
+sha256sum -c vendor.tar.xz.sha256   # verify integrity
+tar -xJf vendor.tar.xz              # one-time per workspace; vendor/ is then reusable
 ```
 
-The pipeline files shipped in this repo already include this step. If you are adapting a snippet for your own pipeline, add these lines before the first `cargo` command:
+After extraction, create `.cargo/config.toml` to redirect cargo offline:
 
-```bash
-sha256sum -c vendor.tar.xz.sha256   # verify archive integrity first
-tar -xJf vendor.tar.xz
+```toml
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"
 ```
 
-The SHA-256 checksum file (`vendor.tar.xz.sha256`) is committed alongside the archive and is checked automatically by the Dockerfile, GitLab CI pipeline, and Jenkinsfile.
+The included GitLab CI and Jenkinsfile pipeline files already contain this logic (conditioned on `vendor.tar.xz` being present).
 
 The JSON output (`result.json`) is machine-readable and stable across versions — use it to feed dashboards, Confluence, Slack webhooks, or custom tooling. The HTML report is a self-contained single-file document suitable for artifact storage and browser viewing.
 
@@ -213,7 +219,7 @@ The first build runs with no parameters — Jenkins uses it to discover the `par
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `REPO_URL` | `https://github.com/oxide-sloc/oxide-sloc.git` | Git repository URL. Use `file:///path/to/repo` for air-gapped repos. |
-| `SCAN_PATH` | `samples/basic` | Directory or space-separated paths to scan (relative to workspace or absolute). |
+| `SCAN_PATH` | `tests/fixtures/basic` | Directory or space-separated paths to scan (relative to workspace or absolute). |
 | `REPORT_TITLE` | `CI Smoke Run` | Title embedded in HTML and PDF reports. |
 | `OUTPUT_SUBDIR` | `ci-out` | Sub-directory for all generated artifacts (relative to workspace). Created automatically. Contains `report.html`, `result.json`, `report.pdf`, and trend CSVs. |
 | `CI_PRESET` | `none` | Preset config file: `none` / `default` / `strict` / `full-scope`. |

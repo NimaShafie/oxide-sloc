@@ -5,17 +5,11 @@ FROM rust:slim@sha256:715efd1ccdc4a63bd6a6e2f54387fff73f904b70e610d41b4d9d74ff38
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
-    xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY . .
-# vendor/ is excluded from the Docker context via .dockerignore; the archive is
-# the authoritative source. Verify integrity (FIND-017) then extract.
-RUN sha256sum -c vendor.tar.xz.sha256 && tar -xJf vendor.tar.xz
-# --offline prevents any crates.io access; the vendor/ directory (via
-# .cargo/config.toml) satisfies all dependencies without the network.
-RUN cargo build --release --offline -p oxide-sloc
+RUN cargo build --release -p oxide-sloc
 
 # Stage 2: minimal runtime image
 # Pin to a specific digest to prevent silent base-image substitution (FIND-006).
@@ -35,18 +29,18 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# Copy binary and static assets together so OXIDE_SLOC_ROOT=/app is valid.
-# The images/ directory must live alongside the binary for the web UI to serve
-# icons and logos; without it every /images/... request returns 404.
+# Copy binary and static assets. OXIDE_SLOC_ROOT=/app tells the web server to
+# look for docs/assets/ here — the image handler serves /images/:folder/:file
+# from OXIDE_SLOC_ROOT/docs/assets/:folder/:file.
 COPY --from=builder /app/target/release/oxide-sloc /usr/local/bin/oxide-sloc
-COPY --from=builder /app/images ./images
+COPY --from=builder /app/docs/assets ./docs/assets
 
 # Create a non-root service account and ensure the output directory is writable by it.
 RUN groupadd -r sloc && useradd -r -g sloc -u 1001 sloc \
     && mkdir -p /app/out \
     && chown -R sloc:sloc /app/out
 
-# OXIDE_SLOC_ROOT tells the server where to find images/ and other assets,
+# OXIDE_SLOC_ROOT tells the server where to find docs/assets/ and other assets,
 # overriding the runtime binary-location heuristic for container deployments.
 ENV OXIDE_SLOC_ROOT=/app
 

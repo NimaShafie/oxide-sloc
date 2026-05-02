@@ -1,24 +1,25 @@
 #!/usr/bin/env bash
 # oxide-sloc launcher
-# Usage: bash run.sh [--rebuild]   (Windows via Git Bash; Linux/macOS)
+# Usage: bash scripts/run.sh [--rebuild]   (Windows via Git Bash; Linux/macOS)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SLOC_PORT=4317
 
 # Detect Windows (Git Bash / MSYS2 / Cygwin)
 if [[ -n "${WINDIR+x}" ]] || [[ "${OSTYPE:-}" == msys* ]] || [[ "${OSTYPE:-}" == cygwin* ]]; then
     PLATFORM=windows
-    EXE="$SCRIPT_DIR/oxide-sloc.exe"
-    EXE_DIST="$SCRIPT_DIR/dist/oxide-sloc.exe"
-    EXE_BUILD="$SCRIPT_DIR/target/release/oxide-sloc.exe"
-    BUNDLE="$SCRIPT_DIR/dist/oxide-sloc-windows-x64.zip"
+    EXE="$REPO_ROOT/oxide-sloc.exe"
+    EXE_DIST="$REPO_ROOT/dist/oxide-sloc.exe"
+    EXE_BUILD="$REPO_ROOT/target/release/oxide-sloc.exe"
+    BUNDLE="$REPO_ROOT/dist/oxide-sloc-windows-x64.zip"
 else
     PLATFORM=linux
-    EXE="$SCRIPT_DIR/oxide-sloc"
-    EXE_DIST="$SCRIPT_DIR/dist/oxide-sloc"
-    EXE_BUILD="$SCRIPT_DIR/target/release/oxide-sloc"
-    BUNDLE="$SCRIPT_DIR/dist/oxide-sloc-linux-x86_64.tar.gz"
+    EXE="$REPO_ROOT/oxide-sloc"
+    EXE_DIST="$REPO_ROOT/dist/oxide-sloc"
+    EXE_BUILD="$REPO_ROOT/target/release/oxide-sloc"
+    BUNDLE="$REPO_ROOT/dist/oxide-sloc-linux-x86_64.tar.gz"
 fi
 
 # Kill any process currently holding SLOC_PORT so re-launches never fail with
@@ -54,16 +55,16 @@ launch() {
     free_port
     [[ "$PLATFORM" == linux ]] && chmod +x "$1"
     printf '\n  oxide-sloc starting \xe2\x86\x92 http://127.0.0.1:%s\n  Press Ctrl+C to stop.\n\n' "$SLOC_PORT"
-    cd "$SCRIPT_DIR"
-    export OXIDE_SLOC_ROOT="$SCRIPT_DIR"
+    cd "$REPO_ROOT"
+    export OXIDE_SLOC_ROOT="$REPO_ROOT"
     "$1"
 }
 
 launch_cargo() {
     free_port
     printf '\n  oxide-sloc starting \xe2\x86\x92 http://127.0.0.1:%s  (will auto-select next port if %s is blocked)\n  Press Ctrl+C to stop.\n\n' "$SLOC_PORT" "$SLOC_PORT"
-    cd "$SCRIPT_DIR"
-    export OXIDE_SLOC_ROOT="$SCRIPT_DIR"
+    cd "$REPO_ROOT"
+    export OXIDE_SLOC_ROOT="$REPO_ROOT"
     export CARGO_INCREMENTAL=0
     cargo run -p oxide-sloc
 }
@@ -72,10 +73,10 @@ extract_bundle() {
     echo "Extracting oxide-sloc..."
     if [[ "$PLATFORM" == windows ]]; then
         WIN_BUNDLE="$(cygpath -w "$BUNDLE")"
-        WIN_DEST="$(cygpath -w "$SCRIPT_DIR")"
+        WIN_DEST="$(cygpath -w "$REPO_ROOT")"
         powershell -NoProfile -Command "Expand-Archive -Path '$WIN_BUNDLE' -DestinationPath '$WIN_DEST' -Force"
     else
-        tar xzf "$BUNDLE" -C "$SCRIPT_DIR"
+        tar xzf "$BUNDLE" -C "$REPO_ROOT"
     fi
 }
 
@@ -89,7 +90,7 @@ for arg in "$@"; do
 done
 
 # If cargo is available, always build and run from source so changes are picked up immediately.
-if command -v cargo &>/dev/null && [[ -f "$SCRIPT_DIR/Cargo.toml" ]]; then
+if command -v cargo &>/dev/null && [[ -f "$REPO_ROOT/Cargo.toml" ]]; then
     launch_cargo
     exit 0
 fi
@@ -109,7 +110,7 @@ fi
 
 printf '\noxide-sloc: no binary found.\n\n' >&2
 printf '  Option 1 - Download: https://github.com/oxide-sloc/oxide-sloc/releases\n' >&2
-printf '             Place binary next to this script, then: bash run.sh\n' >&2
+printf '             Place binary next to scripts/, then: bash scripts/run.sh\n' >&2
 printf '  Option 2 - Build:    cargo build --release -p oxide-sloc\n' >&2
 printf '  Option 3 - Docker:   docker compose up\n\n' >&2
 exit 1

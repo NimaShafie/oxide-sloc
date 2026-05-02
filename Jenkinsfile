@@ -44,7 +44,7 @@ pipeline {
         // ── Scan target ────────────────────────────────────────────────────────
         string(
             name:         'SCAN_PATH',
-            defaultValue: 'samples/basic',
+            defaultValue: 'tests/fixtures/basic',
             description:  'Directory (or space-separated paths) to scan — relative to the workspace root or absolute.'
         )
         string(

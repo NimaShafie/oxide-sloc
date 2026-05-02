@@ -1,129 +1,162 @@
 # Air-Gap / Offline Deployment
 
-## TL;DR
+## Choosing a transfer path
 
-Run the install script once, then launch with `bash scripts/run.sh`.
+| Path | Transfer size | Prereqs on air-gapped machine | When to use |
+|---|---|---|---|
+| **[Airgap kit](#option-a--fully-self-contained-kit-recommended)** | ~700 MB | `bash`, `tar` (xz), `sha256sum` | Zero Rust, zero C compiler, zero internet |
+| **[Pre-built binary](#option-b--pre-built-binary)** | ~5 MB | `bash`, `tar` / PowerShell | Rust and the build step not needed at all |
+| **[Vendor-only](#option-c--vendor-only-source-build)** | ~30 MB + source | Rust toolchain already installed | Rust is already on the machine |
+| **[scripts/install.sh](#using-scriptsinstallsh)** | varies | depends on path taken | Generic install wrapper covering all paths |
 
-| Platform | Install | Launch |
+---
+
+## Option A — Fully self-contained kit (recommended)
+
+Run `scripts/make-airgap-kit.sh` on any **networked** machine to produce a single archive
+that contains everything needed to build oxide-sloc on a machine with no internet access,
+no pre-installed Rust, and no system C compiler.
+
+### What the kit bundles
+
+| Component | Source | Purpose |
 |---|---|---|
-| **Windows 10/11** | `bash scripts/install.sh` (in Git Bash) | `bash scripts/run.sh` (in Git Bash) |
-| **Linux (RHEL 8/9, Ubuntu, Debian)** | `bash scripts/install.sh` | `bash scripts/run.sh` |
+| `rust-{ver}-{target}.tar.gz` | static.rust-lang.org | Rust host toolchain (rustc, cargo, std) |
+| `rust-std-{ver}-{musl-target}.tar.gz` | static.rust-lang.org | Rust musl target standard library |
+| `{arch}-linux-musl-native.tgz` | musl.cc | musl-gcc + headers + libc (no system compiler needed) |
+| `vendor.tar.xz` | generated locally | All ~328 Rust crate sources (no crates.io needed) |
+| `oxide-sloc-src.tar.gz` | `git archive HEAD` | Full source tree |
+| `install.sh` | embedded by the script | Wires everything together and builds |
 
-No internet. No package manager. No extra tools beyond what ships with the OS.
+The result is a **fully static binary** — copy it anywhere on Linux and run it with no
+runtime library dependencies.
 
----
+### Generate the kit (networked machine)
 
-## What `scripts/install.sh` does
+```bash
+# Auto-detect arch (Linux x86_64 or arm64):
+bash scripts/make-airgap-kit.sh
 
-The install script tries each path in order and stops at the first success:
+# Or specify explicitly:
+bash scripts/make-airgap-kit.sh linux-x86_64
+bash scripts/make-airgap-kit.sh linux-arm64
 
-1. **Binary already present** — `oxide-sloc.exe` / `oxide-sloc` is in the repo root → nothing to do.
-2. **Pre-built binary in `dist/`** — extracts `dist/oxide-sloc-windows-x64.zip` (Windows, via built-in PowerShell) or `dist/oxide-sloc-linux-x86_64.tar.gz` (Linux, via `tar`). No extra tools needed.
-3. **Rust installed + vendor archive present** — decompresses `vendor.tar.xz` to `vendor/` if not already present, writes `.cargo/config.toml` to redirect cargo offline, then runs `cargo build --release --offline`. All crate dependencies are in the archive; no internet access required.
-4. **Nothing works** — prints clear instructions for bundling the Rust toolchain on a networked machine and transferring it.
-
-> **What vendor.tar.xz covers:** All Rust crate source dependencies (~328 crates). It does **not** include the Rust toolchain itself (rustc, cargo). See [below](#building-from-source-on-a-machine-with-no-rust-and-no-internet) if you also need to transfer the toolchain.
-
----
-
-## Required tools per path
-
-| Path | Windows | Linux |
-|---|---|---|
-| Pre-built binary | PowerShell 5+ (built into Windows 10/11) | `bash` + `tar` (present on every RHEL/Ubuntu install) |
-| Source build | `cargo` (Rust toolchain) + `vendor.tar.xz` | `cargo` (Rust toolchain) + `vendor.tar.xz` |
-
----
-
-## Transferring to an air-gapped machine
-
-### Small transfer — binary only (~5 MB)
-
-Download the pre-built binary for your platform from the [GitHub releases page](https://github.com/oxide-sloc/oxide-sloc/releases) and add it to the transfer bundle alongside the scripts.
-
-**Windows (PowerShell):**
-```powershell
-# Download oxide-sloc-windows-x86_64.exe from the release page first, then:
-Compress-Archive -Path scripts, dist -DestinationPath oxide-sloc-deploy.zip
+# Output: oxide-sloc-airgap-kit-{platform}-v{version}.tar.gz  (~700 MB)
 ```
+
+Requirements for running the script: `bash`, `curl`, `tar`, `xz-utils`, `sha256sum`, `git`,
+`cargo` (just for generating `vendor.tar.xz`).
+
+### Build on the air-gapped machine
+
+```bash
+# Transfer the kit archive via USB, SCP to an intermediate host, internal file server, etc.
+
+tar xzf oxide-sloc-airgap-kit-linux-x86_64-v*.tar.gz
+cd oxide-sloc-airgap-kit-*/
+bash install.sh
+```
+
+The embedded `install.sh`:
+1. Installs the Rust toolchain into `.tools/rust/` — no root, no system PATH changes.
+2. Installs the musl C toolchain into `.tools/musl/` — no root.
+3. Verifies and extracts the vendor crate sources.
+4. Builds a fully static oxide-sloc binary in the kit directory.
+
+After a successful build:
+
+```bash
+./oxide-sloc serve              # web UI at http://127.0.0.1:4317
+./oxide-sloc analyze /path/to/repo --plain
+```
+
+### Options
+
+```bash
+bash install.sh --gnu   # use system gcc instead of bundled musl-gcc
+                        # produces a dynamically linked binary (requires glibc at runtime)
+```
+
+### System requirements on the air-gapped machine
+
+| Requirement | Notes |
+|---|---|
+| OS | Linux x86_64 or arm64 |
+| Tools | `bash`, `tar` (with xz/`-J` flag), `sha256sum` |
+| Root / sudo | **Not required** — installs to `.tools/` inside the kit directory |
+| Internet | **Not required** |
+| Rust | **Not required** — bundled by the kit |
+| C compiler | **Not required** — bundled musl-gcc is used |
+
+---
+
+## Option B — Pre-built binary
+
+Download the pre-built binary for your platform from the
+[GitHub releases page](https://github.com/oxide-sloc/oxide-sloc/releases)
+and transfer it alongside the `scripts/` directory.
 
 **Linux:**
 ```bash
-# Download oxide-sloc-linux-x86_64 from the release page first, then:
-tar -czf oxide-sloc-deploy.tar.gz scripts/ dist/
+# On the networked machine — download the binary, then:
+tar -czf oxide-sloc-deploy.tar.gz oxide-sloc-linux-x86_64 scripts/
+# Transfer to the air-gapped machine and extract, then:
+bash scripts/install.sh   # detects the binary and skips the build step
 ```
 
-Extract on the target machine and run `bash scripts/install.sh`.
-
-### Full transfer — source build bundle (~200 MB, includes vendored Rust dependencies)
-
-Download `vendor.tar.xz` and `vendor.tar.xz.sha256` from the same [GitHub release page](https://github.com/oxide-sloc/oxide-sloc/releases) as the binaries. Then bundle with the source tree:
-
-**Linux:**
-```bash
-# After downloading vendor.tar.xz to the repo root:
-make bundle
-# Produces: oxide-sloc-bundle.tar.gz
-```
-
-**Windows (PowerShell):**
+**Windows (PowerShell, via Git Bash):**
 ```powershell
-Compress-Archive -Path scripts, dist, vendor.tar.xz, vendor.tar.xz.sha256 `
-    -DestinationPath oxide-sloc-bundle.zip
+Compress-Archive -Path oxide-sloc-windows-x86_64.exe, scripts `
+    -DestinationPath oxide-sloc-deploy.zip
 ```
+Extract on the target machine and run `bash scripts/install.sh` in Git Bash.
 
-Transfer the archive to the target machine, extract it, and run `bash scripts/install.sh`.
+---
 
-> **Why ~200 MB?** `vendor.tar.xz` (~27 MB) contains all Rust crate sources compressed at xz-extreme ratio. The `target/` compiled artifacts (4+ GB) are excluded — platform-specific and rebuilt locally. `scripts/install.sh` decompresses `vendor.tar.xz` to `vendor/` automatically before building.
+## Option C — Vendor-only source build
 
-### Quickest source-only build (advanced)
+Use this when the Rust toolchain is already installed on the air-gapped machine and you
+only need to transfer the crate sources.
 
-For developers who want just the source build without the install script:
+Download `vendor.tar.xz` and `vendor.tar.xz.sha256` from the
+[GitHub releases page](https://github.com/oxide-sloc/oxide-sloc/releases),
+then bundle with the source tree:
 
 ```bash
-# On the air-gapped machine (Rust toolchain must already be installed):
+# On the networked machine (after placing vendor.tar.xz in the repo root):
+tar -czf oxide-sloc-bundle.tar.gz \
+    --exclude=target --exclude=.git \
+    vendor.tar.xz vendor.tar.xz.sha256 scripts/ Cargo.toml Cargo.lock \
+    crates/ docs/ examples/ tests/ deploy/ ci/
+
+# Transfer, then on the air-gapped machine:
+tar xzf oxide-sloc-bundle.tar.gz
 bash scripts/airgap-build.sh vendor.tar.xz
 # Binary lands at: target/release/oxide-sloc
 ```
 
+`scripts/airgap-build.sh` verifies the vendor checksum, extracts, writes
+`.cargo/config.toml`, and runs `cargo build --release --offline`.
+
+> **What vendor.tar.xz covers:** All Rust crate source dependencies (~328 crates).
+> It does **not** include the Rust toolchain. If you also need to transfer the
+> toolchain, use [Option A](#option-a--fully-self-contained-kit-recommended) instead.
+
 ---
 
-## Building from source on a machine with no Rust and no internet
+## Using `scripts/install.sh`
 
-You need to pre-package the Rust toolchain on a networked machine and carry it over.
+The install script tries each path in order and stops at the first success:
 
-### Bundle the toolchain (do this on a networked machine)
+1. **Binary already present** — `oxide-sloc` is in the repo root → nothing to do.
+2. **Pre-built binary in `dist/`** — extracts `dist/oxide-sloc-linux-x86_64.tar.gz` (Linux) or `dist/oxide-sloc-windows-x64.zip` (Windows). No extra tools needed.
+3. **Rust installed + vendor archive present** — decompresses `vendor.tar.xz` to `vendor/`, writes `.cargo/config.toml`, runs `cargo build --release --offline`.
+4. **Nothing works** — prints instructions.
 
-**Windows:**
-```powershell
-rustup-init.exe --default-toolchain stable --no-modify-path
-Compress-Archive -Path "$env:USERPROFILE\.rustup","$env:USERPROFILE\.cargo" `
-    -DestinationPath rust-toolchain-windows.zip
-```
-
-**Linux:**
 ```bash
-curl -sSf https://sh.rustup.rs | sh -s -- --default-toolchain stable --no-modify-path
-tar -czf rust-toolchain-linux.tar.gz ~/.rustup ~/.cargo
+bash scripts/install.sh   # then:
+bash scripts/run.sh       # launches the web UI
 ```
-
-### Restore on the air-gapped machine
-
-**Windows:**
-```powershell
-Expand-Archive rust-toolchain-windows.zip -DestinationPath $env:USERPROFILE
-# Add to PATH (run once, then reopen terminal):
-[Environment]::SetEnvironmentVariable("PATH", "$env:USERPROFILE\.cargo\bin;" + $env:PATH, "User")
-```
-
-**Linux:**
-```bash
-tar xzf rust-toolchain-linux.tar.gz -C ~
-echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
-```
-
-Then run `bash scripts/install.sh` — it locates `vendor.tar.xz`, extracts it, and builds from `vendor/` automatically.
 
 ---
 
@@ -131,15 +164,22 @@ Then run `bash scripts/install.sh` — it locates `vendor.tar.xz`, extracts it, 
 
 ### Jenkins
 
-The included `Jenkinsfile` auto-installs Rust on the agent if not present. For a fully offline agent, pre-install the toolchain using the steps above, then place `vendor.tar.xz` in the workspace. The pipeline decompresses it once and caches `vendor/` between runs — no outbound network traffic during `cargo build`.
+The included `Jenkinsfile` auto-installs Rust on the agent if not present. For a fully
+offline agent, use the airgap kit to install Rust and build the binary once, then copy
+the binary to the agent. Or pre-install the toolchain manually and place `vendor.tar.xz`
+in the workspace — the pipeline will extract it before building.
 
 ### GitLab CI
 
-The included `.gitlab-ci.yml` works the same way. Use a self-hosted GitLab runner with Rust pre-installed. Place `vendor.tar.xz` in the runner's workspace cache or provide it via a custom pre-clone step.
+The included `.gitlab-ci.yml` works the same way. Use a self-hosted GitLab runner with
+Rust pre-installed and `vendor.tar.xz` available in the runner's workspace cache or via
+a custom pre-clone step.
 
-### GitHub Actions (internal/self-hosted runner)
+### GitHub Actions (self-hosted runner)
 
-Use the standard `ci.yml` workflow on a self-hosted runner. For internet-connected runners, cargo downloads crates normally via Swatinem/rust-cache. For air-gapped runners, place `vendor.tar.xz` in the workspace and re-add the vendor extraction step to the workflow.
+For internet-connected runners, cargo downloads crates normally via Swatinem/rust-cache.
+For air-gapped runners, place `vendor.tar.xz` in the workspace and add a vendor
+extraction step before `cargo build`.
 
 ---
 
@@ -154,4 +194,5 @@ Use the standard `ci.yml` workflow on a self-hosted runner. For internet-connect
 | Email delivery (`--smtp-to`) | Yes |
 | Webhook delivery (`--webhook-url`) | Yes |
 
-PDF export requires a locally installed Chromium-based browser (Chrome, Edge, Brave, Vivaldi, or Opera). Set `SLOC_BROWSER=/path/to/chromium` if auto-discovery fails.
+PDF export requires a locally installed Chromium-based browser (Chrome, Edge, Brave,
+Vivaldi, or Opera). Set `SLOC_BROWSER=/path/to/chromium` if auto-discovery fails.

@@ -1,12 +1,11 @@
 # Build output
 /target/
 
-# Uncompressed vendor sources — extract from vendor.tar.xz (released as a GitHub release asset)
+# Uncompressed vendor sources — always extract from vendor.tar.xz; never commit the directory
 /vendor/
 
-# Vendor archive and cargo offline config — generated locally, not tracked
-/vendor.tar.xz
-/vendor.tar.xz.sha256
+# .cargo/config.toml is written by CI (Jenkinsfile) and local airgap scripts; not committed
+# so that online dev builds continue to use crates.io by default.
 /.cargo/config.toml
 
 # Logs and temp files

@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Regenerate vendor.tar.xz and vendor.tar.xz.sha256 from the current Cargo.lock.
 #
-# Run this any time you add, remove, or update a dependency in Cargo.toml/Cargo.lock.
-# The generated archive is NOT committed to git — it is attached to GitHub releases
-# automatically by the release workflow. For air-gapped builds, download it from the
-# release page and run: bash scripts/airgap-build.sh vendor.tar.xz
+# Run this any time you add, remove, or update a dependency in Cargo.toml/Cargo.lock,
+# then stage and commit BOTH generated files:
+#
+#   git add vendor.tar.xz vendor.tar.xz.sha256
+#   git commit -m "chore: update vendor archive"
+#
+# Both files are tracked by git so that a plain `git clone` is sufficient for a fully
+# offline (air-gapped) build — no separate download step required.
 #
 # Usage: bash scripts/update-vendor.sh
 set -euo pipefail
@@ -33,6 +37,6 @@ echo "Done."
 echo "  Archive : ${ARCHIVE}"
 echo "  Checksum: $(cat ${SHA_FILE})"
 echo ""
-echo "Both files are gitignored. The release workflow uploads them automatically"
-echo "when a version tag is pushed. To test an air-gapped build locally:"
-echo "  bash scripts/airgap-build.sh"
+echo "Stage and commit both files:"
+echo "  git add vendor.tar.xz vendor.tar.xz.sha256"
+echo "  git commit -m \"chore: update vendor archive\""

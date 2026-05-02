@@ -277,7 +277,7 @@ jobs:
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
         run: |
-          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          echo "$GPG_PRIVATE_KEY" | base64 --decode | gpg --batch --import
 
       - name: GPG sign binaries
         if: steps.gpg_check.outputs.available == 'true'

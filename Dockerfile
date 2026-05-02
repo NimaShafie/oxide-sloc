@@ -42,7 +42,6 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
     chromium \
     ca-certificates \
-    wget \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -78,7 +77,7 @@ USER 1001
 
 # HEALTHCHECK verifies the /healthz endpoint is responsive (FIND-009).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget -qO- http://localhost:4317/healthz >/dev/null 2>&1 || exit 1
+    CMD oxide-sloc healthz 2>/dev/null || exit 1
 
 ENTRYPOINT ["oxide-sloc"]
 # --server: binds to 0.0.0.0, suppresses browser auto-open, disables desktop-only routes.

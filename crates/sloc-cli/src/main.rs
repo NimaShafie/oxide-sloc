@@ -676,8 +676,12 @@ async fn send_smtp(args: &SendArgs, run: &AnalysisRun) -> Result<()> {
             )
             .context("failed to build email message")?;
 
-        let mut builder = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
-            .with_context(|| format!("failed to build SMTP transport for {host}"))?
+        let tls_params = lettre::transport::smtp::client::TlsParameters::builder(host.to_string())
+            .dangerous_accept_invalid_certs(false)
+            .build()
+            .with_context(|| format!("failed to build TLS parameters for {host}"))?;
+        let mut builder = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host)
+            .tls(lettre::transport::smtp::client::Tls::Required(tls_params))
             .port(args.smtp_port);
 
         if let (Some(user), Some(pass)) = (args.smtp_user.as_deref(), args.smtp_pass.as_deref()) {
@@ -724,7 +728,11 @@ fn validate_webhook_url(raw: &str) -> Result<()> {
                     || v4.is_unspecified()
             }
             std::net::IpAddr::V6(v6) => {
-                v6.is_loopback() || v6.is_unspecified() || v6.is_multicast()
+                v6.is_loopback()
+                    || v6.is_unspecified()
+                    || v6.is_multicast()
+                    || (v6.segments()[0] & 0xfe00) == 0xfc00
+                    || (v6.segments()[0] & 0xffc0) == 0xfe80
             }
         };
         if blocked {

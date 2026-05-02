@@ -19,3 +19,4 @@ askama.workspace = true
 chrono.workspace = true
 serde_json.workspace = true
 sloc-core = { path = "../sloc-core", version = "1.3.0" }
+tempfile = "3"

@@ -335,20 +335,11 @@ pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
 
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-
-    let profile_dir =
-        std::env::temp_dir().join(format!("oxide-sloc-pdf-{}-{}", std::process::id(), nonce));
-
-    fs::create_dir_all(&profile_dir).with_context(|| {
-        format!(
-            "failed to create temporary browser profile {}",
-            profile_dir.display()
-        )
-    })?;
+    let profile_dir_handle = tempfile::Builder::new()
+        .prefix(&format!("oxide-sloc-pdf-{}-", std::process::id()))
+        .tempdir()
+        .context("failed to create temporary browser profile directory")?;
+    let profile_dir = profile_dir_handle.path().to_path_buf();
     eprintln!("[oxide-sloc][pdf] profile = {}", profile_dir.display());
 
     // --no-sandbox is required in Docker (and other rootless environments) where
@@ -396,8 +387,6 @@ pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
     if let Err(err) = &result {
         eprintln!("[oxide-sloc][pdf] --headless failed: {err}");
     }
-
-    let _ = fs::remove_dir_all(&profile_dir);
 
     result?;
     eprintln!("[oxide-sloc][pdf] done");

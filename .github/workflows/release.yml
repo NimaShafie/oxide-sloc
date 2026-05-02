@@ -5,8 +5,7 @@ on:
     tags:
       - 'v*'
 
-permissions:
-  contents: write
+permissions: {}
 
 # Required secrets (all optional — steps skip gracefully if not set):
 #   WINDOWS_CERTIFICATE          — base64-encoded PFX for Windows Authenticode signing
@@ -24,6 +23,8 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -224,6 +225,8 @@ jobs:
   vendor:
     name: Generate vendor archive
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
@@ -352,6 +355,8 @@ jobs:
     name: VirusTotal scan
     needs: [build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # Don't fail the release if VT is unavailable or flags something
     continue-on-error: true
     env:
@@ -537,6 +542,8 @@ jobs:
     name: Publish GitHub Release
     needs: [build, vendor, sign, virustotal]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 

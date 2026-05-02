@@ -10,6 +10,56 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.3.6] — 2026-05-02
+
+### Fixed
+
+- **SMTP TLS**: Replaced implicit `starttls_relay` builder with an explicit `TlsParameters`
+  builder + `Tls::Required`, ensuring certificate validation is enforced and the TLS
+  handshake behaviour is unambiguous.
+- **Webhook URL validation**: Extended IPv6 SSRF blocklist to cover ULA ranges (`fc00::/7`)
+  and link-local addresses (`fe80::/10`), which were previously not blocked.
+- **PDF temp-dir cleanup**: Replaced manual `create_dir_all` / `remove_dir_all` pair with
+  `tempfile::Builder::tempdir()` so the browser profile directory is always cleaned up on
+  drop, even when an error is returned mid-function.
+- **Rate limiter memory growth**: The in-memory IP tracking map is now pruned when it
+  exceeds 10,000 entries, preventing unbounded growth under sustained unique-IP traffic.
+- **X-Forwarded-For IP spoofing**: Trusting the `X-Forwarded-For` header for rate limiting
+  is now opt-in via `SLOC_TRUST_PROXY=1`; by default, only the socket peer address is used.
+- **Auth brute-force**: IPs that exceed 10 failed authentication attempts within an hour are
+  locked out for the remainder of that window and receive `429 Too Many Requests`.
+
+### Changed
+
+- **Multi-key authentication**: `SLOC_API_KEYS` (comma-separated list) is now the preferred
+  env var; `SLOC_API_KEY` remains supported for backward compatibility. API key values are
+  stored in `secrecy::Secret` to prevent accidental logging.
+- **CORS policy**: In `--server` mode the CORS layer now defaults to deny-all; set
+  `SLOC_ALLOWED_ORIGINS` (comma-separated) to allow specific origins. In local (non-server)
+  mode, only `http://127.0.0.1:*` and `http://localhost:*` are permitted.
+- **GitHub Actions permissions**: Moved `contents: write` from the workflow-level default to
+  only the `publish` job; all other jobs receive `contents: read` (principle of least
+  privilege).
+- **Dockerfile**: Removed unused `wget` from the runtime image; replaced the `wget`-based
+  `HEALTHCHECK` with `oxide-sloc healthz`.
+- **docker-compose.yml**: Added container hardening — `cap_drop: ALL`,
+  `no-new-privileges: true`, `read_only: true`, and a 64 MiB `/tmp` tmpfs mount.
+- **Structured tracing**: Added `tracing::warn!` / `tracing::info!` events for auth
+  failures, auth lockouts, rate-limit hits, path rejections, and completed scans.
+
+---
+
+## [1.3.5] — 2026-05-02
+
+### Fixed
+
+- **Jenkins build description**: Build description now correctly reads `params.SCAN_PATH`
+  instead of `env.SCAN_PATH`, which was always null and produced blank descriptions.
+- **Docker build**: Added `xz-utils` to the builder stage so `tar -xJf vendor.tar.xz`
+  succeeds in environments where `xz` is not pre-installed.
+
+---
+
 ## [1.3.0] — 2026-05-01
 
 ### Added

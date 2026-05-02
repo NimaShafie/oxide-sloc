@@ -26,7 +26,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 
 use sloc_config::{AppConfig, BinaryFileBehavior, MixedLinePolicy};
 
@@ -48,6 +48,7 @@ struct IpRateLimiter {
     window: Duration,
     max_requests: usize,
     state: std::sync::Mutex<HashMap<IpAddr, VecDeque<Instant>>>,
+    auth_failures: std::sync::Mutex<HashMap<IpAddr, (u32, Instant)>>,
 }
 
 impl IpRateLimiter {
@@ -56,6 +57,7 @@ impl IpRateLimiter {
             window,
             max_requests,
             state: std::sync::Mutex::new(HashMap::new()),
+            auth_failures: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -69,6 +71,14 @@ impl IpRateLimiter {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.len() > 10_000 {
+            state.retain(|_, bucket| {
+                while bucket.front().is_some_and(|t| *t <= cutoff) {
+                    bucket.pop_front();
+                }
+                !bucket.is_empty()
+            });
+        }
         let bucket = state.entry(ip).or_default();
         while bucket.front().is_some_and(|t| *t <= cutoff) {
             bucket.pop_front();
@@ -79,6 +89,33 @@ impl IpRateLimiter {
             bucket.push_back(now);
             true
         }
+    }
+
+    fn record_auth_failure(&self, ip: IpAddr) {
+        let mut map = self
+            .auth_failures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = map.entry(ip).or_insert((0, Instant::now()));
+        entry.0 += 1;
+        entry.1 = Instant::now();
+    }
+
+    fn is_auth_locked_out(&self, ip: IpAddr) -> bool {
+        let lockout_threshold = 10u32;
+        let lockout_window = Duration::from_secs(3600);
+        let mut map = self
+            .auth_failures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(entry) = map.get_mut(&ip) else {
+            return false;
+        };
+        if entry.1.elapsed() > lockout_window {
+            map.remove(&ip);
+            return false;
+        }
+        entry.0 >= lockout_threshold
     }
 }
 
@@ -91,8 +128,9 @@ struct AppState {
     analyze_semaphore: Arc<tokio::sync::Semaphore>,
     server_mode: bool,
     tls_enabled: bool,
-    api_key: Option<String>,
+    api_keys: Vec<secrecy::Secret<String>>,
     rate_limiter: Arc<IpRateLimiter>,
+    trust_proxy: bool,
 }
 
 type PendingPdf = Option<(PathBuf, PathBuf, bool)>;
@@ -125,11 +163,18 @@ pub async fn serve(config: AppConfig) -> Result<()> {
     registry.prune_stale();
     let _ = registry.save(&registry_path);
 
-    let api_key = std::env::var("SLOC_API_KEY").ok().filter(|k| !k.is_empty());
-    if server_mode && api_key.is_none() {
+    let api_keys: Vec<secrecy::Secret<String>> = std::env::var("SLOC_API_KEYS")
+        .or_else(|_| std::env::var("SLOC_API_KEY"))
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| secrecy::Secret::new(s.to_owned()))
+        .collect();
+    if server_mode && api_keys.is_empty() {
         println!(
-            "WARNING: SLOC_API_KEY is not set. All web endpoints are unauthenticated. \
-             Set SLOC_API_KEY to enable bearer-token authentication."
+            "WARNING: SLOC_API_KEY / SLOC_API_KEYS is not set. All web endpoints are \
+             unauthenticated. Set SLOC_API_KEYS (comma-separated) to enable authentication."
         );
     }
 
@@ -143,8 +188,21 @@ pub async fn serve(config: AppConfig) -> Result<()> {
              or terminate TLS at a reverse proxy (nginx, caddy)."
         );
     }
+    if server_mode {
+        println!(
+            "CORS: set SLOC_ALLOWED_ORIGINS=https://ci.example.com,https://app.example.com \
+             to restrict cross-origin access (comma-separated)."
+        );
+    }
+    let trust_proxy = std::env::var("SLOC_TRUST_PROXY").as_deref() == Ok("1");
+    if trust_proxy {
+        println!(
+            "NOTE: SLOC_TRUST_PROXY=1 — X-Forwarded-For header is trusted for rate limiting. \
+             Only set this when oxide-sloc is behind a trusted reverse proxy."
+        );
+    }
 
-    // FIND-010: 60 req/min per IP across all routes.
+    // 60 req/min per IP across all routes.
     let rate_limiter = Arc::new(IpRateLimiter::new(Duration::from_mins(1), 60));
 
     let state = AppState {
@@ -155,8 +213,9 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         analyze_semaphore: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_ANALYSES)),
         server_mode,
         tls_enabled,
-        api_key,
+        api_keys,
         rate_limiter,
+        trust_proxy,
     };
 
     let protected = Router::new()
@@ -192,7 +251,7 @@ pub async fn serve(config: AppConfig) -> Result<()> {
             state.clone(),
             add_security_headers,
         ))
-        .layer(CorsLayer::new())
+        .layer(build_cors_layer(state.server_mode))
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(state.clone());
 
@@ -397,16 +456,45 @@ async fn require_api_key(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    if let Some(ref expected) = state.api_key {
+    if !state.api_keys.is_empty() {
+        let keys = &state.api_keys;
         let provided = req
             .headers()
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
             .or_else(|| req.headers().get("X-API-Key").and_then(|v| v.to_str().ok()));
-        if provided.is_some_and(|k| ct_eq(k, expected)) {
+
+        let peer_ip = req
+            .extensions()
+            .get::<axum::extract::ConnectInfo<SocketAddr>>()
+            .map(|c| c.0.ip())
+            .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+
+        if state.rate_limiter.is_auth_locked_out(peer_ip) {
+            tracing::warn!(event = "auth_lockout", peer_addr = %peer_ip,
+                "Authentication locked out after repeated failures");
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(header::RETRY_AFTER, "3600")],
+                "429 Too Many Requests — authentication temporarily locked\n",
+            )
+                .into_response();
+        }
+
+        if provided.is_some_and(|k| {
+            keys.iter().any(|expected| {
+                use secrecy::ExposeSecret;
+                ct_eq(k, expected.expose_secret())
+            })
+        }) {
             return next.run(req).await;
         }
+
+        state.rate_limiter.record_auth_failure(peer_ip);
+        let path = req.uri().path().to_owned();
+        tracing::warn!(event = "auth_failure", peer_addr = %peer_ip, path = %path,
+            "API key authentication failed");
         return (
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Bearer realm=\"oxide-sloc\"")],
@@ -420,6 +508,35 @@ async fn require_api_key(
 fn ct_eq(a: &str, b: &str) -> bool {
     use subtle::ConstantTimeEq;
     a.as_bytes().ct_eq(b.as_bytes()).into()
+}
+
+fn build_cors_layer(server_mode: bool) -> CorsLayer {
+    if server_mode {
+        let allowed: Vec<axum::http::HeaderValue> = std::env::var("SLOC_ALLOWED_ORIGINS")
+            .unwrap_or_default()
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+        if allowed.is_empty() {
+            return CorsLayer::new();
+        }
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::list(allowed))
+            .allow_methods(AllowMethods::list([
+                axum::http::Method::GET,
+                axum::http::Method::POST,
+            ]))
+            .allow_headers(AllowHeaders::list([
+                axum::http::header::AUTHORIZATION,
+                axum::http::header::CONTENT_TYPE,
+            ]))
+    } else {
+        CorsLayer::new().allow_origin(AllowOrigin::predicate(|origin, _| {
+            let s = origin.to_str().unwrap_or("");
+            s.starts_with("http://127.0.0.1:") || s.starts_with("http://localhost:")
+        }))
+    }
 }
 
 async fn add_security_headers(
@@ -488,15 +605,21 @@ async fn rate_limit(State(state): State<AppState>, req: Request<Body>, next: Nex
         .get::<axum::extract::ConnectInfo<SocketAddr>>()
         .map(|c| c.0.ip())
         .or_else(|| {
-            req.headers()
-                .get("X-Forwarded-For")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.split(',').next())
-                .and_then(|s| s.trim().parse::<IpAddr>().ok())
+            if state.trust_proxy {
+                req.headers()
+                    .get("X-Forwarded-For")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.split(',').next())
+                    .and_then(|s| s.trim().parse::<IpAddr>().ok())
+            } else {
+                None
+            }
         })
         .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
 
     if !state.rate_limiter.is_allowed(ip) {
+        tracing::warn!(event = "rate_limit_hit", peer_addr = %ip,
+            path = %req.uri().path(), "Rate limit exceeded");
         return (
             StatusCode::TOO_MANY_REQUESTS,
             [(header::RETRY_AFTER, "60")],
@@ -1105,6 +1228,8 @@ fn validate_server_scan_path(
             .is_some_and(|r| canonical.starts_with(&r))
     });
     if !allowed {
+        tracing::warn!(event = "path_rejected", path = %canonical.display(),
+            "Scan path not in allowed_scan_roots");
         let template = ErrorTemplate {
             message: "The requested path is not within an allowed scan directory.".to_string(),
             last_report_url: None,
@@ -1332,6 +1457,8 @@ async fn analyze_handler(
     };
 
     let run_id = run.tool.run_id.clone();
+    tracing::info!(event = "scan_complete", run_id = %run_id,
+        path = %form.path, files = run.summary_totals.files_analyzed, "Analysis finished");
 
     // Capture the most-recent previous scan for this project before registering the current one.
     // Only consider entries whose json file still exists on disk.

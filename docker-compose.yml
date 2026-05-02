@@ -18,6 +18,13 @@ services:
           memory: 1G
         reservations:
           memory: 256M
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
     volumes:
       # Mount a host directory to analyze it via the web UI or CLI.
       # Example: docker compose run oxide-sloc analyze /repo --plain

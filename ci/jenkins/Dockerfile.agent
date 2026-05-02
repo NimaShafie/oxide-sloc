@@ -70,11 +70,8 @@ RUN set -eux; \
               --component rustfmt clippy \
               --no-modify-path; \
     rm /tmp/rust-toolchain.toml; \
-    chmod -R a+rX /opt/rust-toolchain
-
-# Pre-create the persistent Rust+vendor cache directory so the Jenkins user can
-# write to it without requiring root on first use.
-RUN mkdir -p /var/jenkins_home/.rust-cache && \
+    chmod -R a+rX /opt/rust-toolchain; \
+    mkdir -p /var/jenkins_home/.rust-cache; \
     chown -R jenkins:jenkins /var/jenkins_home/.rust-cache
 
 USER jenkins

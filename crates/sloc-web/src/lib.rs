@@ -172,10 +172,10 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         .route("/view-reports", get(history_handler))
         .route("/compare-scans", get(compare_select_handler))
         .route("/compare", get(compare_handler))
-        .route("/images/:folder/:file", get(image_handler))
-        .route("/runs/:run_id/:artifact", get(artifact_handler))
+        .route("/images/{folder}/{file}", get(image_handler))
+        .route("/runs/{run_id}/{artifact}", get(artifact_handler))
         .route("/api/metrics/latest", get(api_metrics_latest_handler))
-        .route("/api/metrics/:run_id", get(api_metrics_run_handler))
+        .route("/api/metrics/{run_id}", get(api_metrics_run_handler))
         .route("/api/project-history", get(project_history_handler))
         .route("/embed/summary", get(embed_handler))
         .route_layer(middleware::from_fn_with_state(
@@ -185,7 +185,7 @@ pub async fn serve(config: AppConfig) -> Result<()> {
 
     let app = protected
         .route("/healthz", get(healthz))
-        .route("/badge/:metric", get(badge_handler))
+        .route("/badge/{metric}", get(badge_handler))
         .route("/static/chart.js", get(chart_js_handler))
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit))
         .layer(middleware::from_fn_with_state(
@@ -1014,7 +1014,9 @@ async fn preview_handler(
     State(state): State<AppState>,
     Query(query): Query<PreviewQuery>,
 ) -> impl IntoResponse {
-    let raw_path = query.path.unwrap_or_else(|| "tests/fixtures/basic".to_string());
+    let raw_path = query
+        .path
+        .unwrap_or_else(|| "tests/fixtures/basic".to_string());
     let resolved = resolve_input_path(&raw_path);
 
     if state.server_mode {

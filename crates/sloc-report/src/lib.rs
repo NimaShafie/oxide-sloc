@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Nima Shafie <nimzshafie@gmail.com>
+#![allow(clippy::multiple_crate_versions)]
 
 use std::collections::BTreeMap;
 use std::fmt::Write as FmtWrite;
@@ -161,13 +162,139 @@ pub fn write_html(run: &AnalysisRun, output_path: &Path) -> Result<()> {
         .with_context(|| format!("failed to write HTML report to {}", output_path.display()))
 }
 
+/// Build the argument list for the browser process.
+fn build_browser_args<'a>(
+    headless_flag: &'a str,
+    user_data_arg: &'a str,
+    print_to_pdf_arg: &'a str,
+    file_url: &'a str,
+    no_sandbox: bool,
+) -> Vec<&'a str> {
+    let mut args: Vec<&str> = vec![
+        headless_flag,
+        "--disable-gpu",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-sync",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-default-apps",
+        "--hide-scrollbars",
+        "--mute-audio",
+        "--print-to-pdf-no-header",
+        "--no-pdf-header-footer",
+        "--run-all-compositor-stages-before-draw",
+        "--virtual-time-budget=8000",
+        "--force-device-scale-factor=1",
+        user_data_arg,
+        print_to_pdf_arg,
+        file_url,
+    ];
+    if no_sandbox {
+        args.push("--no-sandbox");
+    }
+    args
+}
+
+/// Poll for the PDF file to reach a stable non-zero size.
+/// Returns `true` if stable, `false` if not yet ready.
+fn poll_pdf_stable(pdf_path: &Path, last_size: &mut Option<u64>, stable_polls: &mut u32) -> bool {
+    let Ok(meta) = fs::metadata(pdf_path) else {
+        return false;
+    };
+    let size = meta.len();
+    if size == 0 {
+        return false;
+    }
+    if *last_size == Some(size) {
+        *stable_polls += 1;
+    } else {
+        *last_size = Some(size);
+        *stable_polls = 0;
+    }
+    *stable_polls >= 3
+}
+
+/// Handle browser exit status, returning Ok if PDF was produced or an error otherwise.
+fn handle_browser_exit(
+    status: std::process::ExitStatus,
+    headless_flag: &str,
+    absolute_pdf: &Path,
+) -> Result<()> {
+    eprintln!(
+        "[oxide-sloc][pdf] {} exit = {:?}",
+        headless_flag,
+        status.code()
+    );
+    if status.success() && absolute_pdf.exists() {
+        return Ok(());
+    }
+    if status.success() {
+        anyhow::bail!("browser exited successfully but PDF file was not created");
+    }
+    anyhow::bail!(
+        "browser exited with status {} while generating PDF",
+        status
+            .code()
+            .map_or_else(|| "unknown".into(), |code| code.to_string())
+    );
+}
+
+/// Wait loop: poll until the PDF is stable, the browser exits, or we time out.
+fn wait_for_pdf_stable(
+    child: &mut std::process::Child,
+    browser_display: &std::path::Display<'_>,
+    headless_flag: &str,
+    absolute_pdf: &Path,
+) -> Result<()> {
+    let started = std::time::Instant::now();
+    let mut last_size: Option<u64> = None;
+    let mut stable_polls: u32 = 0;
+
+    loop {
+        if poll_pdf_stable(absolute_pdf, &mut last_size, &mut stable_polls) {
+            let size = last_size.unwrap_or(0);
+            eprintln!("[oxide-sloc][pdf] file ready at {size} bytes");
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(());
+        }
+
+        if let Some(status) = child
+            .try_wait()
+            .with_context(|| format!("failed while waiting for {browser_display}"))?
+        {
+            return handle_browser_exit(status, headless_flag, absolute_pdf);
+        }
+
+        if started.elapsed() > std::time::Duration::from_secs(45) {
+            let _ = child.kill();
+            let _ = child.wait();
+            if let Ok(meta) = fs::metadata(absolute_pdf) {
+                if meta.len() > 0 {
+                    eprintln!(
+                        "[oxide-sloc][pdf] timeout reached but PDF exists at {} bytes",
+                        meta.len()
+                    );
+                    return Ok(());
+                }
+            }
+            anyhow::bail!("browser timed out while generating PDF");
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
+
 /// Launch a headless Chromium-based browser to print `html_path` as a PDF to `pdf_path`.
 ///
 /// # Errors
 ///
 /// Returns an error if no supported browser is found, the browser process fails to start,
 /// or the PDF file is not produced within the timeout.
+#[allow(clippy::too_many_lines)]
 pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
+    // NOSONAR
     eprintln!("[oxide-sloc][pdf] starting");
 
     let browser = discover_browser().context(
@@ -242,29 +369,13 @@ pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
 
         let user_data_arg = format!("--user-data-dir={}", profile_dir.display());
         let print_to_pdf_arg = format!("--print-to-pdf={}", absolute_pdf.display());
-        let mut args: Vec<&str> = vec![
+        let args = build_browser_args(
             headless_flag,
-            "--disable-gpu",
-            "--disable-extensions",
-            "--disable-background-networking",
-            "--disable-sync",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-default-apps",
-            "--hide-scrollbars",
-            "--mute-audio",
-            "--print-to-pdf-no-header",
-            "--no-pdf-header-footer",
-            "--run-all-compositor-stages-before-draw",
-            "--virtual-time-budget=8000",
-            "--force-device-scale-factor=1",
             &user_data_arg,
             &print_to_pdf_arg,
             &file_url,
-        ];
-        if no_sandbox {
-            args.push("--no-sandbox");
-        }
+            no_sandbox,
+        );
 
         let mut child = Command::new(&browser)
             .current_dir(&html_parent)
@@ -274,75 +385,7 @@ pub fn write_pdf_from_html(html_path: &Path, pdf_path: &Path) -> Result<()> {
             .spawn()
             .with_context(|| format!("failed to launch browser {}", browser.display()))?;
 
-        let started = std::time::Instant::now();
-        let mut last_size: Option<u64> = None;
-        let mut stable_polls: u32 = 0;
-
-        loop {
-            if let Ok(meta) = fs::metadata(&absolute_pdf) {
-                let size = meta.len();
-                if size > 0 {
-                    if last_size == Some(size) {
-                        stable_polls += 1;
-                    } else {
-                        last_size = Some(size);
-                        stable_polls = 0;
-                    }
-
-                    if stable_polls >= 3 {
-                        eprintln!("[oxide-sloc][pdf] file ready at {size} bytes");
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return Ok(());
-                    }
-                }
-            }
-
-            if let Some(status) = child
-                .try_wait()
-                .with_context(|| format!("failed while waiting for {}", browser.display()))?
-            {
-                eprintln!(
-                    "[oxide-sloc][pdf] {} exit = {:?}",
-                    headless_flag,
-                    status.code()
-                );
-
-                if status.success() && absolute_pdf.exists() {
-                    return Ok(());
-                }
-
-                if status.success() {
-                    anyhow::bail!("browser exited successfully but PDF file was not created");
-                }
-
-                anyhow::bail!(
-                    "browser exited with status {} while generating PDF",
-                    status
-                        .code()
-                        .map_or_else(|| "unknown".into(), |code| code.to_string())
-                );
-            }
-
-            if started.elapsed() > std::time::Duration::from_secs(45) {
-                let _ = child.kill();
-                let _ = child.wait();
-
-                if let Ok(meta) = fs::metadata(&absolute_pdf) {
-                    if meta.len() > 0 {
-                        eprintln!(
-                            "[oxide-sloc][pdf] timeout reached but PDF exists at {} bytes",
-                            meta.len()
-                        );
-                        return Ok(());
-                    }
-                }
-
-                anyhow::bail!("browser timed out while generating PDF");
-            }
-
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
+        wait_for_pdf_stable(&mut child, &browser.display(), headless_flag, &absolute_pdf)
     };
 
     let result = run_once("--headless=old").or_else(|err| {
@@ -633,6 +676,50 @@ fn summarize_warnings(warnings: &[String]) -> Vec<WarningSummaryRow> {
         .collect()
 }
 
+/// Classify an unsupported-language warning path into a named bucket.
+fn classify_unsupported_path(path: &str) -> &'static str {
+    let ext_lc = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+
+    if ext_lc == "md"
+        || path.ends_with("README")
+        || path.ends_with("README.md")
+        || path.ends_with("LICENSE")
+    {
+        "Documentation / text"
+    } else if ext_lc == "json" || path.ends_with(".spdx.json") || path.ends_with("devkit.json") {
+        "JSON manifests and config"
+    } else if ext_lc == "toml"
+        || path.ends_with("MANIFEST.in")
+        || path.ends_with("requirements.txt")
+    {
+        "Project metadata and packaging"
+    } else if ext_lc == "html" {
+        "HTML templates"
+    } else if ext_lc == "txt" {
+        "Plain text assets"
+    } else if ext_lc.is_empty() {
+        "Extensionless or custom text files"
+    } else {
+        "Other unsupported text formats"
+    }
+}
+
+/// Map a bucket label to its recommendation string.
+fn bucket_recommendation(label: &str) -> String {
+    match label {
+        "Documentation / text" => "Add a docs/text classification path so README, LICENSE, and markdown stop appearing as source-language misses.".to_string(),
+        "JSON manifests and config" => "Promote JSON manifests into a metadata bucket or add a light-weight JSON analyzer if you want them counted separately.".to_string(),
+        "Project metadata and packaging" => "Treat TOML, MANIFEST.in, and requirements files as metadata so they become intentional non-source records instead of generic warnings.".to_string(),
+        "HTML templates" => "Add HTML/template detection for web views and server-rendered pages to reduce unsupported-template noise.".to_string(),
+        "Plain text assets" => "Classify text asset placeholders as plain text or ignore them by policy.".to_string(),
+        _ => "Review this bucket and either map it to an existing metadata class or create a dedicated analyzer when it truly represents source.".to_string(),
+    }
+}
+
 fn build_support_opportunities(warnings: &[String]) -> Vec<WarningOpportunityRow> {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
 
@@ -649,36 +736,7 @@ fn build_support_opportunities(warnings: &[String]) -> Vec<WarningOpportunityRow
             continue;
         }
 
-        let path_obj = Path::new(path);
-        let ext_lc = path_obj
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(str::to_ascii_lowercase)
-            .unwrap_or_default();
-        let bucket = if ext_lc == "md"
-            || path.ends_with("README")
-            || path.ends_with("README.md")
-            || path.ends_with("LICENSE")
-        {
-            "Documentation / text"
-        } else if ext_lc == "json" || path.ends_with(".spdx.json") || path.ends_with("devkit.json")
-        {
-            "JSON manifests and config"
-        } else if ext_lc == "toml"
-            || path.ends_with("MANIFEST.in")
-            || path.ends_with("requirements.txt")
-        {
-            "Project metadata and packaging"
-        } else if ext_lc == "html" {
-            "HTML templates"
-        } else if ext_lc == "txt" {
-            "Plain text assets"
-        } else if ext_lc.is_empty() {
-            "Extensionless or custom text files"
-        } else {
-            "Other unsupported text formats"
-        };
-
+        let bucket = classify_unsupported_path(path);
         *counts.entry(bucket.to_string()).or_default() += 1;
     }
 
@@ -687,15 +745,7 @@ fn build_support_opportunities(warnings: &[String]) -> Vec<WarningOpportunityRow
 
     rows.into_iter()
         .map(|(label, count)| {
-            let recommendation = match label.as_str() {
-                "Documentation / text" => "Add a docs/text classification path so README, LICENSE, and markdown stop appearing as source-language misses.".to_string(),
-                "JSON manifests and config" => "Promote JSON manifests into a metadata bucket or add a light-weight JSON analyzer if you want them counted separately.".to_string(),
-                "Project metadata and packaging" => "Treat TOML, MANIFEST.in, and requirements files as metadata so they become intentional non-source records instead of generic warnings.".to_string(),
-                "HTML templates" => "Add HTML/template detection for web views and server-rendered pages to reduce unsupported-template noise.".to_string(),
-                "Plain text assets" => "Classify text asset placeholders as plain text or ignore them by policy.".to_string(),
-                _ => "Review this bucket and either map it to an existing metadata class or create a dedicated analyzer when it truly represents source.".to_string(),
-            };
-
+            let recommendation = bucket_recommendation(&label);
             WarningOpportunityRow {
                 label,
                 count,
@@ -2184,6 +2234,7 @@ fn build_xlsx_archive(sheets: &[SheetDef<'_>]) -> Vec<u8> {
 /// # Errors
 ///
 /// Returns an error if the file cannot be written.
+#[allow(clippy::too_many_lines)]
 pub fn write_xlsx(run: &AnalysisRun, path: &Path) -> Result<()> {
     // Sheet 1 — Summary
     let summary_rows: Vec<Vec<String>> = vec![

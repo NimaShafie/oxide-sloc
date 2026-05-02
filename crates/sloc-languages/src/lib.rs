@@ -314,7 +314,117 @@ pub fn supported_languages() -> BTreeSet<Language> {
     .collect()
 }
 
+/// Detect language from a shebang line (e.g. `#!/usr/bin/env python3`).
+fn detect_by_shebang(line: &str) -> Option<Language> {
+    let lower = line.to_ascii_lowercase();
+    if !lower.starts_with("#!") {
+        return None;
+    }
+    if lower.contains("python") {
+        return Some(Language::Python);
+    }
+    if lower.contains("pwsh") || lower.contains("powershell") {
+        return Some(Language::PowerShell);
+    }
+    if lower.contains("bash")
+        || lower.contains("/sh")
+        || lower.contains("zsh")
+        || lower.contains("ksh")
+    {
+        return Some(Language::Shell);
+    }
+    if lower.contains("ruby") {
+        return Some(Language::Ruby);
+    }
+    if lower.contains("perl") {
+        return Some(Language::Perl);
+    }
+    if lower.contains("php") {
+        return Some(Language::Php);
+    }
+    if lower.contains("node") || lower.contains("nodejs") {
+        return Some(Language::JavaScript);
+    }
+    None
+}
+
+/// Detect language purely from a (lowercased) file extension.
+fn detect_by_extension(ext: &str) -> Option<Language> {
+    match ext {
+        // --- Original 11 ---
+        "c" | "h" => Some(Language::C),
+        "cc" | "cp" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => Some(Language::Cpp),
+        "cs" => Some(Language::CSharp),
+        "go" => Some(Language::Go),
+        "java" => Some(Language::Java),
+        "js" | "mjs" | "cjs" => Some(Language::JavaScript),
+        "py" => Some(Language::Python),
+        "rs" => Some(Language::Rust),
+        "sh" | "bash" | "zsh" | "ksh" => Some(Language::Shell),
+        "ps1" | "psm1" | "psd1" => Some(Language::PowerShell),
+        "ts" | "mts" | "cts" => Some(Language::TypeScript),
+        // --- Extended 30 ---
+        "asm" | "s" => Some(Language::Assembly),
+        "clj" | "cljs" | "cljc" | "edn" => Some(Language::Clojure),
+        "css" => Some(Language::Css),
+        "dart" => Some(Language::Dart),
+        "ex" | "exs" => Some(Language::Elixir),
+        "erl" | "hrl" => Some(Language::Erlang),
+        "fs" | "fsi" | "fsx" => Some(Language::FSharp),
+        "groovy" | "gradle" => Some(Language::Groovy),
+        "hs" | "lhs" => Some(Language::Haskell),
+        "html" | "htm" | "xhtml" => Some(Language::Html),
+        "jl" => Some(Language::Julia),
+        "kt" | "kts" => Some(Language::Kotlin),
+        "lua" => Some(Language::Lua),
+        "mk" => Some(Language::Makefile),
+        "nim" | "nims" => Some(Language::Nim),
+        "m" | "mm" => Some(Language::ObjectiveC),
+        "ml" | "mli" => Some(Language::Ocaml),
+        "pl" | "pm" | "t" => Some(Language::Perl),
+        "php" | "php3" | "php4" | "php5" | "php7" | "phtml" => Some(Language::Php),
+        "r" => Some(Language::R),
+        "rb" | "rake" => Some(Language::Ruby),
+        "scala" | "sc" => Some(Language::Scala),
+        "scss" | "sass" => Some(Language::Scss),
+        "sql" => Some(Language::Sql),
+        "svelte" => Some(Language::Svelte),
+        "swift" => Some(Language::Swift),
+        "vue" => Some(Language::Vue),
+        "xml" | "xsd" | "xsl" | "xslt" | "svg" => Some(Language::Xml),
+        "zig" => Some(Language::Zig),
+        _ => None,
+    }
+}
+
+/// Detect language from an exact filename (no extension) or well-known filename patterns.
+fn detect_by_filename(filename: &str, filename_lower: &str) -> Option<Language> {
+    // Dockerfile: exact name or Dockerfile.* variant
+    if filename == "Dockerfile"
+        || filename.starts_with("Dockerfile.")
+        || filename_lower == "dockerfile"
+    {
+        return Some(Language::Dockerfile);
+    }
+    // Makefile variants
+    if matches!(
+        filename,
+        "Makefile" | "GNUmakefile" | "makefile" | "BSDmakefile"
+    ) {
+        return Some(Language::Makefile);
+    }
+    // Ruby ecosystem files that have no extension
+    if matches!(
+        filename,
+        "Rakefile" | "Gemfile" | "Guardfile" | "Vagrantfile" | "Fastfile" | "Podfile"
+    ) {
+        return Some(Language::Ruby);
+    }
+    None
+}
+
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn detect_language(
     path: &Path,
     first_line: Option<&str>,
@@ -336,118 +446,23 @@ pub fn detect_language(
     }
 
     // Filename-based detection for files that have no extension or use exact names
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
     let filename_lower = filename.to_ascii_lowercase();
 
-    // Dockerfile: exact name or Dockerfile.* variant
-    if filename == "Dockerfile"
-        || filename.starts_with("Dockerfile.")
-        || filename_lower == "dockerfile"
-    {
-        return Some(Language::Dockerfile);
+    if let Some(lang) = detect_by_filename(filename, &filename_lower) {
+        return Some(lang);
     }
-
-    // Makefile variants
-    if matches!(
-        filename,
-        "Makefile" | "GNUmakefile" | "makefile" | "BSDmakefile"
-    ) {
-        return Some(Language::Makefile);
-    }
-
-    // Ruby ecosystem files that have no extension
-    if matches!(
-        filename,
-        "Rakefile" | "Gemfile" | "Guardfile" | "Vagrantfile" | "Fastfile" | "Podfile"
-    ) {
-        return Some(Language::Ruby);
-    }
-
-    let _ = stem; // suppress unused warning
 
     // Extension-based detection
-    if let Some(ext) = extension.as_deref() {
-        let by_ext = match ext {
-            // --- Original 11 ---
-            "c" | "h" => Some(Language::C),
-            "cc" | "cp" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => Some(Language::Cpp),
-            "cs" => Some(Language::CSharp),
-            "go" => Some(Language::Go),
-            "java" => Some(Language::Java),
-            "js" | "mjs" | "cjs" => Some(Language::JavaScript),
-            "py" => Some(Language::Python),
-            "rs" => Some(Language::Rust),
-            "sh" | "bash" | "zsh" | "ksh" => Some(Language::Shell),
-            "ps1" | "psm1" | "psd1" => Some(Language::PowerShell),
-            "ts" | "mts" | "cts" => Some(Language::TypeScript),
-            // --- Extended 30 ---
-            "asm" | "s" => Some(Language::Assembly),
-            "clj" | "cljs" | "cljc" | "edn" => Some(Language::Clojure),
-            "css" => Some(Language::Css),
-            "dart" => Some(Language::Dart),
-            "ex" | "exs" => Some(Language::Elixir),
-            "erl" | "hrl" => Some(Language::Erlang),
-            "fs" | "fsi" | "fsx" => Some(Language::FSharp),
-            "groovy" | "gradle" => Some(Language::Groovy),
-            "hs" | "lhs" => Some(Language::Haskell),
-            "html" | "htm" | "xhtml" => Some(Language::Html),
-            "jl" => Some(Language::Julia),
-            "kt" | "kts" => Some(Language::Kotlin),
-            "lua" => Some(Language::Lua),
-            "mk" => Some(Language::Makefile),
-            "nim" | "nims" => Some(Language::Nim),
-            "m" | "mm" => Some(Language::ObjectiveC),
-            "ml" | "mli" => Some(Language::Ocaml),
-            "pl" | "pm" | "t" => Some(Language::Perl),
-            "php" | "php3" | "php4" | "php5" | "php7" | "phtml" => Some(Language::Php),
-            "r" => Some(Language::R),
-            "rb" | "rake" => Some(Language::Ruby),
-            "scala" | "sc" => Some(Language::Scala),
-            "scss" | "sass" => Some(Language::Scss),
-            "sql" => Some(Language::Sql),
-            "svelte" => Some(Language::Svelte),
-            "swift" => Some(Language::Swift),
-            "vue" => Some(Language::Vue),
-            "xml" | "xsd" | "xsl" | "xslt" | "svg" => Some(Language::Xml),
-            "zig" => Some(Language::Zig),
-            _ => None,
-        };
-
-        if by_ext.is_some() {
-            return by_ext;
-        }
+    if let Some(lang) = extension.as_deref().and_then(detect_by_extension) {
+        return Some(lang);
     }
 
+    // Shebang detection (last resort — only for extensionless scripts)
     if shebang_detection {
         if let Some(line) = first_line {
-            let lower = line.to_ascii_lowercase();
-            if lower.starts_with("#!") {
-                if lower.contains("python") {
-                    return Some(Language::Python);
-                }
-                if lower.contains("pwsh") || lower.contains("powershell") {
-                    return Some(Language::PowerShell);
-                }
-                if lower.contains("bash")
-                    || lower.contains("/sh")
-                    || lower.contains("zsh")
-                    || lower.contains("ksh")
-                {
-                    return Some(Language::Shell);
-                }
-                if lower.contains("ruby") {
-                    return Some(Language::Ruby);
-                }
-                if lower.contains("perl") {
-                    return Some(Language::Perl);
-                }
-                if lower.contains("php") {
-                    return Some(Language::Php);
-                }
-                if lower.contains("node") || lower.contains("nodejs") {
-                    return Some(Language::JavaScript);
-                }
+            if let Some(lang) = detect_by_shebang(line) {
+                return Some(lang);
             }
         }
     }
@@ -456,6 +471,7 @@ pub fn detect_language(
 }
 
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) -> RawFileAnalysis {
     // IEEE flags shared by all non-preprocessor languages.
     let base = IeeeFlags {
@@ -488,7 +504,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                     skip_lines: HashSet::new(),
                     symbol_patterns: SP_C,
                 },
-                &cpp,
+                cpp,
             )
         }
         Language::Cpp => {
@@ -509,7 +525,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                     skip_lines: HashSet::new(),
                     symbol_patterns: SP_CPP,
                 },
-                &cpp,
+                cpp,
             )
         }
         Language::CSharp => analyze_generic(
@@ -524,7 +540,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_CSHARP,
             },
-            &base,
+            base,
         ),
         Language::Go => analyze_generic(
             text,
@@ -538,7 +554,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_GO,
             },
-            &base,
+            base,
         ),
         Language::Java => analyze_generic(
             text,
@@ -552,7 +568,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_JAVA,
             },
-            &base,
+            base,
         ),
         Language::JavaScript | Language::Svelte | Language::Vue => analyze_generic(
             text,
@@ -566,7 +582,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_JS,
             },
-            &base,
+            base,
         ),
         Language::Rust => analyze_generic(
             text,
@@ -581,7 +597,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_RUST,
             },
-            &base,
+            base,
         ),
         Language::Shell => analyze_generic(
             text,
@@ -595,7 +611,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_SHELL,
             },
-            &base,
+            base,
         ),
         Language::PowerShell => analyze_generic(
             text,
@@ -609,7 +625,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_POWERSHELL,
             },
-            &base,
+            base,
         ),
         Language::TypeScript => analyze_generic(
             text,
@@ -623,7 +639,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_TS,
             },
-            &base,
+            base,
         ),
         Language::Python => {
             #[cfg(feature = "tree-sitter")]
@@ -643,7 +659,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                     skip_lines: docstring_lines,
                     symbol_patterns: SP_PYTHON,
                 },
-                &base,
+                base,
             )
         }
         // --- Extended language analyzers ---
@@ -659,7 +675,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_ASSEMBLY,
             },
-            &base,
+            base,
         ),
         Language::Clojure => analyze_generic(
             text,
@@ -673,7 +689,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_CLOJURE,
             },
-            &base,
+            base,
         ),
         Language::Css => analyze_generic(
             text,
@@ -687,7 +703,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_NONE,
             },
-            &base,
+            base,
         ),
         Language::Dart => analyze_generic(
             text,
@@ -701,7 +717,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_DART,
             },
-            &base,
+            base,
         ),
         Language::Dockerfile | Language::Makefile => analyze_generic(
             text,
@@ -715,7 +731,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_NONE,
             },
-            &base,
+            base,
         ),
         Language::Elixir => analyze_generic(
             text,
@@ -729,7 +745,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_ELIXIR,
             },
-            &base,
+            base,
         ),
         Language::Erlang => analyze_generic(
             text,
@@ -743,7 +759,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_ERLANG,
             },
-            &base,
+            base,
         ),
         Language::FSharp => analyze_generic(
             text,
@@ -757,7 +773,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_FSHARP,
             },
-            &base,
+            base,
         ),
         Language::Groovy => analyze_generic(
             text,
@@ -771,7 +787,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_GROOVY,
             },
-            &base,
+            base,
         ),
         Language::Haskell => analyze_generic(
             text,
@@ -785,7 +801,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_HASKELL,
             },
-            &base,
+            base,
         ),
         Language::Html | Language::Xml => analyze_generic(
             text,
@@ -799,7 +815,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_NONE,
             },
-            &base,
+            base,
         ),
         Language::Julia => analyze_generic(
             text,
@@ -813,7 +829,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_JULIA,
             },
-            &base,
+            base,
         ),
         Language::Kotlin => analyze_generic(
             text,
@@ -827,7 +843,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_KOTLIN,
             },
-            &base,
+            base,
         ),
         Language::Lua => analyze_generic(
             text,
@@ -841,7 +857,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_LUA,
             },
-            &base,
+            base,
         ),
         Language::Nim => analyze_generic(
             text,
@@ -855,7 +871,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_NIM,
             },
-            &base,
+            base,
         ),
         Language::ObjectiveC => analyze_generic(
             text,
@@ -869,7 +885,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_OBJECTIVEC,
             },
-            &cpp,
+            cpp,
         ),
         Language::Ocaml => analyze_generic(
             text,
@@ -883,7 +899,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_OCAML,
             },
-            &base,
+            base,
         ),
         Language::Perl => analyze_generic(
             text,
@@ -897,7 +913,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_PERL,
             },
-            &base,
+            base,
         ),
         Language::Php => analyze_generic(
             text,
@@ -911,7 +927,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_PHP,
             },
-            &base,
+            base,
         ),
         Language::R => analyze_generic(
             text,
@@ -925,7 +941,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_R,
             },
-            &base,
+            base,
         ),
         Language::Ruby => analyze_generic(
             text,
@@ -939,7 +955,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_RUBY,
             },
-            &base,
+            base,
         ),
         Language::Scala => analyze_generic(
             text,
@@ -953,7 +969,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_SCALA,
             },
-            &base,
+            base,
         ),
         Language::Scss => analyze_generic(
             text,
@@ -967,7 +983,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_NONE,
             },
-            &base,
+            base,
         ),
         Language::Sql => analyze_generic(
             text,
@@ -981,7 +997,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_SQL,
             },
-            &base,
+            base,
         ),
         Language::Swift => analyze_generic(
             text,
@@ -995,7 +1011,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_SWIFT,
             },
-            &base,
+            base,
         ),
         Language::Zig => analyze_generic(
             text,
@@ -1009,7 +1025,7 @@ pub fn analyze_text(language: Language, text: &str, options: AnalysisOptions) ->
                 skip_lines: HashSet::new(),
                 symbol_patterns: SP_ZIG,
             },
-            &base,
+            base,
         ),
     }
 }
@@ -1520,6 +1536,7 @@ const SP_ZIG: SymbolPatterns = SymbolPatterns {
     imports: &[],
 };
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 struct ScanConfig {
     line_comments: &'static [&'static str],
@@ -1551,6 +1568,7 @@ enum StringState {
     VerbatimDouble,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Default)]
 struct LineFacts {
     has_code: bool,
@@ -1559,8 +1577,211 @@ struct LineFacts {
     has_docstring: bool,
 }
 
+/// Process one character while the lexer is inside a string literal.
+///
+/// Returns `(new_string_state, advance)` where `advance` is the number of chars to skip.
+fn process_string_char(
+    state: StringState,
+    chars: &[char],
+    i: usize,
+) -> (Option<StringState>, usize) {
+    match state {
+        StringState::Single(delim) => {
+            if chars[i] == '\\' {
+                return (Some(state), 2); // skip escaped character
+            }
+            if chars[i] == delim {
+                (None, 1)
+            } else {
+                (Some(state), 1)
+            }
+        }
+        StringState::Triple(delim) => {
+            if starts_with(chars, i, delim) {
+                (None, delim.len())
+            } else {
+                (Some(state), 1)
+            }
+        }
+        StringState::VerbatimDouble => {
+            if starts_with(chars, i, "\"\"") {
+                return (Some(state), 2); // escaped quote-quote inside verbatim string
+            }
+            if chars[i] == '"' {
+                (None, 1)
+            } else {
+                (Some(state), 1)
+            }
+        }
+    }
+}
+
+/// Process one character while the lexer is inside a block comment.
+///
+/// Returns `(still_in_block_comment, advance)`.
+fn process_block_comment_char(chars: &[char], i: usize, close: &str) -> (bool, usize) {
+    if starts_with(chars, i, close) {
+        (false, close.len())
+    } else {
+        (true, 1)
+    }
+}
+
+/// Attempt to begin a new string literal at position `i`.
+///
+/// Returns `Some((new_state, advance))` when a string opener is detected, else `None`.
+fn try_open_string(chars: &[char], i: usize, config: &ScanConfig) -> Option<(StringState, usize)> {
+    if config.allow_csharp_verbatim_strings && starts_with(chars, i, "@\"") {
+        return Some((StringState::VerbatimDouble, 2));
+    }
+    if config.allow_triple_quote_strings {
+        if starts_with(chars, i, "\"\"\"") {
+            return Some((StringState::Triple("\"\"\""), 3));
+        }
+        if starts_with(chars, i, "'''") {
+            return Some((StringState::Triple("'''"), 3));
+        }
+    }
+    if config.allow_single_quote_strings && chars[i] == '\'' {
+        return Some((StringState::Single('\''), 1));
+    }
+    if config.allow_double_quote_strings && chars[i] == '"' {
+        return Some((StringState::Single('"'), 1));
+    }
+    None
+}
+
+/// Scan a single physical line and update `facts`, `in_block_comment`, and `string_state`.
+///
+/// Returns `true` when the caller should break out of the per-line loop early (line comment hit).
+fn scan_line(
+    chars: &[char],
+    config: &ScanConfig,
+    facts: &mut LineFacts,
+    in_block_comment: &mut bool,
+    string_state: &mut Option<StringState>,
+) {
+    let mut i = 0usize;
+    while i < chars.len() {
+        // Inside a string literal — advance until the closing delimiter.
+        if let Some(state) = *string_state {
+            facts.has_code = true;
+            let (new_state, advance) = process_string_char(state, chars, i);
+            *string_state = new_state;
+            i += advance;
+            continue;
+        }
+
+        // Inside a block comment — advance until the closing delimiter.
+        if *in_block_comment {
+            facts.has_multi_comment = true;
+            if let Some((_, close)) = config.block_comment {
+                let (still_in, advance) = process_block_comment_char(chars, i, close);
+                *in_block_comment = still_in;
+                i += advance;
+            }
+            continue;
+        }
+
+        // Whitespace outside any string/comment — skip.
+        if chars[i].is_whitespace() {
+            i += 1;
+            continue;
+        }
+
+        // Attempt to open a string literal.
+        if let Some((new_state, advance)) = try_open_string(chars, i, config) {
+            facts.has_code = true;
+            *string_state = Some(new_state);
+            i += advance;
+            continue;
+        }
+
+        // Attempt to open a block comment.
+        if let Some((open, _)) = config.block_comment {
+            if starts_with(chars, i, open) {
+                facts.has_multi_comment = true;
+                *in_block_comment = true;
+                i += open.len();
+                continue;
+            }
+        }
+
+        // Line comment — rest of the line is a comment; stop scanning.
+        if config
+            .line_comments
+            .iter()
+            .any(|prefix| starts_with(chars, i, prefix))
+        {
+            facts.has_single_comment = true;
+            break;
+        }
+
+        // Plain code character.
+        facts.has_code = true;
+        i += 1;
+    }
+}
+
+/// Apply IEEE 1045-1992 §4.2 preprocessor-directive tracking and continuation-line merging,
+/// then emit the finalized `LineFacts` for this physical line.
+///
+/// Returns `None` when the line is part of a continuation sequence and should be deferred.
+fn finalize_line_facts(
+    facts: LineFacts,
+    trimmed: &str,
+    raw: &mut RawLineCounts,
+    ieee: IeeeFlags,
+    in_block_comment: bool,
+    string_state: Option<StringState>,
+    pending_continuation: &mut Option<LineFacts>,
+) -> Option<LineFacts> {
+    // IEEE 1045-1992 §4.2: track preprocessor/compiler directive lines (C/C++/ObjC).
+    // A directive line is a pure code line (no comment on the same physical line) whose
+    // trimmed content starts with '#'.
+    if ieee.has_preprocessor_directives
+        && facts.has_code
+        && !facts.has_single_comment
+        && !facts.has_multi_comment
+        && trimmed.starts_with('#')
+    {
+        raw.compiler_directive_lines += 1;
+    }
+
+    // IEEE 1045-1992 continuation-line handling.
+    // A line is a continuation starter when it ends with '\' outside any comment or string.
+    let is_continuation = ieee.collapse_continuation_lines
+        && !in_block_comment
+        && string_state.is_none()
+        && trimmed.ends_with('\\');
+
+    if is_continuation {
+        let pending = pending_continuation.get_or_insert_with(LineFacts::default);
+        pending.has_code |= facts.has_code;
+        pending.has_single_comment |= facts.has_single_comment;
+        pending.has_multi_comment |= facts.has_multi_comment;
+        pending.has_docstring |= facts.has_docstring;
+        return None; // defer classification until the sequence ends
+    }
+
+    // Merge any accumulated continuation facts into the final line.
+    let emit = if let Some(pending) = pending_continuation.take() {
+        LineFacts {
+            has_code: pending.has_code | facts.has_code,
+            has_single_comment: pending.has_single_comment | facts.has_single_comment,
+            has_multi_comment: pending.has_multi_comment | facts.has_multi_comment,
+            has_docstring: pending.has_docstring | facts.has_docstring,
+        }
+    } else {
+        facts
+    };
+    Some(emit)
+}
+
 #[allow(clippy::needless_pass_by_value)]
-fn analyze_generic(text: &str, config: ScanConfig, ieee: &IeeeFlags) -> RawFileAnalysis {
+#[allow(clippy::too_many_lines)]
+fn analyze_generic(text: &str, config: ScanConfig, ieee: IeeeFlags) -> RawFileAnalysis {
+    // NOSONAR
     let normalized = if text.is_empty() {
         String::new()
     } else {
@@ -1599,165 +1820,28 @@ fn analyze_generic(text: &str, config: ScanConfig, ieee: &IeeeFlags) -> RawFileA
             facts.has_multi_comment = true;
         }
 
-        let chars: Vec<char> = line.chars().collect();
-        let mut i = 0usize;
-        while i < chars.len() {
-            if config.skip_lines.contains(&line_idx) {
-                break;
-            }
-
-            if let Some(state) = string_state {
-                facts.has_code = true;
-                match state {
-                    StringState::Single(delim) => {
-                        if chars[i] == '\\' {
-                            i += 2;
-                            continue;
-                        }
-                        if chars[i] == delim {
-                            string_state = None;
-                        }
-                        i += 1;
-                        continue;
-                    }
-                    StringState::Triple(delim) => {
-                        if starts_with(&chars, i, delim) {
-                            string_state = None;
-                            i += delim.len();
-                        } else {
-                            i += 1;
-                        }
-                        continue;
-                    }
-                    StringState::VerbatimDouble => {
-                        if starts_with(&chars, i, "\"\"") {
-                            i += 2;
-                            continue;
-                        }
-                        if chars[i] == '"' {
-                            string_state = None;
-                        }
-                        i += 1;
-                        continue;
-                    }
-                }
-            }
-
-            if in_block_comment {
-                facts.has_multi_comment = true;
-                if let Some((_, close)) = config.block_comment {
-                    if starts_with(&chars, i, close) {
-                        in_block_comment = false;
-                        i += close.len();
-                    } else {
-                        i += 1;
-                    }
-                    continue;
-                }
-            }
-
-            if chars[i].is_whitespace() {
-                i += 1;
-                continue;
-            }
-
-            if config.allow_csharp_verbatim_strings && starts_with(&chars, i, "@\"") {
-                facts.has_code = true;
-                string_state = Some(StringState::VerbatimDouble);
-                i += 2;
-                continue;
-            }
-
-            if config.allow_triple_quote_strings {
-                if starts_with(&chars, i, "\"\"\"") {
-                    facts.has_code = true;
-                    string_state = Some(StringState::Triple("\"\"\""));
-                    i += 3;
-                    continue;
-                }
-                if starts_with(&chars, i, "'''") {
-                    facts.has_code = true;
-                    string_state = Some(StringState::Triple("'''"));
-                    i += 3;
-                    continue;
-                }
-            }
-
-            if config.allow_single_quote_strings && chars[i] == '\'' {
-                facts.has_code = true;
-                string_state = Some(StringState::Single('\''));
-                i += 1;
-                continue;
-            }
-
-            if config.allow_double_quote_strings && chars[i] == '"' {
-                facts.has_code = true;
-                string_state = Some(StringState::Single('"'));
-                i += 1;
-                continue;
-            }
-
-            if let Some((open, _)) = config.block_comment {
-                if starts_with(&chars, i, open) {
-                    facts.has_multi_comment = true;
-                    in_block_comment = true;
-                    i += open.len();
-                    continue;
-                }
-            }
-
-            if let Some(prefix) = config
-                .line_comments
-                .iter()
-                .find(|prefix| starts_with(&chars, i, prefix))
-            {
-                let _ = prefix;
-                facts.has_single_comment = true;
-                break;
-            }
-
-            facts.has_code = true;
-            i += 1;
+        // Skip this line if it was pre-classified (e.g. Python docstring skip_lines guard).
+        if !config.skip_lines.contains(&line_idx) {
+            let chars: Vec<char> = line.chars().collect();
+            scan_line(
+                &chars,
+                &config,
+                &mut facts,
+                &mut in_block_comment,
+                &mut string_state,
+            );
         }
 
-        // IEEE 1045-1992 §4.2: track preprocessor/compiler directive lines (C/C++/ObjC).
-        // A directive line is a pure code line (no comment on the same physical line) whose
-        // trimmed content starts with '#'.
-        if ieee.has_preprocessor_directives
-            && facts.has_code
-            && !facts.has_single_comment
-            && !facts.has_multi_comment
-            && trimmed.starts_with('#')
-        {
-            raw.compiler_directive_lines += 1;
-        }
-
-        // IEEE 1045-1992 continuation-line handling.
-        // A line is a continuation starter when it ends with '\' outside any comment or string.
-        let is_continuation = ieee.collapse_continuation_lines
-            && !in_block_comment
-            && string_state.is_none()
-            && trimmed.ends_with('\\');
-
-        if is_continuation {
-            let pending = pending_continuation.get_or_insert_with(LineFacts::default);
-            pending.has_code |= facts.has_code;
-            pending.has_single_comment |= facts.has_single_comment;
-            pending.has_multi_comment |= facts.has_multi_comment;
-            pending.has_docstring |= facts.has_docstring;
-            continue; // defer classification until the sequence ends
-        }
-
-        // Merge any accumulated continuation facts into the final line.
-        let emit = if let Some(pending) = pending_continuation.take() {
-            LineFacts {
-                has_code: pending.has_code | facts.has_code,
-                has_single_comment: pending.has_single_comment | facts.has_single_comment,
-                has_multi_comment: pending.has_multi_comment | facts.has_multi_comment,
-                has_docstring: pending.has_docstring | facts.has_docstring,
-            }
-        } else {
-            facts
+        let Some(emit) = finalize_line_facts(
+            facts,
+            trimmed,
+            &mut raw,
+            ieee,
+            in_block_comment,
+            string_state,
+            &mut pending_continuation,
+        ) else {
+            continue;
         };
 
         classify_line(&mut raw, &emit, trimmed);
@@ -1835,13 +1919,70 @@ fn starts_with(chars: &[char], index: usize, needle: &str) -> bool {
     chars.get(index..index + needle_chars.len()) == Some(needle_chars.as_slice())
 }
 
-fn detect_python_docstring_lines(text: &str) -> HashSet<usize> {
-    #[derive(Debug, Clone)]
-    struct PyContext {
-        indent: usize,
-        expect_docstring: bool,
-    }
+#[derive(Debug, Clone)]
+struct PyContext {
+    indent: usize,
+    expect_docstring: bool,
+}
 
+/// Update `contexts` to pop any scopes that the current `indent` has outdented past.
+fn py_pop_outdented_contexts(contexts: &mut Vec<PyContext>, indent: usize) {
+    while contexts.len() > 1 && indent < contexts.last().map_or(0, |c| c.indent) {
+        contexts.pop();
+    }
+}
+
+/// Handle `pending_block_indent` transition: push a new docstring-expecting context when we
+/// detect the first indented line of a new block, or cancel the pending state otherwise.
+fn py_handle_pending_indent(
+    pending_block_indent: &mut Option<usize>,
+    contexts: &mut Vec<PyContext>,
+    indent: usize,
+    trimmed: &str,
+) {
+    let Some(base_indent) = *pending_block_indent else {
+        return;
+    };
+    if indent > base_indent {
+        contexts.push(PyContext {
+            indent,
+            expect_docstring: true,
+        });
+        *pending_block_indent = None;
+    } else if !trimmed.starts_with('@') {
+        *pending_block_indent = None;
+    }
+}
+
+/// Check whether the current line is a docstring opener in the current context.
+///
+/// If it is, records the line, adjusts `ctx.expect_docstring`, and optionally sets
+/// `active_docstring` for multi-line docstrings. Returns `true` when the caller should
+/// `continue` to the next line.
+fn py_try_record_docstring(
+    ctx: &mut PyContext,
+    trimmed: &str,
+    idx: usize,
+    docstring_lines: &mut HashSet<usize>,
+    active_docstring: &mut Option<(&'static str, usize)>,
+) -> bool {
+    if !ctx.expect_docstring {
+        return false;
+    }
+    if let Some(delim) = docstring_delimiter(trimmed) {
+        docstring_lines.insert(idx);
+        ctx.expect_docstring = false;
+        if !closes_triple_docstring(trimmed, delim, true) {
+            *active_docstring = Some((delim, idx));
+        }
+        return true;
+    }
+    ctx.expect_docstring = false;
+    false
+}
+
+#[allow(clippy::too_many_lines)]
+fn detect_python_docstring_lines(text: &str) -> HashSet<usize> {
     let normalized = if text.is_empty() {
         String::new()
     } else {
@@ -1866,6 +2007,7 @@ fn detect_python_docstring_lines(text: &str) -> HashSet<usize> {
         let trimmed = line.trim();
         let indent = leading_indent(line);
 
+        // Inside a multi-line docstring: mark this line and check for close.
         if let Some((delim, start_line)) = active_docstring {
             docstring_lines.insert(idx);
             if closes_triple_docstring(trimmed, delim, idx == start_line) {
@@ -1874,37 +2016,24 @@ fn detect_python_docstring_lines(text: &str) -> HashSet<usize> {
             continue;
         }
 
+        // Blank lines and comment lines don't affect docstring detection.
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
 
-        while contexts.len() > 1 && indent < contexts.last().map_or(0, |c| c.indent) {
-            contexts.pop();
-        }
+        py_pop_outdented_contexts(&mut contexts, indent);
+        py_handle_pending_indent(&mut pending_block_indent, &mut contexts, indent, trimmed);
 
-        if let Some(base_indent) = pending_block_indent {
-            if indent > base_indent {
-                contexts.push(PyContext {
-                    indent,
-                    expect_docstring: true,
-                });
-                pending_block_indent = None;
-            } else if !trimmed.starts_with('@') {
-                pending_block_indent = None;
-            }
-        }
-
+        // Try to record this line as a docstring opener.
         if let Some(ctx) = contexts.last_mut() {
-            if ctx.expect_docstring {
-                if let Some(delim) = docstring_delimiter(trimmed) {
-                    docstring_lines.insert(idx);
-                    ctx.expect_docstring = false;
-                    if !closes_triple_docstring(trimmed, delim, true) {
-                        active_docstring = Some((delim, idx));
-                    }
-                    continue;
-                }
-                ctx.expect_docstring = false;
+            if py_try_record_docstring(
+                ctx,
+                trimmed,
+                idx,
+                &mut docstring_lines,
+                &mut active_docstring,
+            ) {
+                continue;
             }
         }
 
@@ -1913,6 +2042,7 @@ fn detect_python_docstring_lines(text: &str) -> HashSet<usize> {
         }
     }
 
+    // If a docstring was opened but never closed, mark all remaining lines.
     if let Some((_, start_line)) = active_docstring {
         for idx in start_line..lines.len() {
             docstring_lines.insert(idx);
@@ -2014,11 +2144,34 @@ pub mod ts {
         visit(tree.root_node(), &mut ctx);
 
         let mut raw = RawLineCounts::default();
+        classify_ts_lines(
+            &lines,
+            &has_code,
+            &has_comment,
+            &comment_is_block,
+            &has_docstring,
+            &mut raw,
+        );
 
-        for i in 0..n {
+        Some(RawFileAnalysis {
+            raw,
+            parse_mode: ParseMode::TreeSitter,
+            warnings: Vec::new(),
+        })
+    }
+
+    /// Classify each tree-sitter-annotated line and accumulate counts into `raw`.
+    fn classify_ts_lines(
+        lines: &[&str],
+        has_code: &[bool],
+        has_comment: &[bool],
+        comment_is_block: &[bool],
+        has_docstring: &[bool],
+        raw: &mut RawLineCounts,
+    ) {
+        for i in 0..lines.len() {
             raw.total_physical_lines += 1;
             let trimmed = lines[i].trim();
-
             if trimmed.is_empty() {
                 raw.blank_only_lines += 1;
             } else if has_docstring[i] && !has_code[i] {
@@ -2040,12 +2193,6 @@ pub mod ts {
                 raw.code_only_lines += 1;
             }
         }
-
-        Some(RawFileAnalysis {
-            raw,
-            parse_mode: ParseMode::TreeSitter,
-            warnings: Vec::new(),
-        })
     }
 
     struct VisitCtx<'a> {
@@ -2058,54 +2205,83 @@ pub mod ts {
         has_docstring: &'a mut Vec<bool>,
     }
 
-    fn visit(node: Node, ctx: &mut VisitCtx<'_>) {
-        let kind = node.kind();
+    /// Mark all rows of a comment node and detect whether it is a block comment.
+    fn visit_comment_node(node: Node, ctx: &mut VisitCtx<'_>) {
         let start_row = node.start_position().row;
         let end_row = node.end_position().row;
-
-        if ctx.comment_kinds.contains(&kind) {
-            let first_two = node
-                .utf8_text(ctx.source)
-                .unwrap_or("")
-                .get(..2)
-                .unwrap_or("");
-            let is_block = first_two == "/*" || first_two == "<#";
-            for row in start_row..=end_row {
-                if row < ctx.has_comment.len() {
-                    ctx.has_comment[row] = true;
-                    if is_block {
-                        ctx.comment_is_block[row] = true;
-                    }
+        let first_two = node
+            .utf8_text(ctx.source)
+            .unwrap_or("")
+            .get(..2)
+            .unwrap_or("");
+        let is_block = first_two == "/*" || first_two == "<#";
+        for row in start_row..=end_row {
+            if row < ctx.has_comment.len() {
+                ctx.has_comment[row] = true;
+                if is_block {
+                    ctx.comment_is_block[row] = true;
                 }
             }
+        }
+    }
+
+    /// If `node` is an expression_statement whose sole named child is a string literal,
+    /// mark those rows as docstring and return `true`.
+    fn visit_maybe_docstring(node: Node, kind: &str, ctx: &mut VisitCtx<'_>) -> bool {
+        let stmt_kind = match ctx.docstring_stmt_kind {
+            Some(k) => k,
+            None => return false,
+        };
+        if kind != stmt_kind || node.named_child_count() != 1 {
+            return false;
+        }
+        let child = match node.named_child(0) {
+            Some(c) => c,
+            None => return false,
+        };
+        if child.kind() != "string" {
+            return false;
+        }
+        let child_start = child.start_position().row;
+        let child_end = child.end_position().row;
+        for row in child_start..=child_end {
+            if row < ctx.has_docstring.len() {
+                ctx.has_docstring[row] = true;
+            }
+        }
+        true
+    }
+
+    /// Mark all rows of a leaf (non-comment, non-extra) node as code.
+    fn visit_leaf_code(node: Node, ctx: &mut VisitCtx<'_>) {
+        let start_row = node.start_position().row;
+        let end_row = node.end_position().row;
+        for row in start_row..=end_row {
+            if row < ctx.has_code.len() {
+                ctx.has_code[row] = true;
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn visit(node: Node, ctx: &mut VisitCtx<'_>) {
+        // NOSONAR
+        let kind = node.kind();
+
+        // Comment node — mark rows as comment, detect block vs. line comment.
+        if ctx.comment_kinds.contains(&kind) {
+            visit_comment_node(node, ctx);
             return;
         }
 
-        // Python docstring: expression_statement whose only named child is a string literal
-        if let Some(stmt_kind) = ctx.docstring_stmt_kind {
-            if kind == stmt_kind && node.named_child_count() == 1 {
-                if let Some(child) = node.named_child(0) {
-                    if child.kind() == "string" {
-                        let child_start = child.start_position().row;
-                        let child_end = child.end_position().row;
-                        for row in child_start..=child_end {
-                            if row < ctx.has_docstring.len() {
-                                ctx.has_docstring[row] = true;
-                            }
-                        }
-                        return;
-                    }
-                }
-            }
+        // Python docstring: expression_statement whose only named child is a string literal.
+        if visit_maybe_docstring(node, kind, ctx) {
+            return;
         }
 
         // Leaf non-comment node: mark as code.
         if node.child_count() == 0 && !node.is_extra() {
-            for row in start_row..=end_row {
-                if row < ctx.has_code.len() {
-                    ctx.has_code[row] = true;
-                }
-            }
+            visit_leaf_code(node, ctx);
             return;
         }
 

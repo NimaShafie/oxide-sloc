@@ -64,6 +64,7 @@ pub enum BlankInBlockCommentPolicy {
     CountAsBlank,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveryConfig {
     pub root_paths: Vec<PathBuf>,
@@ -100,6 +101,7 @@ impl Default for DiscoveryConfig {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisConfig {
     pub enabled_languages: Vec<String>,

@@ -10,4 +10,5 @@ class Greeter:
     """Greeter class."""
 
     def hello(self):
+        # Intentionally empty — corpus test fixture for empty-method detection
         pass

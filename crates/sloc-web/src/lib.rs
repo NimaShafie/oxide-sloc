@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Nima Shafie <nimzshafie@gmail.com>
+#![allow(clippy::multiple_crate_versions)]
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -109,6 +110,10 @@ struct RunArtifacts {
 ///
 /// Returns an error if the server fails to bind to the configured address or
 /// if the TLS configuration cannot be loaded.
+///
+/// # Panics
+///
+/// Panics if the Axum router fails to build (only occurs on misconfigured routes).
 pub async fn serve(config: AppConfig) -> Result<()> {
     let bind_address = config.web.bind_address.clone();
     let server_mode = config.web.server_mode;
@@ -243,54 +248,64 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         return serve_tls(listener, app, acceptor, server_mode).await;
     }
 
-    let scheme = "http";
-    let url = format!("{scheme}://{addr}/");
+    let url = format!("http://{addr}/");
+    log_startup_url(&url, server_mode);
+
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal(server_mode))
+    .await
+    .context("web server terminated unexpectedly")
+}
+
+/// Print the startup URL and, in local mode, open the browser and schedule it.
+fn log_startup_url(url: &str, server_mode: bool) {
     if server_mode {
         println!("OxideSLOC server running at {url}");
         println!("Use Ctrl+C to stop.");
     } else {
         println!("OxideSLOC local web UI running at {url}");
         println!("Press Ctrl+C to stop the server.");
-        let open_url = url.clone();
-        tokio::task::spawn_blocking(move || {
-            #[cfg(target_os = "windows")]
-            let _ = std::process::Command::new("cmd")
-                .args(["/c", "start", "", &open_url])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn();
-            #[cfg(target_os = "macos")]
-            let _ = std::process::Command::new("open")
-                .arg(&open_url)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn();
-            #[cfg(target_os = "linux")]
-            let _ = std::process::Command::new("xdg-open")
-                .arg(&open_url)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn();
-        });
+        let open_url = url.to_owned();
+        tokio::task::spawn_blocking(move || open_browser_tab(&open_url));
     }
+}
 
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            println!();
-            if server_mode {
-                println!("Shutting down OxideSLOC server...");
-            } else {
-                println!("Shutting down OxideSLOC local web UI...");
-            }
-            println!("Server stopped cleanly.");
+/// Open the given URL in the default system browser.
+fn open_browser_tab(url: &str) {
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("cmd")
+        .args(["/c", "start", "", url])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open")
+        .arg(url)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("xdg-open")
+        .arg(url)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
+/// Graceful-shutdown future: resolves on Ctrl-C.
+async fn shutdown_signal(server_mode: bool) {
+    if tokio::signal::ctrl_c().await.is_ok() {
+        println!();
+        if server_mode {
+            println!("Shutting down OxideSLOC server...");
+        } else {
+            println!("Shutting down OxideSLOC local web UI...");
         }
-    })
-    .await
-    .context("web server terminated unexpectedly")
+        println!("Server stopped cleanly.");
+    }
 }
 
 /// Load a rustls `ServerConfig` from PEM certificate and key files.
@@ -630,6 +645,7 @@ struct AnalyzeForm {
     submodule_breakdown: Option<String>,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ScanConfig {
     oxide_sloc_version: String,
@@ -749,6 +765,56 @@ struct LocateReportForm {
     file_path: String,
 }
 
+/// Render a view-reports error page and return it as a `Response`.
+fn locate_report_error(message: impl Into<String>, csp_nonce: &str) -> Response {
+    let html = ErrorTemplate {
+        message: message.into(),
+        last_report_url: Some("/view-reports".to_string()),
+        last_report_label: Some("View Reports".to_string()),
+        csp_nonce: csp_nonce.to_owned(),
+    }
+    .render()
+    .unwrap_or_else(|_| "<pre>Error.</pre>".to_string());
+    Html(html).into_response()
+}
+
+/// Build a `RegistryEntry` from an `AnalysisRun` loaded from the given JSON path.
+fn registry_entry_from_run(
+    run: &AnalysisRun,
+    json_path: PathBuf,
+    html_path: PathBuf,
+) -> RegistryEntry {
+    let project_label = run.input_roots.first().map_or_else(
+        || "Unknown Project".to_string(),
+        |r| sanitize_project_label(r),
+    );
+    RegistryEntry {
+        run_id: run.tool.run_id.clone(),
+        timestamp_utc: run.tool.timestamp_utc,
+        project_label,
+        input_roots: run.input_roots.clone(),
+        json_path: Some(json_path),
+        html_path: Some(html_path),
+        pdf_path: None,
+        summary: ScanSummarySnapshot {
+            files_analyzed: run.summary_totals.files_analyzed,
+            files_skipped: run.summary_totals.files_skipped,
+            total_physical_lines: run.summary_totals.total_physical_lines,
+            code_lines: run.summary_totals.code_lines,
+            comment_lines: run.summary_totals.comment_lines,
+            blank_lines: run.summary_totals.blank_lines,
+            functions: run.summary_totals.functions,
+            classes: run.summary_totals.classes,
+            variables: run.summary_totals.variables,
+            imports: run.summary_totals.imports,
+        },
+        git_branch: None,
+        git_commit: None,
+        git_author: None,
+        git_tags: None,
+    }
+}
+
 async fn locate_report_handler(
     State(state): State<AppState>,
     axum::extract::Extension(CspNonce(csp_nonce)): axum::extract::Extension<CspNonce>,
@@ -760,57 +826,31 @@ async fn locate_report_handler(
         .unwrap_or("")
         .to_ascii_lowercase();
     if file_ext != "html" {
-        let html = ErrorTemplate {
-            message: "Only .html report files can be located via this form.".to_string(),
-            last_report_url: Some("/view-reports".to_string()),
-            last_report_label: Some("View Reports".to_string()),
-            csp_nonce: csp_nonce.clone(),
-        }
-        .render()
-        .unwrap_or_else(|_| "<pre>Invalid file type.</pre>".to_string());
-        return Html(html).into_response();
+        return locate_report_error(
+            "Only .html report files can be located via this form.",
+            &csp_nonce,
+        );
     }
-    let html_path = if let Ok(p) = fs::canonicalize(PathBuf::from(&form.file_path)) {
-        strip_unc_prefix(p)
-    } else {
-        let html = ErrorTemplate {
-            message: "Report file not found or path is invalid.".to_string(),
-            last_report_url: Some("/view-reports".to_string()),
-            last_report_label: Some("View Reports".to_string()),
-            csp_nonce: csp_nonce.clone(),
+    let html_path = match fs::canonicalize(PathBuf::from(&form.file_path)) {
+        Ok(p) => strip_unc_prefix(p),
+        Err(_) => {
+            return locate_report_error("Report file not found or path is invalid.", &csp_nonce);
         }
-        .render()
-        .unwrap_or_else(|_| "<pre>Invalid path.</pre>".to_string());
-        return Html(html).into_response();
     };
     // In server mode, only accept reports within the configured output directory.
     if state.server_mode {
         let output_root = resolve_output_root(None);
         let canonical_root = fs::canonicalize(&output_root).unwrap_or(output_root);
         if !html_path.starts_with(&canonical_root) {
-            let html = ErrorTemplate {
-                message: "Report file must be within the configured output directory.".to_string(),
-                last_report_url: Some("/view-reports".to_string()),
-                last_report_label: Some("View Reports".to_string()),
-                csp_nonce: csp_nonce.clone(),
-            }
-            .render()
-            .unwrap_or_else(|_| "<pre>Invalid path.</pre>".to_string());
-            return Html(html).into_response();
+            return locate_report_error(
+                "Report file must be within the configured output directory.",
+                &csp_nonce,
+            );
         }
     }
-    let parent = if let Some(p) = html_path.parent() {
-        p.to_path_buf()
-    } else {
-        let html = ErrorTemplate {
-            message: "Report file has no parent directory.".to_string(),
-            last_report_url: Some("/view-reports".to_string()),
-            last_report_label: Some("View Reports".to_string()),
-            csp_nonce: csp_nonce.clone(),
-        }
-        .render()
-        .unwrap_or_else(|_| "<pre>Invalid path.</pre>".to_string());
-        return Html(html).into_response();
+    let parent = match html_path.parent() {
+        Some(p) => p.to_path_buf(),
+        None => return locate_report_error("Report file has no parent directory.", &csp_nonce),
     };
     let json_candidate = parent.join("result.json");
     let mut reg = state.registry.lock().await;
@@ -837,35 +877,7 @@ async fn locate_report_handler(
     if json_candidate.exists() {
         match read_json(&json_candidate) {
             Ok(run) => {
-                let project_label = run.input_roots.first().map_or_else(
-                    || "Unknown Project".to_string(),
-                    |r| sanitize_project_label(r),
-                );
-                let entry = RegistryEntry {
-                    run_id: run.tool.run_id.clone(),
-                    timestamp_utc: run.tool.timestamp_utc,
-                    project_label,
-                    input_roots: run.input_roots.clone(),
-                    json_path: Some(json_candidate),
-                    html_path: Some(html_path),
-                    pdf_path: None,
-                    summary: ScanSummarySnapshot {
-                        files_analyzed: run.summary_totals.files_analyzed,
-                        files_skipped: run.summary_totals.files_skipped,
-                        total_physical_lines: run.summary_totals.total_physical_lines,
-                        code_lines: run.summary_totals.code_lines,
-                        comment_lines: run.summary_totals.comment_lines,
-                        blank_lines: run.summary_totals.blank_lines,
-                        functions: run.summary_totals.functions,
-                        classes: run.summary_totals.classes,
-                        variables: run.summary_totals.variables,
-                        imports: run.summary_totals.imports,
-                    },
-                    git_branch: None,
-                    git_commit: None,
-                    git_author: None,
-                    git_tags: None,
-                };
+                let entry = registry_entry_from_run(&run, json_candidate, html_path);
                 reg.add_entry(entry);
                 let _ = reg.save(&state.registry_path);
                 return axum::response::Redirect::to("/view-reports?linked=1").into_response();
@@ -876,19 +888,14 @@ async fn locate_report_handler(
                 } else {
                     format!("\n\nFile: {}\n\nError: {e}", json_candidate.display())
                 };
-                let html = ErrorTemplate {
-                    message: format!(
+                return locate_report_error(
+                    format!(
                         "Could not link this report.\n\nA 'result.json' was found but could not \
                          be parsed — it may have been saved by an older version of OxideSLOC. \
                          Re-running the analysis will create a fresh, compatible record.{file_hint}"
                     ),
-                    last_report_url: Some("/view-reports".to_string()),
-                    last_report_label: Some("View Reports".to_string()),
-                    csp_nonce: csp_nonce.clone(),
-                }
-                .render()
-                .unwrap_or_else(|_| "<pre>Link failed.</pre>".to_string());
-                return Html(html).into_response();
+                    &csp_nonce,
+                );
             }
         }
     }
@@ -898,18 +905,13 @@ async fn locate_report_handler(
     } else {
         format!("\n\nFile: {}", html_path.display())
     };
-    let html = ErrorTemplate {
-        message: format!(
+    locate_report_error(
+        format!(
             "Could not link this report.\n\nNo matching scan record was found, and no \
              'result.json' was found in the same folder.{file_hint}"
         ),
-        last_report_url: Some("/view-reports".to_string()),
-        last_report_label: Some("View Reports".to_string()),
-        csp_nonce: csp_nonce.clone(),
-    }
-    .render()
-    .unwrap_or_else(|_| "<pre>Link failed.</pre>".to_string());
-    Html(html).into_response()
+        &csp_nonce,
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -1046,6 +1048,167 @@ async fn preview_handler(
     }
 }
 
+/// Validate a scan path in server mode. Returns `Err(response)` if rejected.
+#[allow(clippy::result_large_err)]
+fn validate_server_scan_path(
+    config: &sloc_config::AppConfig,
+    resolved_path: &Path,
+    csp_nonce: &str,
+) -> Result<(), Response> {
+    if config.discovery.allowed_scan_roots.is_empty() {
+        let template = ErrorTemplate {
+            message: "Scan path rejected: no allowed_scan_roots configured on this server. \
+                      Set allowed_scan_roots in the server config to permit scanning."
+                .to_string(),
+            last_report_url: None,
+            last_report_label: None,
+            csp_nonce: csp_nonce.to_owned(),
+        };
+        return Err((
+            StatusCode::FORBIDDEN,
+            Html(
+                template
+                    .render()
+                    .unwrap_or_else(|_| "<pre>Forbidden.</pre>".to_string()),
+            ),
+        )
+            .into_response());
+    }
+    let canonical = fs::canonicalize(resolved_path).unwrap_or_else(|_| resolved_path.to_path_buf());
+    let allowed = config.discovery.allowed_scan_roots.iter().any(|root| {
+        fs::canonicalize(root)
+            .ok()
+            .is_some_and(|r| canonical.starts_with(&r))
+    });
+    if !allowed {
+        let template = ErrorTemplate {
+            message: "The requested path is not within an allowed scan directory.".to_string(),
+            last_report_url: None,
+            last_report_label: None,
+            csp_nonce: csp_nonce.to_owned(),
+        };
+        return Err((
+            StatusCode::FORBIDDEN,
+            Html(
+                template
+                    .render()
+                    .unwrap_or_else(|_| "<pre>Path not allowed.</pre>".to_string()),
+            ),
+        )
+            .into_response());
+    }
+    Ok(())
+}
+
+/// Exclude the output directory from scanning so artifacts don't pollute counts.
+fn apply_output_dir_exclusions(
+    config: &mut sloc_config::AppConfig,
+    project_path: &str,
+    raw_output_dir: &str,
+) {
+    let project_root = resolve_input_path(project_path);
+    let raw_out = raw_output_dir.trim();
+    let resolved_out = if raw_out.is_empty() {
+        project_root.join("sloc")
+    } else if Path::new(raw_out).is_absolute() {
+        PathBuf::from(raw_out)
+    } else {
+        workspace_root().join(raw_out)
+    };
+    if let Ok(rel) = resolved_out.strip_prefix(&project_root) {
+        if let Some(first) = rel.iter().next().and_then(|c| c.to_str()) {
+            let dir = first.to_string();
+            if !config.discovery.excluded_directories.contains(&dir) {
+                config.discovery.excluded_directories.push(dir);
+            }
+        }
+    }
+    if !config
+        .discovery
+        .excluded_directories
+        .iter()
+        .any(|d| d == "sloc")
+    {
+        config
+            .discovery
+            .excluded_directories
+            .push("sloc".to_string());
+    }
+}
+
+/// Build a `ScanSummarySnapshot` from an `AnalysisRun`'s `summary_totals`.
+fn summary_snapshot_from_run(run: &AnalysisRun) -> ScanSummarySnapshot {
+    ScanSummarySnapshot {
+        files_analyzed: run.summary_totals.files_analyzed,
+        files_skipped: run.summary_totals.files_skipped,
+        total_physical_lines: run.summary_totals.total_physical_lines,
+        code_lines: run.summary_totals.code_lines,
+        comment_lines: run.summary_totals.comment_lines,
+        blank_lines: run.summary_totals.blank_lines,
+        functions: run.summary_totals.functions,
+        classes: run.summary_totals.classes,
+        variables: run.summary_totals.variables,
+        imports: run.summary_totals.imports,
+    }
+}
+
+/// Build the `RegistryEntry` for the just-completed scan run.
+fn build_run_registry_entry(
+    run: &AnalysisRun,
+    run_id: &str,
+    project_label: &str,
+    artifacts: &RunArtifacts,
+) -> RegistryEntry {
+    RegistryEntry {
+        run_id: run_id.to_owned(),
+        timestamp_utc: run.tool.timestamp_utc,
+        project_label: project_label.to_owned(),
+        input_roots: run.input_roots.clone(),
+        json_path: artifacts.json_path.clone(),
+        html_path: artifacts.html_path.clone(),
+        pdf_path: artifacts.pdf_path.clone(),
+        summary: summary_snapshot_from_run(run),
+        git_branch: run.git_branch.clone(),
+        git_commit: run.git_commit_short.clone(),
+        git_author: run.git_commit_author.clone(),
+        git_tags: run.git_tags.clone(),
+    }
+}
+
+/// Serialize form settings into a `ScanConfig` for `scan-config.json`.
+fn build_scan_config_from_form(form: &AnalyzeForm, run: &AnalysisRun) -> ScanConfig {
+    let policy_str = serde_json::to_value(form.mixed_line_policy)
+        .ok()
+        .filter(|v| !v.is_null())
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_else(|| "code_only".to_string());
+    let behavior_str = serde_json::to_value(form.binary_file_behavior)
+        .ok()
+        .filter(|v| !v.is_null())
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_else(|| "skip".to_string());
+    ScanConfig {
+        oxide_sloc_version: env!("CARGO_PKG_VERSION").to_string(),
+        path: form.path.clone(),
+        include_globs: form.include_globs.clone().unwrap_or_default(),
+        exclude_globs: form.exclude_globs.clone().unwrap_or_default(),
+        submodule_breakdown: form.submodule_breakdown.as_deref() == Some("enabled"),
+        mixed_line_policy: policy_str,
+        python_docstrings_as_comments: form.python_docstrings_as_comments.is_some(),
+        generated_file_detection: form.generated_file_detection.as_deref() != Some("disabled"),
+        minified_file_detection: form.minified_file_detection.as_deref() != Some("disabled"),
+        vendor_directory_detection: form.vendor_directory_detection.as_deref() != Some("disabled"),
+        include_lockfiles: form.include_lockfiles.as_deref() == Some("enabled"),
+        binary_file_behavior: behavior_str,
+        output_dir: form.output_dir.clone().unwrap_or_default(),
+        report_title: run.effective_configuration.reporting.report_title.clone(),
+        generate_html: form.generate_html.is_some(),
+        generate_pdf: form.generate_pdf.is_some(),
+    }
+}
+
+#[allow(clippy::similar_names)]
+#[allow(clippy::too_many_lines)]
 async fn analyze_handler(
     State(state): State<AppState>,
     axum::extract::Extension(CspNonce(csp_nonce)): axum::extract::Extension<CspNonce>,
@@ -1074,47 +1237,8 @@ async fn analyze_handler(
     let resolved_path = resolve_input_path(&form.path);
 
     if state.server_mode {
-        if config.discovery.allowed_scan_roots.is_empty() {
-            let template = ErrorTemplate {
-                message: "Scan path rejected: no allowed_scan_roots configured on this server. \
-                          Set allowed_scan_roots in the server config to permit scanning."
-                    .to_string(),
-                last_report_url: None,
-                last_report_label: None,
-                csp_nonce: csp_nonce.clone(),
-            };
-            return (
-                StatusCode::FORBIDDEN,
-                Html(
-                    template
-                        .render()
-                        .unwrap_or_else(|_| "<pre>Forbidden.</pre>".to_string()),
-                ),
-            )
-                .into_response();
-        }
-        let canonical = fs::canonicalize(&resolved_path).unwrap_or_else(|_| resolved_path.clone());
-        let allowed = config.discovery.allowed_scan_roots.iter().any(|root| {
-            fs::canonicalize(root)
-                .ok()
-                .is_some_and(|r| canonical.starts_with(&r))
-        });
-        if !allowed {
-            let template = ErrorTemplate {
-                message: "The requested path is not within an allowed scan directory.".to_string(),
-                last_report_url: None,
-                last_report_label: None,
-                csp_nonce: csp_nonce.clone(),
-            };
-            return (
-                StatusCode::FORBIDDEN,
-                Html(
-                    template
-                        .render()
-                        .unwrap_or_else(|_| "<pre>Path not allowed.</pre>".to_string()),
-                ),
-            )
-                .into_response();
+        if let Err(resp) = validate_server_scan_path(&config, &resolved_path, &csp_nonce) {
+            return resp;
         }
     }
     config.discovery.root_paths = vec![resolved_path];
@@ -1148,37 +1272,11 @@ async fn analyze_handler(
     config.discovery.submodule_breakdown = form.submodule_breakdown.as_deref() == Some("enabled");
 
     // Auto-exclude the output directory so scan artifacts never appear in counts.
-    // Resolve the output path early (before analysis) to determine the folder name.
-    let project_root_for_exclude = resolve_input_path(&form.path);
-    let raw_out = form.output_dir.as_deref().unwrap_or("").trim();
-    let resolved_out_early = if raw_out.is_empty() {
-        project_root_for_exclude.join("sloc")
-    } else if Path::new(raw_out).is_absolute() {
-        PathBuf::from(raw_out)
-    } else {
-        workspace_root().join(raw_out)
-    };
-    // If the resolved output root lives inside the project root, exclude its top-level name.
-    if let Ok(rel) = resolved_out_early.strip_prefix(&project_root_for_exclude) {
-        if let Some(first) = rel.iter().next().and_then(|c| c.to_str()) {
-            let dir = first.to_string();
-            if !config.discovery.excluded_directories.contains(&dir) {
-                config.discovery.excluded_directories.push(dir);
-            }
-        }
-    }
-    // Always exclude the canonical "sloc" folder name regardless of where output lands.
-    if !config
-        .discovery
-        .excluded_directories
-        .iter()
-        .any(|d| d == "sloc")
-    {
-        config
-            .discovery
-            .excluded_directories
-            .push("sloc".to_string());
-    }
+    apply_output_dir_exclusions(
+        &mut config,
+        &form.path,
+        form.output_dir.as_deref().unwrap_or(""),
+    );
 
     let analysis_result =
         tokio::task::spawn_blocking(move || -> Result<(sloc_core::AnalysisRun, String)> {
@@ -1225,7 +1323,6 @@ async fn analyze_handler(
     let git_branch = run.git_branch.clone();
     let git_commit = run.git_commit_short.clone();
     let git_author = run.git_commit_author.clone();
-    let git_tags = run.git_tags.clone();
 
     // Compute line-level delta vs the previous scan if JSON is available.
     let scan_delta = prev_entry.as_ref().and_then(|prev| {
@@ -1283,31 +1380,7 @@ async fn analyze_handler(
 
     // Persist entry to the on-disk registry.
     {
-        let entry = RegistryEntry {
-            run_id: run_id.clone(),
-            timestamp_utc: run.tool.timestamp_utc,
-            project_label: project_label.clone(),
-            input_roots: run.input_roots.clone(),
-            json_path: artifacts.json_path.clone(),
-            html_path: artifacts.html_path.clone(),
-            pdf_path: artifacts.pdf_path.clone(),
-            summary: ScanSummarySnapshot {
-                files_analyzed: run.summary_totals.files_analyzed,
-                files_skipped: run.summary_totals.files_skipped,
-                total_physical_lines: run.summary_totals.total_physical_lines,
-                code_lines: run.summary_totals.code_lines,
-                comment_lines: run.summary_totals.comment_lines,
-                blank_lines: run.summary_totals.blank_lines,
-                functions: run.summary_totals.functions,
-                classes: run.summary_totals.classes,
-                variables: run.summary_totals.variables,
-                imports: run.summary_totals.imports,
-            },
-            git_branch: git_branch.clone(),
-            git_commit: git_commit.clone(),
-            git_author: git_author.clone(),
-            git_tags: git_tags.clone(),
-        };
+        let entry = build_run_registry_entry(&run, &run_id, &project_label, &artifacts);
         let mut reg = state.registry.lock().await;
         reg.add_entry(entry);
         let _ = reg.save(&state.registry_path);
@@ -1315,35 +1388,7 @@ async fn analyze_handler(
 
     // Export scan-config.json alongside artifacts so users can reload settings later.
     {
-        let policy_str = serde_json::to_value(form.mixed_line_policy)
-            .ok()
-            .filter(|v| !v.is_null())
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_else(|| "code_only".to_string());
-        let behavior_str = serde_json::to_value(form.binary_file_behavior)
-            .ok()
-            .filter(|v| !v.is_null())
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_else(|| "skip".to_string());
-        let scan_cfg = ScanConfig {
-            oxide_sloc_version: env!("CARGO_PKG_VERSION").to_string(),
-            path: form.path.clone(),
-            include_globs: form.include_globs.clone().unwrap_or_default(),
-            exclude_globs: form.exclude_globs.clone().unwrap_or_default(),
-            submodule_breakdown: form.submodule_breakdown.as_deref() == Some("enabled"),
-            mixed_line_policy: policy_str,
-            python_docstrings_as_comments: form.python_docstrings_as_comments.is_some(),
-            generated_file_detection: form.generated_file_detection.as_deref() != Some("disabled"),
-            minified_file_detection: form.minified_file_detection.as_deref() != Some("disabled"),
-            vendor_directory_detection: form.vendor_directory_detection.as_deref()
-                != Some("disabled"),
-            include_lockfiles: form.include_lockfiles.as_deref() == Some("enabled"),
-            binary_file_behavior: behavior_str,
-            output_dir: form.output_dir.clone().unwrap_or_default(),
-            report_title: run.effective_configuration.reporting.report_title.clone(),
-            generate_html: form.generate_html.is_some(),
-            generate_pdf: form.generate_pdf.is_some(),
-        };
+        let scan_cfg = build_scan_config_from_form(&form, &run);
         if let Ok(json) = serde_json::to_string_pretty(&scan_cfg) {
             let _ = fs::write(run_dir.join("scan-config.json"), json);
         }
@@ -1619,6 +1664,172 @@ fn build_pdf_filename(report_title: &str, run_id: &str) -> String {
     }
 }
 
+/// Serve the HTML artifact for a run — view or download.
+fn serve_html_artifact(path: PathBuf, wants_download: bool, csp_nonce: &str) -> Response {
+    match fs::read_to_string(&path) {
+        Ok(content) => {
+            if wants_download {
+                (
+                    [
+                        (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                        (
+                            header::CONTENT_DISPOSITION,
+                            "attachment; filename=report.html",
+                        ),
+                    ],
+                    content,
+                )
+                    .into_response()
+            } else {
+                Html(content).into_response()
+            }
+        }
+        Err(err) => {
+            let filename = path.file_name().map_or_else(
+                || "report.html".to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            let msg = format!(
+                "HTML report '{filename}' could not be read.\n\n\
+                 Error: {err}\n\n\
+                 If you moved or renamed the output folder, the stored path is now stale. \
+                 Use 'Open HTML folder' from the results page to browse the output directory."
+            );
+            let html = ErrorTemplate {
+                message: msg,
+                last_report_url: Some("/view-reports".to_string()),
+                last_report_label: Some("View Reports".to_string()),
+                csp_nonce: csp_nonce.to_owned(),
+            }
+            .render()
+            .unwrap_or_else(|_| "<pre>File not found.</pre>".to_string());
+            (StatusCode::NOT_FOUND, Html(html)).into_response()
+        }
+    }
+}
+
+/// Serve the PDF artifact for a run — inline or download.
+fn serve_pdf_artifact(
+    path: PathBuf,
+    report_title: &str,
+    run_id: &str,
+    wants_download: bool,
+    csp_nonce: &str,
+) -> Response {
+    match fs::read(&path) {
+        Ok(bytes) => {
+            let filename = build_pdf_filename(report_title, run_id);
+            let disposition = if wants_download {
+                format!("attachment; filename=\"{filename}\"")
+            } else {
+                format!("inline; filename=\"{filename}\"")
+            };
+            (
+                [
+                    (header::CONTENT_TYPE, "application/pdf".to_string()),
+                    (header::CONTENT_DISPOSITION, disposition),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
+        Err(err) => {
+            let filename = path.file_name().map_or_else(
+                || "report.pdf".to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            let msg = format!(
+                "PDF report '{filename}' could not be read.\n\n\
+                 Error: {err}\n\n\
+                 If you moved or renamed the output folder, the stored path is now stale. \
+                 Use 'Open PDF folder' from the results page to browse the output directory."
+            );
+            let html = ErrorTemplate {
+                message: msg,
+                last_report_url: Some("/view-reports".to_string()),
+                last_report_label: Some("View Reports".to_string()),
+                csp_nonce: csp_nonce.to_owned(),
+            }
+            .render()
+            .unwrap_or_else(|_| "<pre>File not found.</pre>".to_string());
+            (StatusCode::NOT_FOUND, Html(html)).into_response()
+        }
+    }
+}
+
+/// Serve the JSON artifact for a run — view or download.
+fn serve_json_artifact(path: PathBuf, wants_download: bool, csp_nonce: &str) -> Response {
+    match fs::read(&path) {
+        Ok(bytes) => {
+            if wants_download {
+                (
+                    [
+                        (header::CONTENT_TYPE, "application/json; charset=utf-8"),
+                        (
+                            header::CONTENT_DISPOSITION,
+                            "attachment; filename=result.json",
+                        ),
+                    ],
+                    bytes,
+                )
+                    .into_response()
+            } else {
+                (
+                    [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+                    bytes,
+                )
+                    .into_response()
+            }
+        }
+        Err(err) => {
+            let filename = path.file_name().map_or_else(
+                || "result.json".to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            let msg = format!(
+                "JSON result '{filename}' could not be read.\n\n\
+                 Error: {err}\n\n\
+                 If you moved or renamed the output folder, the stored path is now stale. \
+                 Use 'Open JSON folder' from the results page to browse the output directory."
+            );
+            let html = ErrorTemplate {
+                message: msg,
+                last_report_url: Some("/view-reports".to_string()),
+                last_report_label: Some("View Reports".to_string()),
+                csp_nonce: csp_nonce.to_owned(),
+            }
+            .render()
+            .unwrap_or_else(|_| "<pre>File not found.</pre>".to_string());
+            (StatusCode::NOT_FOUND, Html(html)).into_response()
+        }
+    }
+}
+
+/// Recover a `RunArtifacts` from the persisted registry for a run ID.
+fn recover_artifacts_from_registry(entry: &RegistryEntry) -> RunArtifacts {
+    let output_dir = entry
+        .html_path
+        .as_ref()
+        .or(entry.json_path.as_ref())
+        .or(entry.pdf_path.as_ref())
+        .and_then(|p| p.parent().map(PathBuf::from))
+        .unwrap_or_default();
+    // Recover pdf_path: use the persisted one, or look for report.pdf
+    // adjacent to html/json if only the old entries lack it.
+    let pdf_path = entry.pdf_path.clone().or_else(|| {
+        let candidate = output_dir.join("report.pdf");
+        candidate.exists().then_some(candidate)
+    });
+    RunArtifacts {
+        output_dir,
+        html_path: entry.html_path.clone(),
+        pdf_path,
+        json_path: entry.json_path.clone(),
+        report_title: entry.project_label.clone(),
+    }
+}
+
+#[allow(clippy::too_many_lines)]
 async fn artifact_handler(
     State(state): State<AppState>,
     axum::extract::Extension(CspNonce(csp_nonce)): axum::extract::Extension<CspNonce>,
@@ -1637,30 +1848,7 @@ async fn artifact_handler(
     } else {
         let reg = state.registry.lock().await;
         if let Some(entry) = reg.find_by_run_id(&run_id) {
-            let output_dir = entry
-                .html_path
-                .as_ref()
-                .or(entry.json_path.as_ref())
-                .or(entry.pdf_path.as_ref())
-                .and_then(|p| p.parent().map(PathBuf::from))
-                .unwrap_or_default();
-            // Recover pdf_path: use the persisted one, or look for report.pdf
-            // adjacent to html/json if only the old entries lack it.
-            let pdf_path = entry.pdf_path.clone().or_else(|| {
-                let candidate = output_dir.join("report.pdf");
-                if candidate.exists() {
-                    Some(candidate)
-                } else {
-                    None
-                }
-            });
-            RunArtifacts {
-                output_dir,
-                html_path: entry.html_path.clone(),
-                pdf_path,
-                json_path: entry.json_path.clone(),
-                report_title: entry.project_label.clone(),
-            }
+            recover_artifacts_from_registry(entry)
         } else {
             let error_html = ErrorTemplate {
                 message: format!(
@@ -1686,47 +1874,7 @@ async fn artifact_handler(
             let Some(path) = artifact_set.html_path else {
                 return StatusCode::NOT_FOUND.into_response();
             };
-
-            match fs::read_to_string(&path) {
-                Ok(content) => {
-                    if wants_download {
-                        (
-                            [
-                                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-                                (
-                                    header::CONTENT_DISPOSITION,
-                                    "attachment; filename=report.html",
-                                ),
-                            ],
-                            content,
-                        )
-                            .into_response()
-                    } else {
-                        Html(content).into_response()
-                    }
-                }
-                Err(err) => {
-                    let filename = path.file_name().map_or_else(
-                        || "report.html".to_string(),
-                        |n| n.to_string_lossy().into_owned(),
-                    );
-                    let msg = format!(
-                        "HTML report '{filename}' could not be read.\n\n\
-                         Error: {err}\n\n\
-                         If you moved or renamed the output folder, the stored path is now stale. \
-                         Use 'Open HTML folder' from the results page to browse the output directory."
-                    );
-                    let html = ErrorTemplate {
-                        message: msg,
-                        last_report_url: Some("/view-reports".to_string()),
-                        last_report_label: Some("View Reports".to_string()),
-                        csp_nonce: csp_nonce.clone(),
-                    }
-                    .render()
-                    .unwrap_or_else(|_| "<pre>File not found.</pre>".to_string());
-                    (StatusCode::NOT_FOUND, Html(html)).into_response()
-                }
-            }
+            serve_html_artifact(path, wants_download, &csp_nonce)
         }
         "pdf" => {
             let Some(path) = artifact_set.pdf_path else {
@@ -1743,46 +1891,13 @@ async fn artifact_handler(
                 .unwrap_or_else(|_| "<pre>PDF not available.</pre>".to_string());
                 return (StatusCode::NOT_FOUND, Html(html)).into_response();
             };
-
-            match fs::read(&path) {
-                Ok(bytes) => {
-                    let filename = build_pdf_filename(&artifact_set.report_title, &run_id);
-                    let disposition = if wants_download {
-                        format!("attachment; filename=\"{filename}\"")
-                    } else {
-                        format!("inline; filename=\"{filename}\"")
-                    };
-                    (
-                        [
-                            (header::CONTENT_TYPE, "application/pdf".to_string()),
-                            (header::CONTENT_DISPOSITION, disposition),
-                        ],
-                        bytes,
-                    )
-                        .into_response()
-                }
-                Err(err) => {
-                    let filename = path.file_name().map_or_else(
-                        || "report.pdf".to_string(),
-                        |n| n.to_string_lossy().into_owned(),
-                    );
-                    let msg = format!(
-                        "PDF report '{filename}' could not be read.\n\n\
-                         Error: {err}\n\n\
-                         If you moved or renamed the output folder, the stored path is now stale. \
-                         Use 'Open PDF folder' from the results page to browse the output directory."
-                    );
-                    let html = ErrorTemplate {
-                        message: msg,
-                        last_report_url: Some("/view-reports".to_string()),
-                        last_report_label: Some("View Reports".to_string()),
-                        csp_nonce: csp_nonce.clone(),
-                    }
-                    .render()
-                    .unwrap_or_else(|_| "<pre>File not found.</pre>".to_string());
-                    (StatusCode::NOT_FOUND, Html(html)).into_response()
-                }
-            }
+            serve_pdf_artifact(
+                path,
+                &artifact_set.report_title,
+                &run_id,
+                wants_download,
+                &csp_nonce,
+            )
         }
         "json" => {
             let Some(path) = artifact_set.json_path else {
@@ -1799,51 +1914,7 @@ async fn artifact_handler(
                 .unwrap_or_else(|_| "<pre>JSON not available.</pre>".to_string());
                 return (StatusCode::NOT_FOUND, Html(html)).into_response();
             };
-
-            match fs::read(&path) {
-                Ok(bytes) => {
-                    if wants_download {
-                        (
-                            [
-                                (header::CONTENT_TYPE, "application/json; charset=utf-8"),
-                                (
-                                    header::CONTENT_DISPOSITION,
-                                    "attachment; filename=result.json",
-                                ),
-                            ],
-                            bytes,
-                        )
-                            .into_response()
-                    } else {
-                        (
-                            [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
-                            bytes,
-                        )
-                            .into_response()
-                    }
-                }
-                Err(err) => {
-                    let filename = path.file_name().map_or_else(
-                        || "result.json".to_string(),
-                        |n| n.to_string_lossy().into_owned(),
-                    );
-                    let msg = format!(
-                        "JSON result '{filename}' could not be read.\n\n\
-                         Error: {err}\n\n\
-                         If you moved or renamed the output folder, the stored path is now stale. \
-                         Use 'Open JSON folder' from the results page to browse the output directory."
-                    );
-                    let html = ErrorTemplate {
-                        message: msg,
-                        last_report_url: Some("/view-reports".to_string()),
-                        last_report_label: Some("View Reports".to_string()),
-                        csp_nonce: csp_nonce.clone(),
-                    }
-                    .render()
-                    .unwrap_or_else(|_| "<pre>File not found.</pre>".to_string());
-                    (StatusCode::NOT_FOUND, Html(html)).into_response()
-                }
-            }
+            serve_json_artifact(path, wants_download, &csp_nonce)
         }
         "scan-config" => {
             let path = artifact_set.output_dir.join("scan-config.json");
@@ -2073,6 +2144,7 @@ fn summary_delta(curr: u64, prev: Option<u64>) -> (String, &'static str) {
     )
 }
 
+#[allow(clippy::too_many_lines)]
 async fn compare_handler(
     State(state): State<AppState>,
     axum::extract::Extension(CspNonce(csp_nonce)): axum::extract::Extension<CspNonce>,
@@ -3001,6 +3073,7 @@ fn resolve_input_path(raw: &str) -> PathBuf {
     PathBuf::from(display_path(&canonical))
 }
 
+#[allow(clippy::too_many_lines)]
 fn build_preview_html(
     root: &Path,
     include_patterns: &[String],
@@ -3200,7 +3273,111 @@ struct PreviewBudget {
     max_depth: usize,
 }
 
+/// Handle a single directory entry inside `collect_preview_rows`.
+/// Returns `true` when the entry was handled (caller should `continue`).
 #[allow(clippy::too_many_arguments)]
+fn handle_preview_dir_entry(
+    root: &Path,
+    path: &Path,
+    name: &str,
+    modified: String,
+    depth: usize,
+    parent_row_id: Option<usize>,
+    row_id: usize,
+    next_row_id: &mut usize,
+    budget: &mut PreviewBudget,
+    stats: &mut PreviewStats,
+    rows: &mut Vec<PreviewRow>,
+    languages: &mut Vec<&'static str>,
+    include_patterns: &[String],
+    exclude_patterns: &[String],
+) -> Result<()> {
+    let relative = preview_relative_path(root, path);
+    if should_skip_preview_directory(&relative, exclude_patterns) {
+        return Ok(());
+    }
+    stats.directories += 1;
+    rows.push(PreviewRow {
+        row_id,
+        parent_row_id,
+        depth: depth + 1,
+        name: format!("{name}/"),
+        kind: PreviewKind::Dir,
+        is_dir: true,
+        language: None,
+        modified,
+        type_label: "Directory".to_string(),
+    });
+    budget.shown += 1;
+    if !matches!(name, ".git" | "node_modules" | "target") {
+        collect_preview_rows(
+            root,
+            path,
+            depth + 1,
+            Some(row_id),
+            next_row_id,
+            budget,
+            stats,
+            rows,
+            languages,
+            include_patterns,
+            exclude_patterns,
+        )?;
+    }
+    Ok(())
+}
+
+/// Handle a single file entry inside `collect_preview_rows`.
+#[allow(clippy::too_many_arguments)]
+fn handle_preview_file_entry(
+    root: &Path,
+    path: &Path,
+    name: &str,
+    modified: String,
+    depth: usize,
+    parent_row_id: Option<usize>,
+    row_id: usize,
+    budget: &mut PreviewBudget,
+    stats: &mut PreviewStats,
+    rows: &mut Vec<PreviewRow>,
+    languages: &mut Vec<&'static str>,
+    include_patterns: &[String],
+    exclude_patterns: &[String],
+) {
+    let relative = preview_relative_path(root, path);
+    if !should_include_preview_file(&relative, include_patterns, exclude_patterns) {
+        return;
+    }
+    stats.files += 1;
+    let kind = classify_preview_file(name);
+    match kind {
+        PreviewKind::Supported => stats.supported += 1,
+        PreviewKind::Skipped => stats.skipped += 1,
+        PreviewKind::Unsupported => stats.unsupported += 1,
+        PreviewKind::Dir => {}
+    }
+    let language = detect_language_name(name);
+    if let Some(lang) = language {
+        if !languages.contains(&lang) {
+            languages.push(lang);
+        }
+    }
+    rows.push(PreviewRow {
+        row_id,
+        parent_row_id,
+        depth: depth + 1,
+        name: name.to_owned(),
+        kind,
+        is_dir: false,
+        language,
+        modified,
+        type_label: preview_type_label(name, language, kind),
+    });
+    budget.shown += 1;
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 fn collect_preview_rows(
     root: &Path,
     dir: &Path,
@@ -3242,74 +3419,41 @@ fn collect_preview_rows(
             .map_or_else(|| "-".to_string(), format_system_time);
 
         if metadata.is_dir() {
-            let relative = preview_relative_path(root, &path);
-            if should_skip_preview_directory(&relative, exclude_patterns) {
-                continue;
-            }
-
-            stats.directories += 1;
-            rows.push(PreviewRow {
-                row_id,
-                parent_row_id,
-                depth: depth + 1,
-                name: format!("{name}/"),
-                kind: PreviewKind::Dir,
-                is_dir: true,
-                language: None,
+            handle_preview_dir_entry(
+                root,
+                &path,
+                &name,
                 modified,
-                type_label: "Directory".to_string(),
-            });
-            budget.shown += 1;
-            if !matches!(name.as_str(), ".git" | "node_modules" | "target") {
-                collect_preview_rows(
-                    root,
-                    &path,
-                    depth + 1,
-                    Some(row_id),
-                    next_row_id,
-                    budget,
-                    stats,
-                    rows,
-                    languages,
-                    include_patterns,
-                    exclude_patterns,
-                )?;
-            }
+                depth,
+                parent_row_id,
+                row_id,
+                next_row_id,
+                budget,
+                stats,
+                rows,
+                languages,
+                include_patterns,
+                exclude_patterns,
+            )?;
             continue;
         }
 
         if metadata.is_file() {
-            let relative = preview_relative_path(root, &path);
-            if !should_include_preview_file(&relative, include_patterns, exclude_patterns) {
-                continue;
-            }
-
-            stats.files += 1;
-            let kind = classify_preview_file(&name);
-            match kind {
-                PreviewKind::Supported => stats.supported += 1,
-                PreviewKind::Skipped => stats.skipped += 1,
-                PreviewKind::Unsupported => stats.unsupported += 1,
-                PreviewKind::Dir => {}
-            }
-            let language = detect_language_name(&name);
-            if let Some(language) = language {
-                if !languages.contains(&language) {
-                    languages.push(language);
-                }
-            }
-            rows.push(PreviewRow {
-                row_id,
-                parent_row_id,
-                depth: depth + 1,
-                name: name.clone(),
-                kind,
-                is_dir: false,
-                language,
+            handle_preview_file_entry(
+                root,
+                &path,
+                &name,
                 modified,
-                type_label: preview_type_label(&name, language, kind),
-            });
-            budget.shown += 1;
+                depth,
+                parent_row_id,
+                row_id,
+                budget,
+                stats,
+                rows,
+                languages,
+                include_patterns,
+                exclude_patterns,
+            );
         }
     }
 

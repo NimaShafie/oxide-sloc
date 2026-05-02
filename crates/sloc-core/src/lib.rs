@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Nima Shafie <nimzshafie@gmail.com>
+#![allow(clippy::multiple_crate_versions)]
 
 pub mod delta;
 pub mod history;
@@ -215,10 +216,150 @@ fn get_hostname() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
+/// Walk a single directory root and collect file records into the output vectors.
+#[allow(clippy::too_many_arguments)]
+fn walk_root(
+    root: &Path,
+    config: &AppConfig,
+    include_globs: Option<&GlobSet>,
+    exclude_globs: Option<&GlobSet>,
+    enabled_languages: Option<&BTreeSet<Language>>,
+    seen_paths: &mut HashSet<PathBuf>,
+    analyzed: &mut Vec<FileRecord>,
+    skipped: &mut Vec<FileRecord>,
+    warnings: &mut Vec<String>,
+) -> Result<()> {
+    let mut builder = WalkBuilder::new(root);
+    builder
+        .follow_links(config.discovery.follow_symlinks)
+        .hidden(config.discovery.ignore_hidden_files)
+        .ignore(config.discovery.honor_ignore_files)
+        .parents(config.discovery.honor_ignore_files)
+        .git_ignore(config.discovery.honor_ignore_files)
+        .git_global(config.discovery.honor_ignore_files)
+        .git_exclude(config.discovery.honor_ignore_files);
+
+    for entry in builder.build() {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                warnings.push(format!("discovery warning: {err}"));
+                continue;
+            }
+        };
+
+        let path = entry.into_path();
+        if path.is_dir() || !seen_paths.insert(path.clone()) {
+            continue;
+        }
+
+        if let Some(record) = analyze_candidate_file(
+            &path,
+            root,
+            config,
+            include_globs,
+            exclude_globs,
+            enabled_languages,
+        )? {
+            push_record(record, analyzed, skipped, warnings);
+        }
+    }
+
+    Ok(())
+}
+
+/// Label each analyzed file with its submodule and build per-submodule summaries.
+fn process_submodules(config: &AppConfig, analyzed: &mut [FileRecord]) -> Vec<SubmoduleSummary> {
+    let root = config.discovery.root_paths[0]
+        .canonicalize()
+        .unwrap_or_else(|_| config.discovery.root_paths[0].clone());
+    let submodules = detect_submodules(&root);
+    if submodules.is_empty() {
+        return Vec::new();
+    }
+
+    for file in analyzed.iter_mut() {
+        for (name, sub_path) in &submodules {
+            let prefix = sub_path.to_string_lossy().replace('\\', "/");
+            let rel = &file.relative_path;
+            if rel == &prefix || rel.starts_with(&format!("{prefix}/")) {
+                file.submodule = Some(name.clone());
+                break;
+            }
+        }
+    }
+
+    build_submodule_summaries(analyzed, &submodules)
+}
+
+/// Assemble the final `AnalysisRun` from collected records and metadata.
+fn assemble_run(
+    config: &AppConfig,
+    runtime_mode: &str,
+    analyzed: Vec<FileRecord>,
+    skipped: Vec<FileRecord>,
+    warnings: Vec<String>,
+    submodule_summaries: Vec<SubmoduleSummary>,
+) -> AnalysisRun {
+    let summary = build_summary(&analyzed, &skipped);
+    let language_summaries = build_language_summaries(&analyzed);
+
+    let first_root = config
+        .discovery
+        .root_paths
+        .first()
+        .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()));
+    let git = first_root
+        .as_deref()
+        .map(detect_git_for_run)
+        .unwrap_or_default();
+
+    let now = Utc::now();
+    let run_id = {
+        let uuid_suffix = Uuid::new_v4().simple().to_string();
+        format!("{}-{}", now.format("%Y%m%d-%H%M"), uuid_suffix)
+    };
+
+    AnalysisRun {
+        tool: ToolMetadata {
+            name: "sloc".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            run_id,
+            timestamp_utc: now,
+        },
+        environment: EnvironmentMetadata {
+            operating_system: std::env::consts::OS.into(),
+            architecture: std::env::consts::ARCH.into(),
+            runtime_mode: runtime_mode.into(),
+            initiator_username: get_current_username(),
+            initiator_hostname: get_hostname(),
+        },
+        effective_configuration: config.clone(),
+        input_roots: config
+            .discovery
+            .root_paths
+            .iter()
+            .map(|p| path_to_string(p))
+            .collect(),
+        summary_totals: summary,
+        totals_by_language: language_summaries,
+        per_file_records: analyzed,
+        skipped_file_records: skipped,
+        warnings,
+        submodule_summaries,
+        git_commit_short: git.commit_short,
+        git_commit_long: git.commit_long,
+        git_branch: git.branch,
+        git_commit_author: git.author,
+        git_tags: git.tags,
+    }
+}
+
 /// # Errors
 ///
 /// Returns an error if the config is invalid, root paths cannot be walked, or any file
 /// analysis step fails in a way that cannot be recovered from.
+#[allow(clippy::too_many_lines)]
 pub fn analyze(config: &AppConfig, runtime_mode: &str) -> Result<AnalysisRun> {
     config.validate()?;
 
@@ -252,44 +393,17 @@ pub fn analyze(config: &AppConfig, runtime_mode: &str) -> Result<AnalysisRun> {
             continue;
         }
 
-        let mut builder = WalkBuilder::new(&root);
-        builder
-            .follow_links(config.discovery.follow_symlinks)
-            .hidden(config.discovery.ignore_hidden_files)
-            .ignore(config.discovery.honor_ignore_files)
-            .parents(config.discovery.honor_ignore_files)
-            .git_ignore(config.discovery.honor_ignore_files)
-            .git_global(config.discovery.honor_ignore_files)
-            .git_exclude(config.discovery.honor_ignore_files);
-
-        for entry in builder.build() {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(err) => {
-                    warnings.push(format!("discovery warning: {err}"));
-                    continue;
-                }
-            };
-
-            let path = entry.into_path();
-            if path.is_dir() {
-                continue;
-            }
-            if !seen_paths.insert(path.clone()) {
-                continue;
-            }
-
-            if let Some(record) = analyze_candidate_file(
-                &path,
-                &root,
-                config,
-                include_globs.as_ref(),
-                exclude_globs.as_ref(),
-                enabled_languages.as_ref(),
-            )? {
-                push_record(record, &mut analyzed, &mut skipped, &mut warnings);
-            }
-        }
+        walk_root(
+            &root,
+            config,
+            include_globs.as_ref(),
+            exclude_globs.as_ref(),
+            enabled_languages.as_ref(),
+            &mut seen_paths,
+            &mut analyzed,
+            &mut skipped,
+            &mut warnings,
+        )?;
     }
 
     analyzed.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
@@ -297,82 +411,19 @@ pub fn analyze(config: &AppConfig, runtime_mode: &str) -> Result<AnalysisRun> {
 
     // Submodule detection: label each file with its submodule and build per-submodule summaries.
     let submodule_summaries = if config.discovery.submodule_breakdown {
-        let root = config.discovery.root_paths[0]
-            .canonicalize()
-            .unwrap_or_else(|_| config.discovery.root_paths[0].clone());
-        let submodules = detect_submodules(&root);
-        if submodules.is_empty() {
-            Vec::new()
-        } else {
-            for file in &mut analyzed {
-                for (name, sub_path) in &submodules {
-                    let prefix = sub_path.to_string_lossy().replace('\\', "/");
-                    let rel = &file.relative_path;
-                    if rel == &prefix || rel.starts_with(&format!("{prefix}/")) {
-                        file.submodule = Some(name.clone());
-                        break;
-                    }
-                }
-            }
-            build_submodule_summaries(&analyzed, &submodules)
-        }
+        process_submodules(config, &mut analyzed)
     } else {
         Vec::new()
     };
 
-    let summary = build_summary(&analyzed, &skipped);
-    let language_summaries = build_language_summaries(&analyzed);
-
-    // Detect git info from the first root to drive run_id and enrich the result.
-    let first_root = config
-        .discovery
-        .root_paths
-        .first()
-        .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()));
-    let git = first_root
-        .as_deref()
-        .map(detect_git_for_run)
-        .unwrap_or_default();
-
-    let now = Utc::now();
-    let run_id = {
-        let uuid_suffix = Uuid::new_v4().simple().to_string();
-        format!("{}-{}", now.format("%Y%m%d-%H%M"), uuid_suffix)
-    };
-
-    Ok(AnalysisRun {
-        tool: ToolMetadata {
-            name: "sloc".into(),
-            version: env!("CARGO_PKG_VERSION").into(),
-            run_id,
-            timestamp_utc: now,
-        },
-        environment: EnvironmentMetadata {
-            operating_system: std::env::consts::OS.into(),
-            architecture: std::env::consts::ARCH.into(),
-            runtime_mode: runtime_mode.into(),
-            initiator_username: get_current_username(),
-            initiator_hostname: get_hostname(),
-        },
-        effective_configuration: config.clone(),
-        input_roots: config
-            .discovery
-            .root_paths
-            .iter()
-            .map(|p| path_to_string(p))
-            .collect(),
-        summary_totals: summary,
-        totals_by_language: language_summaries,
-        per_file_records: analyzed,
-        skipped_file_records: skipped,
+    Ok(assemble_run(
+        config,
+        runtime_mode,
+        analyzed,
+        skipped,
         warnings,
         submodule_summaries,
-        git_commit_short: git.commit_short,
-        git_commit_long: git.commit_long,
-        git_branch: git.branch,
-        git_commit_author: git.author,
-        git_tags: git.tags,
-    })
+    ))
 }
 
 fn push_record(
@@ -394,6 +445,194 @@ fn push_record(
     }
 }
 
+/// Apply metadata-level policy checks (symlink, name, dir exclusion, size, globs, lockfile).
+/// Returns `Ok(Some(record))` to skip, `Ok(None)` to continue, or an early `Ok(None)` to
+/// exclude from output entirely (include-glob miss).
+///
+/// Returns `Err` only on internal I/O errors that should propagate.
+#[allow(clippy::too_many_arguments)]
+fn check_metadata_policy(
+    path: &Path,
+    root: &Path,
+    relative_path: &str,
+    metadata: &fs::Metadata,
+    config: &AppConfig,
+    include_globs: Option<&GlobSet>,
+    exclude_globs: Option<&GlobSet>,
+) -> Result<Option<Option<FileRecord>>> {
+    // Returns Ok(Some(Some(record))) → skip with this record
+    //         Ok(Some(None))         → exclude silently (include-glob miss)
+    //         Ok(None)               → continue to content checks
+
+    if metadata.file_type().is_symlink() && !config.discovery.follow_symlinks {
+        return Ok(Some(Some(skipped_record(
+            path,
+            root,
+            metadata.len(),
+            FileStatus::SkippedByPolicy,
+            vec!["symlink skipped by policy".into()],
+        ))));
+    }
+
+    if file_name_eq(path, ".gitignore") {
+        return Ok(Some(Some(skipped_record(
+            path,
+            root,
+            metadata.len(),
+            FileStatus::SkippedByPolicy,
+            vec![".gitignore is always excluded".into()],
+        ))));
+    }
+
+    if is_excluded_dir_path(path, &config.discovery.excluded_directories) {
+        return Ok(Some(Some(skipped_record(
+            path,
+            root,
+            metadata.len(),
+            FileStatus::SkippedByPolicy,
+            vec!["path matched excluded directory setting".into()],
+        ))));
+    }
+
+    if metadata.len() > config.discovery.max_file_size_bytes {
+        return Ok(Some(Some(skipped_record(
+            path,
+            root,
+            metadata.len(),
+            FileStatus::SkippedByPolicy,
+            vec![format!(
+                "file exceeded max_file_size_bytes ({})",
+                config.discovery.max_file_size_bytes
+            )],
+        ))));
+    }
+
+    if let Some(globs) = include_globs {
+        if !globs.is_match(Path::new(relative_path)) && !globs.is_match(path) {
+            return Ok(Some(None));
+        }
+    }
+
+    if let Some(globs) = exclude_globs {
+        if globs.is_match(Path::new(relative_path)) || globs.is_match(path) {
+            return Ok(Some(Some(skipped_record(
+                path,
+                root,
+                metadata.len(),
+                FileStatus::SkippedByPolicy,
+                vec!["path matched exclude glob".into()],
+            ))));
+        }
+    }
+
+    if is_known_lockfile(path) && !config.analysis.include_lockfiles {
+        return Ok(Some(Some(skipped_record(
+            path,
+            root,
+            metadata.len(),
+            FileStatus::SkippedByPolicy,
+            vec!["lockfile skipped by default policy".into()],
+        ))));
+    }
+
+    Ok(None)
+}
+
+/// Apply content-level policy checks (vendor, generated, minified, binary).
+/// Returns `Ok(Some(record))` to skip, `Ok(None)` to continue.
+fn check_content_policy(
+    path: &Path,
+    root: &Path,
+    size_bytes: u64,
+    bytes: &[u8],
+    config: &AppConfig,
+) -> Result<(bool, bool, bool, Option<FileRecord>)> {
+    let vendor = is_vendor_path(path);
+    if vendor && config.analysis.vendor_directory_detection {
+        return Ok((
+            vendor,
+            false,
+            false,
+            Some(skipped_record(
+                path,
+                root,
+                size_bytes,
+                FileStatus::SkippedByPolicy,
+                vec!["vendor file skipped by policy".into()],
+            )),
+        ));
+    }
+
+    let generated = config.analysis.generated_file_detection && looks_generated(path, bytes);
+    if generated {
+        return Ok((
+            vendor,
+            generated,
+            false,
+            Some(skipped_record(
+                path,
+                root,
+                size_bytes,
+                FileStatus::SkippedByPolicy,
+                vec!["generated file skipped by policy".into()],
+            )),
+        ));
+    }
+
+    let minified = config.analysis.minified_file_detection && looks_minified(path, bytes);
+    if minified {
+        return Ok((
+            vendor,
+            generated,
+            minified,
+            Some(skipped_record(
+                path,
+                root,
+                size_bytes,
+                FileStatus::SkippedByPolicy,
+                vec!["minified file skipped by policy".into()],
+            )),
+        ));
+    }
+
+    Ok((vendor, generated, minified, None))
+}
+
+/// Decode file bytes to a UTF-8 string, handling binary detection and decode failures.
+fn decode_file_contents(
+    path: &Path,
+    root: &Path,
+    size_bytes: u64,
+    bytes: &[u8],
+    config: &AppConfig,
+) -> Result<Option<(String, String, Vec<String>)>> {
+    if is_binary(bytes) {
+        return match config.analysis.binary_file_behavior {
+            BinaryFileBehavior::Skip => Ok(None),
+            BinaryFileBehavior::Fail => {
+                anyhow::bail!("binary file encountered: {}", path.display())
+            }
+        };
+    }
+
+    match decode_bytes(bytes) {
+        Ok(result) => Ok(Some(result)),
+        Err(err) => match config.analysis.decode_failure_behavior {
+            FailureBehavior::WarnSkip => {
+                // Caller will handle the None as a SkippedDecodeError record.
+                // We use a sentinel: return Ok(None) but encode the error into a field.
+                // Instead, propagate as a skipped record via the caller.
+                let _ = (path, root, size_bytes); // suppress unused warnings
+                Err(anyhow::anyhow!("__decode_warn__: {err}"))
+            }
+            FailureBehavior::Fail => {
+                anyhow::bail!("decode failure for {}: {err}", path.display())
+            }
+        },
+    }
+}
+
+#[allow(clippy::too_many_lines)]
 fn analyze_candidate_file(
     path: &Path,
     root: &Path,
@@ -415,77 +654,21 @@ fn analyze_candidate_file(
         }
     };
 
-    if metadata.file_type().is_symlink() && !config.discovery.follow_symlinks {
-        return Ok(Some(skipped_record(
-            path,
-            root,
-            metadata.len(),
-            FileStatus::SkippedByPolicy,
-            vec!["symlink skipped by policy".into()],
-        )));
-    }
-
     let relative_path = relative_path_string(path, root);
 
-    if file_name_eq(path, ".gitignore") {
-        return Ok(Some(skipped_record(
-            path,
-            root,
-            metadata.len(),
-            FileStatus::SkippedByPolicy,
-            vec![".gitignore is always excluded".into()],
-        )));
-    }
-
-    if is_excluded_dir_path(path, &config.discovery.excluded_directories) {
-        return Ok(Some(skipped_record(
-            path,
-            root,
-            metadata.len(),
-            FileStatus::SkippedByPolicy,
-            vec!["path matched excluded directory setting".into()],
-        )));
-    }
-
-    if metadata.len() > config.discovery.max_file_size_bytes {
-        return Ok(Some(skipped_record(
-            path,
-            root,
-            metadata.len(),
-            FileStatus::SkippedByPolicy,
-            vec![format!(
-                "file exceeded max_file_size_bytes ({})",
-                config.discovery.max_file_size_bytes
-            )],
-        )));
-    }
-
-    if let Some(globs) = include_globs {
-        if !globs.is_match(Path::new(&relative_path)) && !globs.is_match(path) {
-            return Ok(None);
-        }
-    }
-
-    if let Some(globs) = exclude_globs {
-        if globs.is_match(Path::new(&relative_path)) || globs.is_match(path) {
-            return Ok(Some(skipped_record(
-                path,
-                root,
-                metadata.len(),
-                FileStatus::SkippedByPolicy,
-                vec!["path matched exclude glob".into()],
-            )));
-        }
-    }
-
-    if is_known_lockfile(path) && !config.analysis.include_lockfiles {
-        return Ok(Some(skipped_record(
-            path,
-            root,
-            metadata.len(),
-            FileStatus::SkippedByPolicy,
-            vec!["lockfile skipped by default policy".into()],
-        )));
+    // Metadata-level policy checks.
+    match check_metadata_policy(
+        path,
+        root,
+        &relative_path,
+        &metadata,
+        config,
+        include_globs,
+        exclude_globs,
+    )? {
+        Some(Some(record)) => return Ok(Some(record)),
+        Some(None) => return Ok(None),
+        None => {}
     }
 
     let bytes = match fs::read(path) {
@@ -501,71 +684,40 @@ fn analyze_candidate_file(
         }
     };
 
-    let vendor = is_vendor_path(path);
-    if vendor && config.analysis.vendor_directory_detection {
-        return Ok(Some(skipped_record(
-            path,
-            root,
-            metadata.len(),
-            FileStatus::SkippedByPolicy,
-            vec!["vendor file skipped by policy".into()],
-        )));
+    // Content-level policy checks (vendor, generated, minified).
+    let (vendor, generated, minified, skip_record) =
+        check_content_policy(path, root, metadata.len(), &bytes, config)?;
+    if let Some(record) = skip_record {
+        return Ok(Some(record));
     }
 
-    let generated = config.analysis.generated_file_detection && looks_generated(path, &bytes);
-    if generated {
-        return Ok(Some(skipped_record(
-            path,
-            root,
-            metadata.len(),
-            FileStatus::SkippedByPolicy,
-            vec!["generated file skipped by policy".into()],
-        )));
-    }
-
-    let minified = config.analysis.minified_file_detection && looks_minified(path, &bytes);
-    if minified {
-        return Ok(Some(skipped_record(
-            path,
-            root,
-            metadata.len(),
-            FileStatus::SkippedByPolicy,
-            vec!["minified file skipped by policy".into()],
-        )));
-    }
-
-    if is_binary(&bytes) {
-        return match config.analysis.binary_file_behavior {
-            BinaryFileBehavior::Skip => Ok(Some(skipped_record(
-                path,
-                root,
-                metadata.len(),
-                FileStatus::SkippedBinary,
-                vec!["binary file skipped by default".into()],
-            ))),
-            BinaryFileBehavior::Fail => {
-                anyhow::bail!("binary file encountered: {}", path.display())
-            }
-        };
-    }
-
-    let (text, encoding, decode_warnings) = match decode_bytes(&bytes) {
-        Ok(result) => result,
-        Err(err) => {
-            return match config.analysis.decode_failure_behavior {
-                FailureBehavior::WarnSkip => Ok(Some(skipped_record(
+    // Decode content, handling binary and decode failures.
+    let (text, encoding, decode_warnings) =
+        match decode_file_contents(path, root, metadata.len(), &bytes, config) {
+            Ok(Some(result)) => result,
+            Ok(None) => {
+                return Ok(Some(skipped_record(
                     path,
                     root,
                     metadata.len(),
-                    FileStatus::SkippedDecodeError,
-                    vec![err],
-                ))),
-                FailureBehavior::Fail => {
-                    anyhow::bail!("decode failure for {}: {err}", path.display())
+                    FileStatus::SkippedBinary,
+                    vec!["binary file skipped by default".into()],
+                )));
+            }
+            Err(err) => {
+                let msg = err.to_string();
+                if let Some(warn_msg) = msg.strip_prefix("__decode_warn__: ") {
+                    return Ok(Some(skipped_record(
+                        path,
+                        root,
+                        metadata.len(),
+                        FileStatus::SkippedDecodeError,
+                        vec![warn_msg.to_string()],
+                    )));
                 }
-            };
-        }
-    };
+                return Err(err);
+            }
+        };
 
     let first_line = text.lines().next();
     let language = detect_language(

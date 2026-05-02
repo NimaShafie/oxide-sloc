@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Nima Shafie <nimzshafie@gmail.com>
+#![allow(clippy::multiple_crate_versions)]
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -70,6 +71,7 @@ enum Commands {
 
 // ── analyze ───────────────────────────────────────────────────────────────────
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Args)]
 struct AnalyzeArgs {
     /// One or more directories to scan
@@ -339,6 +341,71 @@ async fn main() -> Result<()> {
 
 // ── analyze handler ───────────────────────────────────────────────────────────
 
+/// Write all requested output artifacts and print paths when not quiet.
+fn write_outputs(run: &AnalysisRun, args: &AnalyzeArgs, quiet: bool) -> Result<()> {
+    if let Some(path) = &args.json_out {
+        write_json(run, path)?;
+        if !quiet {
+            eprintln!("wrote {}", path.display());
+        }
+    }
+
+    if let Some(path) = &args.html_out {
+        write_html(run, path)?;
+        if !quiet {
+            eprintln!("wrote {}", path.display());
+        }
+        if args.open {
+            open_path(path);
+        }
+    }
+
+    if let Some(path) = &args.pdf_out {
+        let html_for_pdf = ensure_html_for_pdf(run, args.html_out.as_deref(), path)?;
+        write_pdf_from_html(&html_for_pdf, path)?;
+        if !quiet {
+            eprintln!("wrote {}", path.display());
+        }
+    }
+
+    if let Some(path) = &args.csv_out {
+        write_csv(run, path)?;
+        if !quiet {
+            eprintln!("wrote {}", path.display());
+        }
+    }
+
+    if let Some(path) = &args.xlsx_out {
+        write_xlsx(run, path)?;
+        if !quiet {
+            eprintln!("wrote {}", path.display());
+        }
+    }
+
+    Ok(())
+}
+
+/// Check threshold and warning-count exit conditions after outputs are written.
+fn check_exit_conditions(run: &AnalysisRun, fail_on_warnings: bool, fail_below: Option<u64>) {
+    if fail_on_warnings && !run.warnings.is_empty() {
+        eprintln!(
+            "error: {} warning(s) found — failing due to --fail-on-warnings",
+            run.warnings.len()
+        );
+        std::process::exit(2);
+    }
+
+    if let Some(threshold) = fail_below {
+        if run.summary_totals.code_lines < threshold {
+            eprintln!(
+                "error: code lines ({}) below threshold {} (--fail-below)",
+                run.summary_totals.code_lines, threshold
+            );
+            std::process::exit(3);
+        }
+    }
+}
+
 async fn run_analyze(args: AnalyzeArgs) -> Result<()> {
     let config = resolve_analyze_config(&args)?;
     let quiet = args.quiet;
@@ -350,63 +417,10 @@ async fn run_analyze(args: AnalyzeArgs) -> Result<()> {
         print_summary(&run, args.per_file, args.plain);
     }
 
-    if let Some(path) = &args.json_out {
-        write_json(&run, path)?;
-        if !quiet {
-            eprintln!("wrote {}", path.display());
-        }
-    }
-
-    if let Some(path) = &args.html_out {
-        write_html(&run, path)?;
-        if !quiet {
-            eprintln!("wrote {}", path.display());
-        }
-        if args.open {
-            open_path(path);
-        }
-    }
-
-    if let Some(path) = &args.pdf_out {
-        let html_for_pdf = ensure_html_for_pdf(&run, args.html_out.as_deref(), path)?;
-        write_pdf_from_html(&html_for_pdf, path)?;
-        if !quiet {
-            eprintln!("wrote {}", path.display());
-        }
-    }
-
-    if let Some(path) = &args.csv_out {
-        write_csv(&run, path)?;
-        if !quiet {
-            eprintln!("wrote {}", path.display());
-        }
-    }
-
-    if let Some(path) = &args.xlsx_out {
-        write_xlsx(&run, path)?;
-        if !quiet {
-            eprintln!("wrote {}", path.display());
-        }
-    }
+    write_outputs(&run, &args, quiet)?;
 
     // Threshold / warning exit codes (checked after all outputs are written)
-    if args.fail_on_warnings && !run.warnings.is_empty() {
-        eprintln!(
-            "error: {} warning(s) found — failing due to --fail-on-warnings",
-            run.warnings.len()
-        );
-        std::process::exit(2);
-    }
-
-    if let Some(threshold) = args.fail_below {
-        if run.summary_totals.code_lines < threshold {
-            eprintln!(
-                "error: code lines ({}) below threshold {} (--fail-below)",
-                run.summary_totals.code_lines, threshold
-            );
-            std::process::exit(3);
-        }
-    }
+    check_exit_conditions(&run, args.fail_on_warnings, args.fail_below);
 
     Ok(())
 }
@@ -823,6 +837,7 @@ fn ensure_html_for_pdf(
 
 // ── terminal output ───────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_lines)]
 fn print_summary(run: &AnalysisRun, per_file: bool, plain: bool) {
     if plain {
         println!("files_analyzed={}", run.summary_totals.files_analyzed);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Nima Shafie <nimzshafie@gmail.com>
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -64,6 +64,7 @@ pub struct ScanComparison {
 }
 
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn compute_delta(baseline: &AnalysisRun, current: &AnalysisRun) -> ScanComparison {
     let baseline_map: HashMap<&str, &EffectiveCounts> = baseline
         .per_file_records
@@ -71,10 +72,10 @@ pub fn compute_delta(baseline: &AnalysisRun, current: &AnalysisRun) -> ScanCompa
         .map(|f| (f.relative_path.as_str(), &f.effective_counts))
         .collect();
 
-    let current_paths: HashMap<&str, ()> = current
+    let current_paths: HashSet<&str> = current
         .per_file_records
         .iter()
-        .map(|f| (f.relative_path.as_str(), ()))
+        .map(|f| f.relative_path.as_str())
         .collect();
 
     let mut file_deltas: Vec<FileDelta> = Vec::new();
@@ -129,7 +130,7 @@ pub fn compute_delta(baseline: &AnalysisRun, current: &AnalysisRun) -> ScanCompa
     }
 
     for record in &baseline.per_file_records {
-        if !current_paths.contains_key(record.relative_path.as_str()) {
+        if !current_paths.contains(record.relative_path.as_str()) {
             let base = &record.effective_counts;
             let lang = record.language.map(|l| l.display_name().to_string());
             let total = (base.code_lines + base.comment_lines + base.blank_lines).cast_signed();

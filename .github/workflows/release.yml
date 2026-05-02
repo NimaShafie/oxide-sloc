@@ -66,30 +66,14 @@ jobs:
       - name: Add cross-compilation target
         run: rustup target add ${{ matrix.target }}
 
-      - name: Extract vendor archive (Linux / macOS)
-        if: runner.os != 'Windows'
-        run: |
-          sha256sum -c vendor.tar.xz.sha256
-          tar -xJf vendor.tar.xz
-
-      - name: Extract vendor archive (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $expected = (Get-Content vendor.tar.xz.sha256 -Raw).Trim().Split()[0]
-          $actual   = (Get-FileHash vendor.tar.xz -Algorithm SHA256).Hash.ToLower()
-          if ($actual -ne $expected) { Write-Error "SHA-256 mismatch: expected $expected got $actual"; exit 1 }
-          tar -xJf vendor.tar.xz
-
       - name: Build release binary
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: cargo build --release -p oxide-sloc --target ${{ matrix.target }}
+        run: bash ci/release.sh ${{ matrix.target }}
 
       - name: Rename binary
         shell: bash
-        run: |
-          cp target/${{ matrix.target }}/release/${{ matrix.binary }} ${{ matrix.artifact }}
+        run: cp target/${{ matrix.target }}/release/${{ matrix.binary }} ${{ matrix.artifact }}
 
       - name: Check for signing certificate
         id: cert
@@ -135,9 +119,31 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
 
+  vendor:
+    name: Generate vendor archive
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        with:
+          toolchain: stable
+
+      - name: Generate vendor archive
+        run: bash scripts/update-vendor.sh
+
+      - name: Upload vendor archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: vendor-archive
+          path: |
+            vendor.tar.xz
+            vendor.tar.xz.sha256
+
   publish:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, vendor]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -188,8 +194,9 @@ jobs:
             | Windows x86-64 | `oxide-sloc-windows-x86_64.exe` | Windows 10/11 |
             | macOS x86-64 | `oxide-sloc-macos-x86_64` | Intel Mac |
             | macOS Apple Silicon | `oxide-sloc-macos-arm64` | M1/M2/M3/M4 Mac |
+            | Vendor archive | `vendor.tar.xz` + `vendor.tar.xz.sha256` | Rust dependency sources for air-gapped builds |
 
-            Checksums are in `SHA256SUMS.txt`.
+            Checksums for all release assets are in `SHA256SUMS.txt`.
 
             ## Quick install
 
@@ -215,6 +222,13 @@ jobs:
 
             # Verify checksum (Linux / macOS)
             sha256sum --check SHA256SUMS.txt
+            ```
+
+            ## Air-gapped build
+
+            ```bash
+            # Download source + vendor archive from this release, then on the air-gapped machine:
+            bash scripts/airgap-build.sh vendor.tar.xz
             ```
 
             ## Or build from source (requires Rust 1.95+)

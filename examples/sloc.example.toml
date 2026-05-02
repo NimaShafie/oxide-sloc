@@ -1,0 +1,35 @@
+[discovery]
+root_paths = ["."]
+include_globs = []
+exclude_globs = []
+excluded_directories = [".git", "node_modules", "target"]
+honor_ignore_files = true
+ignore_hidden_files = true
+follow_symlinks = false
+max_file_size_bytes = 2097152
+
+[analysis]
+enabled_languages = []
+shebang_detection = true
+mixed_line_policy = "code_only"
+python_docstrings_as_comments = true
+generated_file_detection = true
+minified_file_detection = true
+vendor_directory_detection = true
+include_lockfiles = false
+binary_file_behavior = "skip"
+decode_failure_behavior = "warn_skip"
+parse_failure_behavior = "warn_skip"
+
+[analysis.extension_overrides]
+
+[reporting]
+report_title = "OxideSLOC Report"
+output_formats = ["cli", "json", "html"]
+include_summary_charts = true
+include_skipped_files_section = true
+include_warnings_section = true
+theme = "auto"
+
+[web]
+bind_address = "127.0.0.1:4317"

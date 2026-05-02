@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Regenerate vendor.tar.xz and vendor.tar.xz.sha256 atomically.
+# Regenerate vendor.tar.xz and vendor.tar.xz.sha256 from the current Cargo.lock.
+#
 # Run this any time you add, remove, or update a dependency in Cargo.toml/Cargo.lock.
-# Never update vendor.tar.xz without running this script — the Docker build will fail
-# checksum verification and the CI docker.yml workflow will break.
+# The generated archive is NOT committed to git — it is attached to GitHub releases
+# automatically by the release workflow. For air-gapped builds, download it from the
+# release page and run: bash scripts/airgap-build.sh vendor.tar.xz
 #
 # Usage: bash scripts/update-vendor.sh
 set -euo pipefail
@@ -31,5 +33,6 @@ echo "Done."
 echo "  Archive : ${ARCHIVE}"
 echo "  Checksum: $(cat ${SHA_FILE})"
 echo ""
-echo "Stage both files before committing:"
-echo "  git add ${ARCHIVE} ${SHA_FILE}"
+echo "Both files are gitignored. The release workflow uploads them automatically"
+echo "when a version tag is pushed. To test an air-gapped build locally:"
+echo "  bash scripts/airgap-build.sh"

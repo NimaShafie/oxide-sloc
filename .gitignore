@@ -1,8 +1,13 @@
 # Build output
 /target/
 
-# Uncompressed vendor sources — tracked as vendor.tar.xz instead
+# Uncompressed vendor sources — extract from vendor.tar.xz (released as a GitHub release asset)
 /vendor/
+
+# Vendor archive and cargo offline config — generated locally, not tracked
+/vendor.tar.xz
+/vendor.tar.xz.sha256
+/.cargo/config.toml
 
 # Logs and temp files
 *.log
@@ -39,14 +44,11 @@ flamegraph.svg
 perf.data
 perf.data.old
 
-# Uncompressed extracted binaries in dist/ — only the zip/tar.gz bundles are tracked
-/dist/oxidesloc
-/dist/oxidesloc.exe
-/dist/oxide-sloc-*
-/dist/tmp-*/
+# dist/ — all compiled binaries and archives (released as GitHub release assets)
+/dist/
 
-# Duplicate compressed Windows binary — .zip already covers this and extracts natively on Windows
-/dist/oxidesloc-windows-x64.7z
+# Generated report artefacts under tests/fixtures/
+tests/fixtures/**/sloc/
 
 # Transferable bundle archives created by `make bundle`
 /oxide-sloc-bundle*.7z

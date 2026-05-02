@@ -26,33 +26,17 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
 
-      - name: Cache vendor/
-        uses: actions/cache@d4323d4df104b026a6aa633fdb11d772146be0bf  # v4.2.2
-        id: vendor-cache
-        with:
-          path: vendor/
-          key: vendor-${{ hashFiles('vendor.tar.xz') }}
-
-      - name: Decompress vendor sources
-        if: steps.vendor-cache.outputs.cache-hit != 'true'
-        run: tar -xJf vendor.tar.xz
-
       - name: Cache cargo
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-        with:
-          prefix-key: "v2-vendor"
 
-      - name: Format check
-        run: cargo fmt --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Lint
+        run: bash ci/lint.sh
 
       - name: Build
-        run: cargo build --workspace
+        run: bash ci/build.sh
 
-      - name: Unit tests
-        run: cargo test --workspace
+      - name: Test
+        run: bash ci/test.sh
 
   smoke:
     name: CLI smoke tests
@@ -66,35 +50,24 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Cache vendor/
-        uses: actions/cache@d4323d4df104b026a6aa633fdb11d772146be0bf  # v4.2.2
-        id: vendor-cache
-        with:
-          path: vendor/
-          key: vendor-${{ hashFiles('vendor.tar.xz') }}
-
-      - name: Decompress vendor sources
-        if: steps.vendor-cache.outputs.cache-hit != 'true'
-        run: tar -xJf vendor.tar.xz
-
       - name: Cache cargo
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
-          prefix-key: "v2-vendor"
+          prefix-key: "v1-smoke"
 
       - name: Build release binary
-        run: cargo build --release -p oxide-sloc
+        run: bash ci/release.sh
 
       - name: Plain summary
-        run: ./target/release/oxide-sloc analyze samples/basic --plain
+        run: ./target/release/oxide-sloc analyze tests/fixtures/basic --plain
 
       - name: Per-file breakdown
-        run: ./target/release/oxide-sloc analyze samples/basic --per-file --plain
+        run: ./target/release/oxide-sloc analyze tests/fixtures/basic --per-file --plain
 
       - name: JSON + HTML reports
         run: |
           mkdir -p $OUT_DIR
-          ./target/release/oxide-sloc analyze samples/basic \
+          ./target/release/oxide-sloc analyze tests/fixtures/basic \
             --report-title "CI run ${{ github.run_number }}" \
             --json-out $OUT_DIR/result.json \
             --html-out $OUT_DIR/report.html
@@ -111,7 +84,7 @@ jobs:
         run: |
           for policy in code-only code-and-comment comment-only separate-mixed-category; do
             echo "--- policy: $policy ---"
-            ./target/release/oxide-sloc analyze samples/basic \
+            ./target/release/oxide-sloc analyze tests/fixtures/basic \
               --plain --mixed-line-policy "$policy"
           done
 

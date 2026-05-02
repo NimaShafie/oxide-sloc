@@ -1,17 +1,33 @@
 #!/usr/bin/env bash
-# Run this ONCE on a networked machine to pre-populate the Rust toolchain cache.
-# Then transfer the resulting archive to the air-gapped Jenkins agent host.
+# Pre-populate the Rust toolchain cache on a Jenkins agent (Docker or native).
 #
-# Usage:
+# Run this ONCE on the agent host — or on any networked machine and then transfer
+# the resulting archive to an air-gapped host.  After running, every subsequent
+# Jenkins build finds the toolchain in place and skips all network access.
+#
+# Works with both Docker-managed and native (systemd / bare-metal) agents because
+# the Jenkinsfile reads CARGO_HOME/RUSTUP_HOME from ${HOME}/.rust-cache, which
+# this script also uses.
+#
+# ── Run directly on the agent (internet available) ───────────────────────────
 #   bash ci/jenkins/install-rust-cache.sh
-#   tar -czf rust-cache.tar.gz -C ~ .rust-cache
 #
-# On the Jenkins host (before starting the container):
-#   tar -xzf rust-cache.tar.gz -C /var/lib/docker/volumes/<jenkins_home_volume>/_data
+# ── Transfer to an air-gapped agent ──────────────────────────────────────────
+#   # On a networked machine:
+#   bash ci/jenkins/install-rust-cache.sh
+#   tar -czf rust-cache.tar.gz -C "${HOME}" .rust-cache
 #
-# The Jenkinsfile expects the toolchain at:
-#   /var/jenkins_home/.rust-cache/cargo
-#   /var/jenkins_home/.rust-cache/rustup
+#   # On the air-gapped agent — Docker:
+#   #   Copy rust-cache.tar.gz to the host, then:
+#   tar -xzf rust-cache.tar.gz \
+#       -C /var/lib/docker/volumes/<jenkins_home_volume>/_data
+#
+#   # On the air-gapped agent — native systemd (jenkins user home = /var/lib/jenkins):
+#   sudo -u jenkins tar -xzf rust-cache.tar.gz -C /var/lib/jenkins
+#   # Adjust the path if the jenkins user's home differs (check: getent passwd jenkins).
+#
+# After transfer, the Jenkinsfile Setup stage detects the cached toolchain on
+# first build and skips all Rust-related network access automatically.
 
 set -euo pipefail
 
@@ -35,11 +51,17 @@ else
             --component rustfmt clippy
 fi
 
+JENKINS_HOME_GUESS="$(getent passwd jenkins 2>/dev/null | cut -d: -f6 || echo '/var/lib/jenkins')"
+
 echo ""
-echo "Done. Toolchain is at ${CACHE_DIR}."
+echo "Done. Toolchain cached at: ${CACHE_DIR}"
 echo ""
-echo "To bundle for transfer:"
+echo "To bundle for transfer to an air-gapped host:"
 echo "  tar -czf rust-cache.tar.gz -C '${HOME}' .rust-cache"
 echo ""
-echo "On the air-gapped Jenkins host:"
-echo "  tar -xzf rust-cache.tar.gz -C /var/lib/docker/volumes/<jenkins_home>/_data"
+echo "Extract on the air-gapped agent — Docker:"
+echo "  tar -xzf rust-cache.tar.gz \\"
+echo "      -C /var/lib/docker/volumes/<jenkins_home_volume>/_data"
+echo ""
+echo "Extract on the air-gapped agent — native (jenkins user home = ${JENKINS_HOME_GUESS}):"
+echo "  sudo -u jenkins tar -xzf rust-cache.tar.gz -C '${JENKINS_HOME_GUESS}'"

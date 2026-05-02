@@ -239,9 +239,49 @@ docker build -t jenkins-oxide-sloc:latest -f ci/jenkins/Dockerfile.agent .
 docker compose down && docker compose up -d
 ```
 
-If your Jenkins is not container-managed, install the equivalent packages directly on the agent host (e.g. `apt-get install -y libwayland-dev libgtk-3-dev libxdo-dev`) and restart the agent service.
+For non-container agents, see the native setup section below.
 
 `preflight.sh` probes the running agent for these libraries via the script console; a stale image will surface as a `[fail]` line on the next preflight run, not as a 20-second clippy compile error 5 minutes later.
+
+#### Native / systemd agent setup
+
+For Jenkins running directly on the host (no Docker), a three-step one-time setup replaces the Dockerfile.agent approach. The Jenkinsfile's `CARGO_HOME`, `RUSTUP_HOME`, and `PATH` all use `${HOME}/.rust-cache`, so they work correctly for any Jenkins user home directory.
+
+**Step 1 — System packages (run once as root):**
+
+```bash
+sudo bash ci/jenkins/install-system-deps.sh
+```
+
+Installs python3, build-essential, pkg-config, libssl-dev, libwayland-dev, libgtk-3-dev, libxdo-dev, curl, and xz-utils. Supports Debian/Ubuntu (apt-get) and RHEL/CentOS/Fedora (dnf/yum).
+
+**Step 2 — Rust toolchain cache (run once as the jenkins user):**
+
+```bash
+sudo -u jenkins bash ci/jenkins/install-rust-cache.sh
+```
+
+Installs the toolchain pinned in `rust-toolchain.toml` into `~jenkins/.rust-cache`. The Jenkinsfile reads `CARGO_HOME`/`RUSTUP_HOME` from `${HOME}/.rust-cache`, so Docker and native agents resolve to the same layout — just rooted at different home directories.
+
+For an **air-gapped** native agent, run `install-rust-cache.sh` on a networked machine and transfer the archive it generates:
+
+```bash
+# Networked machine (jenkins user's session):
+bash ci/jenkins/install-rust-cache.sh
+tar -czf rust-cache.tar.gz -C "${HOME}" .rust-cache
+
+# Air-gapped agent — extract into the jenkins user's home (Debian/Ubuntu default):
+sudo -u jenkins tar -xzf rust-cache.tar.gz -C /var/lib/jenkins
+# For other distros, replace /var/lib/jenkins with: $(getent passwd jenkins | cut -d: -f6)
+```
+
+**Step 3 — Verify:**
+
+```bash
+bash ci/jenkins/preflight.sh
+```
+
+All lines must print `[ok]`. Run this after Step 1 and again after Step 2 to confirm both layers are in place before triggering a build.
 
 ### Basic pipeline
 

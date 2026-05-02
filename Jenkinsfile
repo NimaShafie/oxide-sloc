@@ -172,13 +172,17 @@ pipeline {
     }
 
     environment {
-        // Persistent Rust toolchain cache — stored outside the workspace so it survives
-        // cleanWs() across builds.  Pre-populate /var/jenkins_home/.rust-cache on the
-        // agent once (online or air-gapped) and subsequent builds skip the download.
-        // See ci/jenkins/Dockerfile.agent and ci/jenkins/install-rust-cache.sh.
-        CARGO_HOME  = '/var/jenkins_home/.rust-cache/cargo'
-        RUSTUP_HOME = '/var/jenkins_home/.rust-cache/rustup'
-        PATH        = '/var/jenkins_home/.rust-cache/cargo/bin:/usr/local/bin:/usr/bin:/bin'
+        // Persistent Rust toolchain cache — stored in the agent user's home directory so
+        // it survives cleanWs() across builds.  Works for both Docker and native Jenkins:
+        //   Docker  (jenkins/jenkins:lts):  HOME=/var/jenkins_home
+        //   Native  (systemd / bare-metal): HOME=/var/lib/jenkins  (or wherever jenkins lives)
+        // One-time setup per agent:
+        //   Docker : rebuild ci/jenkins/Dockerfile.agent (toolchain baked at /opt/rust-toolchain)
+        //   Native : sudo bash ci/jenkins/install-system-deps.sh
+        //            bash ci/jenkins/install-rust-cache.sh
+        CARGO_HOME  = "${env.HOME}/.rust-cache/cargo"
+        RUSTUP_HOME = "${env.HOME}/.rust-cache/rustup"
+        PATH        = "${env.HOME}/.rust-cache/cargo/bin:/usr/local/bin:/usr/bin:/bin"
         // WORKSPACE is set when the agent is acquired, before any stage runs — safe to reference here.
         BINARY        = "${WORKSPACE}/target/release/oxide-sloc"
         // ARTIFACT_PATH exposes the binary location to downstream chained jobs.

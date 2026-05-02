@@ -133,7 +133,13 @@ cp ci/jenkins/.env.example ci/jenkins/.env
 
 **URL note:** LAN/remote addresses (e.g., `http://10.0.0.8:8080`) are valid substitutions for `http://localhost:8080`. Strip any trailing slash — `${JENKINS_URL}/createItem` would otherwise produce `//createItem`, which some reverse proxies reject.
 
-**Job name:** Use `oxide-sloc` for the SCM-driven job created from `ci/jenkins/job-config.xml`. Use `oxide-sloc-manual` only if you also intend to maintain a hand-edited copy of the pipeline in the same Jenkins instance and need to disambiguate.
+**Job name:** Use `oxide-sloc` for the SCM-driven job created from `ci/jenkins/job-config.xml`. Use `oxide-sloc-manual` only if you also intend to maintain a hand-edited copy of the pipeline in the same Jenkins instance and need to disambiguate. If both names already exist on your Jenkins and you need to remove the unwanted one, delete it with:
+
+```bash
+curl -sS -X POST -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
+    -H "$(curl -sS -u "${JENKINS_USER}:${JENKINS_TOKEN}" "${JENKINS_URL}/crumbIssuer/api/xml?xpath=concat(//crumbRequestField,\":\",//crumb)")" \
+    "${JENKINS_URL}/job/<name-to-delete>/doDelete"
+```
 
 ### Pre-flight check
 
@@ -167,6 +173,17 @@ java -jar jenkins-cli.jar -s "${JENKINS_URL}" -auth "${JENKINS_USER}:${JENKINS_T
 ```
 
 After any install, re-run `preflight.sh` — check (c) asserts all plugins are active before you proceed.
+
+#### Relaxing the artifact-viewer CSP (Docker)
+
+If Jenkins is running in Docker and you need to apply the CSP relaxation to an already-running container without rebuilding the image:
+
+```bash
+# For a running container:
+docker cp ci/jenkins/init.groovy.d/relax-csp.groovy <container>:/var/jenkins_home/init.groovy.d/relax-csp.groovy
+docker exec -u root <container> chown jenkins:jenkins /var/jenkins_home/init.groovy.d/relax-csp.groovy
+docker restart <container>
+```
 
 ### Basic pipeline
 
@@ -213,6 +230,12 @@ curl -sS -X POST -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
 ```
 
 The first build runs with no parameters — Jenkins uses it to discover the `parameters {}` block in the Jenkinsfile. From build #2 onward, **Build with Parameters** in the left-hand sidebar shows the full configurable form.
+
+> **Note:** The SCM URL Jenkins uses to fetch the Jenkinsfile itself comes from
+> `ci/jenkins/job-config.xml` — not from the `REPO_URL` build parameter inside the Jenkinsfile.
+> The parameter only takes effect from build #2 onward. If the first build fails with
+> `'__placeholder__' does not appear to be a git repository`, re-render `job-config.xml`
+> with `REPO_URL` exported in your environment and re-create the job.
 
 #### Build parameters
 

@@ -129,6 +129,14 @@ else
     fail "Unexpected HTTP ${JOB_STATUS} checking for existing job '${JOB_NAME}'."
 fi
 
+ALT_NAME=$([ "$JOB_NAME" = "oxide-sloc" ] && echo "oxide-sloc-manual" || echo "oxide-sloc")
+ALT_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 \
+    -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
+    "${JENKINS_URL}/job/${ALT_NAME}/api/json" 2>&1) || true
+if [ "$ALT_STATUS" = "200" ]; then
+    printf '[info] Alternate job name "%s" also exists on this Jenkins. Decide whether to keep, delete, or rename it before proceeding.\n' "$ALT_NAME"
+fi
+
 # ── Check e: CSRF crumb endpoint responds ────────────────────────────────────
 
 CRUMB_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 \
@@ -141,6 +149,14 @@ elif [ "$CRUMB_STATUS" == "404" ]; then
     ok "CSRF crumb endpoint returned 404 — CSRF protection may be disabled (acceptable for local/dev Jenkins)"
 else
     fail "CSRF crumb endpoint /crumbIssuer/api/xml returned HTTP ${CRUMB_STATUS}. Check Jenkins configuration."
+fi
+
+# ── Check f: artifact-viewer CSP (informational only) ────────────────────────
+
+CSP=$(curl -sS -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
+    "${JENKINS_URL}/scriptText" --data-urlencode 'script=println(System.getProperty("hudson.model.DirectoryBrowserSupport.CSP"))' 2>/dev/null || true)
+if [ -z "$CSP" ] || [ "$CSP" = "null" ]; then
+    printf '[info] hudson.model.DirectoryBrowserSupport.CSP is at default — HTML reports may render unstyled. See "Setting the artifact-viewer CSP".\n'
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────

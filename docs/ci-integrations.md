@@ -90,6 +90,27 @@ After the initial setup wizard is complete:
 3. Give it a name (e.g. `bootstrap-token`) and click **Generate**
 4. **Copy the token now** — it is shown only once and cannot be retrieved later
 
+#### Path B — mint via REST
+
+If you prefer not to use the GUI, the token can be minted via the Jenkins REST API. The cookie jar is required — the CSRF crumb is only honored within the same session that issued it.
+
+```bash
+# Pre-req: the admin password (initialAdminPassword or the configured one).
+JENKINS_URL=http://10.0.0.8:8080
+JENKINS_USER=admin
+JENKINS_PASS=...   # the admin password, NOT a token
+
+cookies=$(mktemp)
+crumb=$(curl -sS -c "$cookies" -u "$JENKINS_USER:$JENKINS_PASS" \
+  "$JENKINS_URL/crumbIssuer/api/xml?xpath=concat(//crumbRequestField,\":\",//crumb)")
+
+curl -sS -b "$cookies" -u "$JENKINS_USER:$JENKINS_PASS" -H "$crumb" \
+  -X POST --data 'newTokenName=bootstrap-token' \
+  "$JENKINS_URL/user/$JENKINS_USER/descriptorByName/jenkins.security.ApiTokenProperty/generateNewToken"
+# → JSON containing tokenValue. Copy that value into JENKINS_TOKEN in ci/jenkins/.env.
+rm -f "$cookies"
+```
+
 ### Local credential storage
 
 ```bash
@@ -205,6 +226,40 @@ The first build runs with no parameters — Jenkins uses it to discover the `par
 
 > **JSON is always generated** regardless of parameters — it is required for build-over-build trend plots, the build description summary, and the `send` delivery subcommand.
 
+#### Optional — registering Secret Text credentials
+
+The pipeline's webhook and email delivery features read credentials from the Jenkins store by specific IDs. Register the following Secret Text credentials before triggering a build if you plan to use those features:
+
+| Credential ID | Used for |
+|---------------|----------|
+| `SLOC_WEBHOOK_TOKEN` | Bearer token for `WEBHOOK_URL` delivery |
+| `SLOC_SMTP_HOST` | SMTP host for `EMAIL_RECIPIENTS` delivery |
+| `SLOC_SMTP_USER` | SMTP username |
+| `SLOC_SMTP_PASS` | SMTP password |
+
+To create a credential via the REST API (repeat for each ID, substituting the correct `id` and `secret`):
+
+```bash
+source ci/jenkins/.env
+crumb=$(curl -sS -u "$JENKINS_USER:$JENKINS_TOKEN" \
+  "$JENKINS_URL/crumbIssuer/api/xml?xpath=concat(//crumbRequestField,\":\",//crumb)")
+
+curl -sS -u "$JENKINS_USER:$JENKINS_TOKEN" -H "$crumb" \
+  -X POST "$JENKINS_URL/credentials/store/system/domain/_/createCredentials" \
+  --data-urlencode 'json={
+    "": "0",
+    "credentials": {
+      "scope": "GLOBAL",
+      "id": "SLOC_WEBHOOK_TOKEN",
+      "secret": "REPLACE_ME",
+      "description": "oxide-sloc webhook bearer token",
+      "$class": "org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl"
+    }
+  }'
+```
+
+Alternatively, add them via **Manage Jenkins → Credentials → System → Global credentials → Add Credentials** (Kind: Secret text).
+
 #### Required plugins
 
 See `ci/jenkins/plugins.txt` for the full list. Minimum required:
@@ -227,6 +282,16 @@ After at least two successful builds, the job page shows two charts under **SLOC
 - **Per-language code lines** — bar chart of code lines by language for recent builds (`per_language.csv`)
 
 The build description on each run is also set automatically, e.g.: `code=4821  files=38  comments=312  blank=890`
+
+#### One-time admin script approval
+
+The pipeline relaxes the artifact-viewer CSP via `System.setProperty(...)` so the HTML report renders with inline styles. The first build logs `WARNING: CSP relaxation skipped` until the signature is approved. To grant approval:
+
+1. Go to **Manage Jenkins → In-process Script Approval**.
+2. Approve the pending `staticMethod java.lang.System setProperty java.lang.String java.lang.String` signature.
+3. Re-run the build.
+
+If you cannot grant approval (locked-down instance), serve the HTML from an external origin (GitHub Pages, S3) where you control CSP headers directly.
 
 #### Adapting to your own project
 
@@ -321,6 +386,8 @@ stage('Scan') {
 #### Step 2 — Push the HTML report as a Confluence page
 
 Use the Confluence REST API to create or update a page. The HTML report is a fully self-contained document — embed it inside a Confluence storage-format body.
+
+> **Note (Cloud):** the `html` macro is admin-gated on Confluence Cloud. If you cannot enable it, use the "attach the HTML as a Confluence page attachment" alternative below.
 
 ```groovy
 stage('Publish to Confluence') {

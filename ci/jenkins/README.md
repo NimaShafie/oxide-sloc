@@ -3,11 +3,12 @@
 ## Operator workflow (overview)
 
 1. `cp ci/jenkins/.env.example ci/jenkins/.env` — fill in `JENKINS_TOKEN`
-2. `source ci/jenkins/.env && bash ci/jenkins/preflight.sh` — all checks must pass
-3. Run the `createItem` curl (Step 1 below)
-4. Run the seed-build curl (Step 2 below)
+2. _(Recommended)_ Pre-populate the agent rust-cache: run `bash ci/jenkins/install-rust-cache.sh` or build the Docker agent image from `ci/jenkins/Dockerfile.agent`. On air-gapped agents this step is required; on network-connected agents Rust downloads at runtime.
+3. `source ci/jenkins/.env && bash ci/jenkins/preflight.sh` — all checks must pass
+4. Run the `createItem` curl (Step 1 below)
+5. Run the seed-build curl (Step 2 below)
 
-That's it. Nothing else is needed.
+On a network-connected agent, step 2 is optional.
 
 ---
 
@@ -39,6 +40,27 @@ After the initial setup wizard is complete:
 2. Scroll to **API Token → Add new Token**
 3. Give it a name (e.g. `bootstrap-token`) and click **Generate**
 4. **Copy the token now** — it is shown only once and cannot be retrieved later
+
+#### Path B — mint via REST
+
+If you prefer not to use the GUI, you can mint the token via the Jenkins REST API. The cookie jar is required — the CSRF crumb is only honored within the same session that issued it.
+
+```bash
+# Pre-req: the admin password (initialAdminPassword or the configured one).
+JENKINS_URL=http://10.0.0.8:8080
+JENKINS_USER=admin
+JENKINS_PASS=...   # the admin password, NOT a token
+
+cookies=$(mktemp)
+crumb=$(curl -sS -c "$cookies" -u "$JENKINS_USER:$JENKINS_PASS" \
+  "$JENKINS_URL/crumbIssuer/api/xml?xpath=concat(//crumbRequestField,\":\",//crumb)")
+
+curl -sS -b "$cookies" -u "$JENKINS_USER:$JENKINS_PASS" -H "$crumb" \
+  -X POST --data 'newTokenName=bootstrap-token' \
+  "$JENKINS_URL/user/$JENKINS_USER/descriptorByName/jenkins.security.ApiTokenProperty/generateNewToken"
+# → JSON containing tokenValue. Copy that value into JENKINS_TOKEN in ci/jenkins/.env.
+rm -f "$cookies"
+```
 
 ### Storing credentials locally
 
@@ -167,3 +189,15 @@ curl -sS -X POST -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
 ```
 
 The first build runs with no parameters — Jenkins uses it to discover the `parameters {}` block in the Jenkinsfile. From build #2 onward, **Build with Parameters** in the left-hand sidebar shows the full configurable form.
+
+---
+
+## One-time admin script approval
+
+The pipeline relaxes the artifact-viewer CSP via `System.setProperty(...)` so the HTML report renders with inline styles. The first build logs `WARNING: CSP relaxation skipped` until the signature is approved. To grant approval:
+
+1. Go to **Manage Jenkins → In-process Script Approval**.
+2. Approve the pending `staticMethod java.lang.System setProperty java.lang.String java.lang.String` signature.
+3. Re-run the build.
+
+If you cannot grant approval (locked-down instance), serve the HTML from an external origin (GitHub Pages, S3) where you control CSP headers directly.

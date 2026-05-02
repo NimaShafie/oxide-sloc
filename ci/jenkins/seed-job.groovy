@@ -13,8 +13,15 @@
 //
 // Alternatively, paste this script directly into:
 //   Manage Jenkins → Script Console (for one-shot execution without a seed job).
+//
+// Job name: defaults to 'oxide-sloc'. To override, set JOB_NAME before running:
+//   - Job DSL seed job: add a String parameter named JOB_NAME to the seed job.
+//   - Script Console: pass a binding variable, e.g. -DJOB_NAME=oxide-sloc-manual.
+//   Use 'oxide-sloc-manual' if 'oxide-sloc' already exists in this Jenkins instance.
 
-pipelineJob('oxide-sloc') {
+def jobName = (binding.hasVariable('JOB_NAME') ? JOB_NAME : System.getenv('JOB_NAME')) ?: 'oxide-sloc'
+
+pipelineJob(jobName) {
     description('oxide-sloc SLOC analysis pipeline. ' +
                 'Scans source repositories and produces HTML, JSON, and PDF reports ' +
                 'with build-over-build trend data.')

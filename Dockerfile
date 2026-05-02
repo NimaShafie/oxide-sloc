@@ -5,6 +5,7 @@ FROM rust:slim@sha256:715efd1ccdc4a63bd6a6e2f54387fff73f904b70e610d41b4d9d74ff38
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
+    xz-utils \
     libwayland-dev \
     libgtk-3-dev \
     libxdo-dev \

@@ -55,6 +55,21 @@ jobs:
       - name: Add cross-compilation target
         run: rustup target add ${{ matrix.target }}
 
+      - name: Extract vendor archive (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sha256sum -c vendor.tar.xz.sha256
+          tar -xJf vendor.tar.xz
+
+      - name: Extract vendor archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $expected = (Get-Content vendor.tar.xz.sha256 -Raw).Trim().Split()[0]
+          $actual   = (Get-FileHash vendor.tar.xz -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $expected) { Write-Error "SHA-256 mismatch: expected $expected got $actual"; exit 1 }
+          tar -xJf vendor.tar.xz
+
       - name: Build
         run: cargo build --release -p oxide-sloc --target ${{ matrix.target }}
 

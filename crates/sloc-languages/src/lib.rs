@@ -2049,11 +2049,11 @@ fn try_record_docstring_if_context(
 
 /// If an unclosed docstring is still active at end-of-file, mark all remaining lines.
 fn mark_unclosed_docstring_lines(
-    active_docstring: &Option<(&'static str, usize)>,
+    active_docstring: Option<&(&'static str, usize)>,
     docstring_lines: &mut HashSet<usize>,
     num_lines: usize,
 ) {
-    if let Some((_, start_line)) = *active_docstring {
+    if let Some(&(_, start_line)) = active_docstring {
         for idx in start_line..num_lines {
             docstring_lines.insert(idx);
         }
@@ -2103,7 +2103,7 @@ fn detect_python_docstring_lines(text: &str) -> HashSet<usize> {
         }
     }
 
-    mark_unclosed_docstring_lines(&active_docstring, &mut docstring_lines, lines.len());
+    mark_unclosed_docstring_lines(active_docstring.as_ref(), &mut docstring_lines, lines.len());
 
     docstring_lines
 }
@@ -2156,7 +2156,8 @@ fn closes_triple_docstring(trimmed: &str, delim: &str, same_line_as_start: bool)
     }
 }
 
-/// Tree-sitter-backed adapters. Compiled only when the `tree-sitter` feature is enabled.
+/// Tree-sitter-backed adapters (compiled only when the `tree-sitter` feature is enabled).
+///
 /// When parsing succeeds the result is used directly; on any failure the caller falls back
 /// to the lexical state machine.
 #[cfg(feature = "tree-sitter")]
@@ -2171,12 +2172,12 @@ pub mod ts {
     /// `docstring_stmt_kind` — optional parent node type whose direct `string` child is a docstring
     fn analyze_lines(
         text: &str,
-        ts_language: tree_sitter::Language,
+        ts_language: &tree_sitter::Language,
         comment_node_kinds: &[&str],
         docstring_stmt_kind: Option<&str>,
     ) -> Option<RawFileAnalysis> {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&ts_language).ok()?;
+        parser.set_language(ts_language).ok()?;
         let tree = parser.parse(text, None)?;
 
         let lines: Vec<&str> = text.split_terminator('\n').collect();
@@ -2216,28 +2217,32 @@ pub mod ts {
         })
     }
 
-    /// Classify a single tree-sitter-annotated line and accumulate into `raw`.
-    fn classify_ts_line(
-        trimmed: &str,
+    /// Flags describing what kinds of content appear on a single line.
+    // Four bools are the natural representation for these four independent properties.
+    #[allow(clippy::struct_excessive_bools)]
+    #[derive(Clone, Copy)]
+    struct TsLineFlags {
         has_code: bool,
         has_comment: bool,
         comment_is_block: bool,
         has_docstring: bool,
-        raw: &mut RawLineCounts,
-    ) {
+    }
+
+    /// Classify a single tree-sitter-annotated line and accumulate into `raw`.
+    const fn classify_ts_line(trimmed: &str, flags: TsLineFlags, raw: &mut RawLineCounts) {
         if trimmed.is_empty() {
             raw.blank_only_lines += 1;
-        } else if has_docstring && !has_code {
+        } else if flags.has_docstring && !flags.has_code {
             raw.docstring_comment_lines += 1;
-        } else if has_code && has_comment {
+        } else if flags.has_code && flags.has_comment {
             // Classify the mixed line as single or multi based on what kind of comment is on it.
-            if comment_is_block {
+            if flags.comment_is_block {
                 raw.mixed_code_multi_comment_lines += 1;
             } else {
                 raw.mixed_code_single_comment_lines += 1;
             }
-        } else if has_comment {
-            if comment_is_block {
+        } else if flags.has_comment {
+            if flags.comment_is_block {
                 raw.multi_comment_only_lines += 1;
             } else {
                 raw.single_comment_only_lines += 1;
@@ -2260,10 +2265,12 @@ pub mod ts {
             raw.total_physical_lines += 1;
             classify_ts_line(
                 lines[i].trim(),
-                has_code[i],
-                has_comment[i],
-                comment_is_block[i],
-                has_docstring[i],
+                TsLineFlags {
+                    has_code: has_code[i],
+                    has_comment: has_comment[i],
+                    comment_is_block: comment_is_block[i],
+                    has_docstring: has_docstring[i],
+                },
                 raw,
             );
         }
@@ -2299,19 +2306,17 @@ pub mod ts {
         }
     }
 
-    /// If `node` is an expression_statement whose sole named child is a string literal,
+    /// If `node` is an `expression_statement` whose sole named child is a string literal,
     /// mark those rows as docstring and return `true`.
     fn visit_maybe_docstring(node: Node, kind: &str, ctx: &mut VisitCtx<'_>) -> bool {
-        let stmt_kind = match ctx.docstring_stmt_kind {
-            Some(k) => k,
-            None => return false,
+        let Some(stmt_kind) = ctx.docstring_stmt_kind else {
+            return false;
         };
         if kind != stmt_kind || node.named_child_count() != 1 {
             return false;
         }
-        let child = match node.named_child(0) {
-            Some(c) => c,
-            None => return false,
+        let Some(child) = node.named_child(0) else {
+            return false;
         };
         if child.kind() != "string" {
             return false;
@@ -2367,18 +2372,17 @@ pub mod ts {
     }
 
     /// Parse C or C++ source with tree-sitter-c.
+    #[must_use]
     pub fn analyze_c(text: &str) -> Option<RawFileAnalysis> {
-        analyze_lines(text, tree_sitter_c::LANGUAGE.into(), &["comment"], None)
+        let lang: tree_sitter::Language = tree_sitter_c::LANGUAGE.into();
+        analyze_lines(text, &lang, &["comment"], None)
     }
 
     /// Parse Python source with tree-sitter-python.
+    #[must_use]
     pub fn analyze_python(text: &str) -> Option<RawFileAnalysis> {
-        analyze_lines(
-            text,
-            tree_sitter_python::LANGUAGE.into(),
-            &["comment"],
-            Some("expression_statement"),
-        )
+        let lang: tree_sitter::Language = tree_sitter_python::LANGUAGE.into();
+        analyze_lines(text, &lang, &["comment"], Some("expression_statement"))
     }
 }
 

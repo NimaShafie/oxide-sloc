@@ -92,30 +92,32 @@ impl IpRateLimiter {
     }
 
     fn record_auth_failure(&self, ip: IpAddr) {
+        let now = Instant::now();
         let mut map = self
             .auth_failures
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let entry = map.entry(ip).or_insert((0, Instant::now()));
-        entry.0 += 1;
-        entry.1 = Instant::now();
+        map.entry(ip)
+            .and_modify(|e| {
+                e.0 += 1;
+                e.1 = now;
+            })
+            .or_insert_with(|| (1, now));
     }
 
     fn is_auth_locked_out(&self, ip: IpAddr) -> bool {
-        let lockout_threshold = 10u32;
-        let lockout_window = Duration::from_secs(3600);
+        const LOCKOUT_THRESHOLD: u32 = 10;
+        const LOCKOUT_WINDOW: Duration = Duration::from_hours(1);
         let mut map = self
             .auth_failures
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(entry) = map.get_mut(&ip) else {
-            return false;
-        };
-        if entry.1.elapsed() > lockout_window {
+        let expired = map.get(&ip).is_some_and(|e| e.1.elapsed() > LOCKOUT_WINDOW);
+        if expired {
             map.remove(&ip);
             return false;
         }
-        entry.0 >= lockout_threshold
+        map.get(&ip).is_some_and(|e| e.0 >= LOCKOUT_THRESHOLD)
     }
 }
 
@@ -152,6 +154,9 @@ struct RunArtifacts {
 /// # Panics
 ///
 /// Panics if the Axum router fails to build (only occurs on misconfigured routes).
+// The function coordinates TLS setup, router construction, and async listener setup in one
+// place; splitting it further would require passing many state values across function boundaries.
+#[allow(clippy::too_many_lines)]
 pub async fn serve(config: AppConfig) -> Result<()> {
     let bind_address = config.web.bind_address.clone();
     let server_mode = config.web.server_mode;
@@ -468,8 +473,7 @@ async fn require_api_key(
         let peer_ip = req
             .extensions()
             .get::<axum::extract::ConnectInfo<SocketAddr>>()
-            .map(|c| c.0.ip())
-            .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+            .map_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), |c| c.0.ip());
 
         if state.rate_limiter.is_auth_locked_out(peer_ip) {
             tracing::warn!(event = "auth_lockout", peer_addr = %peer_ip,
@@ -1318,7 +1322,7 @@ fn apply_output_dir_exclusions(
 }
 
 /// Build a `ScanSummarySnapshot` from an `AnalysisRun`'s `summary_totals`.
-fn summary_snapshot_from_run(run: &AnalysisRun) -> ScanSummarySnapshot {
+const fn summary_snapshot_from_run(run: &AnalysisRun) -> ScanSummarySnapshot {
     ScanSummarySnapshot {
         files_analyzed: run.summary_totals.files_analyzed,
         files_skipped: run.summary_totals.files_skipped,
@@ -1499,6 +1503,10 @@ fn build_submodule_row(
     }
 }
 
+// This Axum handler manages the full analysis lifecycle including config, execution, artifact
+// writing, and response rendering; splitting it would require threading many borrowed values
+// through async boundaries, complicating Send requirements.
+#[allow(clippy::too_many_lines)]
 #[allow(clippy::similar_names)]
 async fn analyze_handler(
     State(state): State<AppState>,
@@ -1865,8 +1873,8 @@ fn build_pdf_filename(report_title: &str, run_id: &str) -> String {
 }
 
 /// Serve the HTML artifact for a run — view or download.
-fn serve_html_artifact(path: PathBuf, wants_download: bool, csp_nonce: &str) -> Response {
-    match fs::read_to_string(&path) {
+fn serve_html_artifact(path: &Path, wants_download: bool, csp_nonce: &str) -> Response {
+    match fs::read_to_string(path) {
         Ok(content) => {
             if wants_download {
                 (
@@ -1910,13 +1918,13 @@ fn serve_html_artifact(path: PathBuf, wants_download: bool, csp_nonce: &str) -> 
 
 /// Serve the PDF artifact for a run — inline or download.
 fn serve_pdf_artifact(
-    path: PathBuf,
+    path: &Path,
     report_title: &str,
     run_id: &str,
     wants_download: bool,
     csp_nonce: &str,
 ) -> Response {
-    match fs::read(&path) {
+    match fs::read(path) {
         Ok(bytes) => {
             let filename = build_pdf_filename(report_title, run_id);
             let disposition = if wants_download {
@@ -1958,8 +1966,8 @@ fn serve_pdf_artifact(
 }
 
 /// Serve the JSON artifact for a run — view or download.
-fn serve_json_artifact(path: PathBuf, wants_download: bool, csp_nonce: &str) -> Response {
-    match fs::read(&path) {
+fn serve_json_artifact(path: &Path, wants_download: bool, csp_nonce: &str) -> Response {
+    match fs::read(path) {
         Ok(bytes) => {
             if wants_download {
                 (
@@ -2074,7 +2082,7 @@ async fn artifact_handler(
             let Some(path) = artifact_set.html_path else {
                 return StatusCode::NOT_FOUND.into_response();
             };
-            serve_html_artifact(path, wants_download, &csp_nonce)
+            serve_html_artifact(&path, wants_download, &csp_nonce)
         }
         "pdf" => {
             let Some(path) = artifact_set.pdf_path else {
@@ -2092,7 +2100,7 @@ async fn artifact_handler(
                 return (StatusCode::NOT_FOUND, Html(html)).into_response();
             };
             serve_pdf_artifact(
-                path,
+                &path,
                 &artifact_set.report_title,
                 &run_id,
                 wants_download,
@@ -2114,7 +2122,7 @@ async fn artifact_handler(
                 .unwrap_or_else(|_| "<pre>JSON not available.</pre>".to_string());
                 return (StatusCode::NOT_FOUND, Html(html)).into_response();
             };
-            serve_json_artifact(path, wants_download, &csp_nonce)
+            serve_json_artifact(&path, wants_download, &csp_nonce)
         }
         "scan-config" => {
             let path = artifact_set.output_dir.join("scan-config.json");

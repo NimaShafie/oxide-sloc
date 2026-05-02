@@ -187,14 +187,30 @@ docker restart <container>
 
 #### Rebuilding the agent image
 
-The agent image at `ci/jenkins/Dockerfile.agent` includes the system libraries `oxide-sloc`'s build needs (`libwayland-dev`, `libgtk-3-dev`, `libxdo-dev` for the optional `rfd` crate; `libssl-dev` for HTTP clients; `pkg-config`/`build-essential` for native build steps). When the package list changes, rebuild and redeploy:
+The Jenkins agent image at `ci/jenkins/Dockerfile.agent` includes the system libraries `oxide-sloc`'s build needs:
+
+| Package | Required by |
+|---------|-------------|
+| `libssl-dev` | TLS for Rust HTTP clients |
+| `libwayland-dev` | `rfd` crate (activated by `cargo --all-features`) |
+| `libgtk-3-dev` | `rfd` crate (activated by `cargo --all-features`) |
+| `libxdo-dev` | `rfd` crate (activated by `cargo --all-features`) |
+| `pkg-config`, `build-essential` | native build steps |
+| `python3` | the pipeline's plot-data extraction stage |
+
+Whenever the package list changes (or you bump the base image), rebuild the agent image and redeploy the running container — **merging the change alone does not update what's running:**
 
 ```bash
+# In the repo root, with the patched Dockerfile.agent on disk:
 docker build -t jenkins-oxide-sloc:latest -f ci/jenkins/Dockerfile.agent .
+
+# Then in the directory containing your Jenkins docker-compose.yml:
 docker compose down && docker compose up -d
 ```
 
-If your Jenkins is not container-managed, install the equivalent packages directly on the agent host (e.g. `apt-get install -y libwayland-dev libgtk-3-dev libxdo-dev`) and restart the agent.
+If your Jenkins is not container-managed, install the equivalent packages directly on the agent host (e.g. `apt-get install -y libwayland-dev libgtk-3-dev libxdo-dev`) and restart the agent service.
+
+`preflight.sh` probes the running agent for these libraries via the script console; a stale image will surface as a `[fail]` line on the next preflight run, not as a 20-second clippy compile error 5 minutes later.
 
 ### Basic pipeline
 

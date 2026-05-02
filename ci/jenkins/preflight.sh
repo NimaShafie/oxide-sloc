@@ -159,6 +159,40 @@ if [ -z "$CSP" ] || [ "$CSP" = "null" ]; then
     printf '[info] hudson.model.DirectoryBrowserSupport.CSP is at default — HTML reports may render unstyled. See "Setting the artifact-viewer CSP".\n'
 fi
 
+# ── Check g: agent system libraries for cargo --all-features ───────────────
+# The Jenkinsfile runs `cargo clippy --workspace --all-targets --all-features`.
+# Activating --all-features pulls in the optional `rfd` crate, which transitively
+# requires libwayland-dev, libgtk-3-dev, libxdo-dev at build time. These are
+# baked into ci/jenkins/Dockerfile.agent — but a stale running container can
+# lack them. Detect that here so the build doesn't fail 20 s into clippy with
+# a multi-screen Rust error that disguises itself as a code problem.
+#
+# Wrapped in a single pkg-config invocation so we only round-trip once.
+
+cookies=$(mktemp)
+crumb=$(curl -sS -c "$cookies" --max-time 10 \
+    -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
+    "${JENKINS_URL}/crumbIssuer/api/xml?xpath=concat(//crumbRequestField,\":\",//crumb)" 2>/dev/null) || crumb=""
+if [ -n "$crumb" ]; then
+    SYSLIB_OUT=$(curl -sS -b "$cookies" --max-time 15 \
+        -u "${JENKINS_USER}:${JENKINS_TOKEN}" -H "$crumb" \
+        --data-urlencode 'script=
+            def proc = ["sh","-c","pkg-config --exists wayland-client gtk+-3.0 && echo OK || echo MISSING:$(pkg-config --print-errors wayland-client gtk+-3.0 2>&1 | head -1)"].execute()
+            proc.waitFor()
+            print proc.in.text.trim()
+        ' \
+        "${JENKINS_URL}/scriptText" 2>/dev/null) || SYSLIB_OUT=""
+    if [ "$SYSLIB_OUT" = "OK" ]; then
+        ok "Agent has libwayland/libgtk/libxdo (cargo --all-features will compile)"
+    elif [[ "$SYSLIB_OUT" == MISSING:* ]]; then
+        fail "Agent is missing system libraries (${SYSLIB_OUT#MISSING:}). Rebuild the Jenkins agent image: see docs/ci-integrations.md \"Rebuilding the agent image\"."
+    else
+        # Script console may be locked down or unreachable. Demote to info.
+        printf '[info] Could not query agent system libraries via /scriptText. If clippy fails with "Package wayland-client was not found", rebuild the agent image.\n'
+    fi
+fi
+rm -f "$cookies"
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 
 echo ""

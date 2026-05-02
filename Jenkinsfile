@@ -201,21 +201,33 @@ pipeline {
         // Installs the Rust toolchain (cached persistently across builds) and
         // decompresses the vendor archive so all cargo commands run fully offline.
         //
-        // Toolchain resolution (stops at first match):
-        //   1. Toolchain already in RUSTUP_HOME cache  → no network needed
-        //   2. Bundled rustup-init at RUSTUP_HOME/../rustup-init  → air-gapped
-        //   3. Download from sh.rustup.rs  → requires internet
+        // Toolchain resolution order (stops at first match):
+        //   1. Toolchain already in RUSTUP_HOME persistent cache      → no network
+        //   2. rust-toolchain-bundle.tar.xz in workspace              → air-gapped
+        //      (run ci/jenkins/bundle-rust-toolchain.sh once, commit both output files)
+        //   3. /opt/rust-toolchain baked into the agent image         → air-gapped
+        //      (rebuild ci/jenkins/Dockerfile.agent; toolchain installed at build time)
+        //   4. rustup-init binary at ${RUSTUP_HOME}/../rustup-init    → semi-offline
+        //   5. curl sh.rustup.rs                                       → requires internet
         //
-        // For fully offline agents, run ci/jenkins/install-rust-cache.sh once on a
-        // networked machine, then copy the resulting archive to the agent host.
+        // Preferred air-gapped paths: #2 (bundle committed to repo) or #3 (Dockerfile).
+        // Cargo crate sources are always served from vendor.tar.xz — no crates.io needed.
         stage('Setup') {
             steps {
                 sh '''
                     TOOLCHAIN=$(grep '^channel' rust-toolchain.toml | cut -d'"' -f2)
                     if rustup toolchain list 2>/dev/null | grep -q "${TOOLCHAIN}"; then
-                        echo "Rust ${TOOLCHAIN} already in persistent cache — skipping download."
+                        echo "Rust ${TOOLCHAIN} already in persistent cache — skipping install."
+                    elif [ -f rust-toolchain-bundle.tar.xz ]; then
+                        echo "Extracting rust-toolchain-bundle.tar.xz (air-gapped workspace bundle)..."
+                        sha256sum -c rust-toolchain-bundle.tar.xz.sha256
+                        tar -xJf rust-toolchain-bundle.tar.xz -C "${CARGO_HOME}/.."
+                    elif [ -d /opt/rust-toolchain/rustup/toolchains ]; then
+                        echo "Seeding toolchain from agent image (/opt/rust-toolchain)..."
+                        cp -a /opt/rust-toolchain/cargo/. "${CARGO_HOME}/"
+                        cp -a /opt/rust-toolchain/rustup/. "${RUSTUP_HOME}/"
                     elif [ -x "${RUSTUP_HOME}/../rustup-init" ]; then
-                        echo "Using bundled rustup-init (air-gapped mode)..."
+                        echo "Using bundled rustup-init (semi-offline)..."
                         "${RUSTUP_HOME}/../rustup-init" -y \
                             --default-toolchain "${TOOLCHAIN}" \
                             --no-modify-path

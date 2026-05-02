@@ -9,7 +9,17 @@
 #   - libgtk-3-dev     Required by `rfd` crate (activated by --all-features)
 #   - libxdo-dev       Required by `rfd` crate (activated by --all-features)
 #   - xz-utils         tar -xJf decompression of vendor.tar.xz
-#   - curl             rustup installer fallback + web UI health check
+#   - curl             rustup installer (image build only) + web UI health check
+#
+# ── Fully offline pipeline runs ────────────────────────────────────────────────
+# The Rust toolchain (rustc, cargo, rustfmt, clippy) is baked into the image at
+# /opt/rust-toolchain during docker build — no internet access is needed during
+# the pipeline run itself.  On first use the Jenkinsfile Setup stage copies the
+# toolchain into the persistent /var/jenkins_home/.rust-cache volume; every
+# subsequent build uses the cache directly.
+#
+# Cargo crate dependencies are covered by vendor.tar.xz committed to git —
+# a plain `git clone` + extract is sufficient; crates.io is never contacted.
 #
 # Build and use:
 #   docker build -t jenkins-oxide-sloc:latest -f ci/jenkins/Dockerfile.agent .
@@ -22,20 +32,9 @@
 #     dockerfile: ci/jenkins/Dockerfile.agent
 #   image: jenkins-oxide-sloc:latest
 #
-# ── Air-gapped Rust toolchain ──────────────────────────────────────────────────
-# The Jenkinsfile stores the Rust toolchain in /var/jenkins_home/.rust-cache so
-# it persists across workspace wipes.  For a fully offline agent, pre-populate
-# this directory on a networked machine and carry it across:
-#
-#   # On a networked machine (run once):
-#   bash ci/jenkins/install-rust-cache.sh
-#   tar -czf rust-cache.tar.gz -C ~ .rust-cache
-#
-#   # On the air-gapped Jenkins host (before starting the container):
-#   tar -xzf rust-cache.tar.gz -C /var/lib/docker/volumes/<jenkins_home>/_data
-#
-# Once present, the "Install Rust" stage detects the cached toolchain and
-# skips all network access entirely.
+# ── Updating the toolchain version ─────────────────────────────────────────────
+# The toolchain version is read from rust-toolchain.toml at image build time.
+# After bumping the channel value, rebuild the image and redeploy the container.
 
 FROM jenkins/jenkins:lts-jdk21
 
@@ -54,12 +53,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
+# Install the pinned Rust toolchain at image build time so all pipeline runs are
+# fully offline — no sh.rustup.rs request during cargo build, fmt, or clippy.
+# The Jenkinsfile Setup stage copies cargo/ and rustup/ from /opt/rust-toolchain
+# into the persistent /var/jenkins_home/.rust-cache volume on first use; every
+# subsequent build hits the cache directly and skips this copy entirely.
+COPY rust-toolchain.toml /tmp/rust-toolchain.toml
+RUN set -eux; \
+    TOOLCHAIN=$(grep '^channel' /tmp/rust-toolchain.toml | cut -d'"' -f2); \
+    export CARGO_HOME=/opt/rust-toolchain/cargo \
+           RUSTUP_HOME=/opt/rust-toolchain/rustup; \
+    mkdir -p "$CARGO_HOME" "$RUSTUP_HOME"; \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y \
+              --default-toolchain "$TOOLCHAIN" \
+              --component rustfmt clippy \
+              --no-modify-path; \
+    rm /tmp/rust-toolchain.toml; \
+    chmod -R a+rX /opt/rust-toolchain
+
 # Pre-create the persistent Rust+vendor cache directory so the Jenkins user can
 # write to it without requiring root on first use.
-# For air-gapped operation, pre-stage vendor.tar.xz here before starting the container:
-#   bash ci/jenkins/install-vendor-cache.sh /path/to/vendor.tar.xz
-# The Jenkinsfile Setup stage reads from this location when the archive is not
-# present in the checked-out workspace.
 RUN mkdir -p /var/jenkins_home/.rust-cache && \
     chown -R jenkins:jenkins /var/jenkins_home/.rust-cache
 

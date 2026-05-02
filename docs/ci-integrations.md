@@ -43,16 +43,9 @@ Every CI integration follows the same three-step pattern:
 
 ### Vendor sources note
 
-`vendor.tar.xz` contains all Rust crate dependencies (~27 MB, xz-compressed). It is **not** committed to git — it is attached to each GitHub release as a downloadable asset alongside the binaries.
+`vendor.tar.xz` contains all Rust crate dependencies (~27 MB, xz-compressed). It is **committed to the repository** — a plain `git clone` is sufficient for a fully offline Cargo build; no separate download step is required. It is also attached to each GitHub release as a standalone asset for non-git workflows.
 
-For **internet-connected** CI runners, no vendor setup is needed — cargo downloads from crates.io automatically. For **air-gapped** runners, download `vendor.tar.xz` and `vendor.tar.xz.sha256` from the release page and place them in the workspace. The pipeline files then decompress and cache `vendor/` automatically:
-
-```bash
-sha256sum -c vendor.tar.xz.sha256   # verify integrity
-tar -xJf vendor.tar.xz              # one-time per workspace; vendor/ is then reusable
-```
-
-After extraction, create `.cargo/config.toml` to redirect cargo offline:
+The included Jenkinsfile and GitLab CI pipeline files decompress and cache `vendor/` automatically from the committed archive. The `.cargo/config.toml` is written at build time to redirect cargo to the vendored sources:
 
 ```toml
 [source.crates-io]
@@ -62,7 +55,44 @@ replace-with = "vendored-sources"
 directory = "vendor"
 ```
 
-The included GitLab CI and Jenkinsfile pipeline files already contain this logic (conditioned on `vendor.tar.xz` being present).
+To regenerate the archive after any dependency change, run `bash scripts/update-vendor.sh` and commit both output files.
+
+### Rust toolchain — offline options
+
+The Rust compiler (~400 MB) is not bundled in the git repository. Two offline paths are supported:
+
+**Path A — Rebuild `ci/jenkins/Dockerfile.agent` (recommended for Docker-based Jenkins)**
+
+The agent Dockerfile bakes the pinned toolchain from `rust-toolchain.toml` into
+`/opt/rust-toolchain` at image build time. After rebuilding:
+
+```bash
+docker build -t jenkins-oxide-sloc:latest -f ci/jenkins/Dockerfile.agent .
+docker compose down && docker compose up -d
+```
+
+the Jenkinsfile Setup stage copies the toolchain into the persistent cache volume on
+first use; all subsequent builds are fully offline with zero internet access.
+
+**Path B — Commit `rust-toolchain-bundle.tar.xz`** (for bare-metal or custom images)
+
+Run the bundling script once on any Linux machine with internet access:
+
+```bash
+bash ci/jenkins/bundle-rust-toolchain.sh
+# outputs: rust-toolchain-bundle.tar.xz + rust-toolchain-bundle.tar.xz.sha256
+```
+
+Because the bundle is typically 200–350 MB, git LFS is required:
+
+```bash
+git lfs install && git lfs track '*.tar.xz'
+git add .gitattributes rust-toolchain-bundle.tar.xz rust-toolchain-bundle.tar.xz.sha256
+git commit -m "ci: add Rust toolchain bundle for offline builds"
+```
+
+Once committed, the Jenkinsfile Setup stage extracts the bundle automatically — no
+internet access needed during the pipeline run.
 
 The JSON output (`result.json`) is machine-readable and stable across versions — use it to feed dashboards, Confluence, Slack webhooks, or custom tooling. The HTML report is a self-contained single-file document suitable for artifact storage and browser viewing.
 
@@ -187,7 +217,7 @@ docker restart <container>
 
 #### Rebuilding the agent image
 
-The Jenkins agent image at `ci/jenkins/Dockerfile.agent` includes the system libraries `oxide-sloc`'s build needs:
+The Jenkins agent image at `ci/jenkins/Dockerfile.agent` includes the system libraries `oxide-sloc`'s build needs **and** the pinned Rust toolchain baked in at `/opt/rust-toolchain`:
 
 | Package | Required by |
 |---------|-------------|
@@ -197,8 +227,9 @@ The Jenkins agent image at `ci/jenkins/Dockerfile.agent` includes the system lib
 | `libxdo-dev` | `rfd` crate (activated by `cargo --all-features`) |
 | `pkg-config`, `build-essential` | native build steps |
 | `python3` | the pipeline's plot-data extraction stage |
+| Rust toolchain (rustc, cargo, rustfmt, clippy) | baked in at `/opt/rust-toolchain`; seeded into the persistent cache on first pipeline run |
 
-Whenever the package list changes (or you bump the base image), rebuild the agent image and redeploy the running container — **merging the change alone does not update what's running:**
+Whenever the package list changes, the Rust version bumps (`rust-toolchain.toml`), or you refresh the base image, rebuild the agent image and redeploy — **merging the change alone does not update what's running:**
 
 ```bash
 # In the repo root, with the patched Dockerfile.agent on disk:

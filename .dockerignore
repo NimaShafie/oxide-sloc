@@ -9,3 +9,14 @@ tmp-sloc/
 # Uncompressed vendor tree — Docker always extracts from vendor.tar.xz instead,
 # so the directory must be excluded to prevent COPY from shadowing the archive.
 vendor/
+# Large binary artifacts not needed at image build time.
+# rust-toolchain.toml is NOT excluded — Dockerfile.agent COPYs it.
+vendor.tar.xz
+vendor.tar.xz.sha256
+rust-toolchain-bundle.tar.xz
+rust-toolchain-bundle.tar.xz.sha256
+crates/
+tests/
+docs/
+scripts/
+Cargo.lock

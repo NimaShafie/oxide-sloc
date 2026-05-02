@@ -118,12 +118,14 @@ Extract on the target machine and run `bash scripts/install.sh` in Git Bash.
 Use this when the Rust toolchain is already installed on the air-gapped machine and you
 only need to transfer the crate sources.
 
-Download `vendor.tar.xz` and `vendor.tar.xz.sha256` from the
-[GitHub releases page](https://github.com/oxide-sloc/oxide-sloc/releases),
-then bundle with the source tree:
+`vendor.tar.xz` and `vendor.tar.xz.sha256` are **committed to the repository** — they
+are present in every `git clone`. No separate download is needed. For non-git transfer,
+they are also attached to each [GitHub release](https://github.com/oxide-sloc/oxide-sloc/releases).
+
+Bundle the source tree for transfer:
 
 ```bash
-# On the networked machine (after placing vendor.tar.xz in the repo root):
+# On the networked machine (git clone includes vendor.tar.xz already):
 tar -czf oxide-sloc-bundle.tar.gz \
     --exclude=target --exclude=.git \
     vendor.tar.xz vendor.tar.xz.sha256 scripts/ Cargo.toml Cargo.lock \
@@ -164,10 +166,32 @@ bash scripts/run.sh       # launches the web UI
 
 ### Jenkins
 
-The included `Jenkinsfile` auto-installs Rust on the agent if not present. For a fully
-offline agent, use the airgap kit to install Rust and build the binary once, then copy
-the binary to the agent. Or pre-install the toolchain manually and place `vendor.tar.xz`
-in the workspace — the pipeline will extract it before building.
+`vendor.tar.xz` is committed to the repo — Cargo crate sources are fully covered after
+a `git clone` with no extra download. The Rust toolchain (compiler, cargo, rustfmt,
+clippy) is **not** in git; two air-gapped options are supported:
+
+**Option 1 — Rebuild `ci/jenkins/Dockerfile.agent` (recommended)**
+
+The Dockerfile bakes the pinned toolchain into `/opt/rust-toolchain` at image build
+time. All pipeline runs after the image rebuild are fully offline:
+
+```bash
+docker build -t jenkins-oxide-sloc:latest -f ci/jenkins/Dockerfile.agent .
+docker compose down && docker compose up -d
+```
+
+**Option 2 — Commit a toolchain bundle**
+
+Run once on a networked Linux machine, then commit the output via git LFS:
+
+```bash
+bash ci/jenkins/bundle-rust-toolchain.sh
+git lfs install && git lfs track '*.tar.xz'
+git add .gitattributes rust-toolchain-bundle.tar.xz rust-toolchain-bundle.tar.xz.sha256
+git commit -m "ci: add Rust toolchain bundle for offline builds"
+```
+
+The Jenkinsfile Setup stage detects and extracts the bundle automatically.
 
 ### GitLab CI
 

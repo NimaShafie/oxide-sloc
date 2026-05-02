@@ -236,6 +236,14 @@ pipeline {
                             --default-toolchain "${TOOLCHAIN}" \
                             --no-modify-path
                     else
+                        echo "============================================================"
+                        echo "WARNING: This build is NOT air-gapped."
+                        echo "  Neither /opt/rust-toolchain (Dockerfile.agent layout) nor"
+                        echo "  the pre-seeded rustup-init binary was found on this agent."
+                        echo "  Falling back to internet rustup. To make this air-gap-safe,"
+                        echo "  rebuild the agent image: see docs/ci-integrations.md"
+                        echo "  § Rebuilding the agent image."
+                        echo "============================================================"
                         echo "Downloading rustup installer (requires internet access)..."
                         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
                             | sh -s -- -y --default-toolchain "${TOOLCHAIN}" --no-modify-path
@@ -616,7 +624,7 @@ PYEOF"""
                     def result = readJSON file: "${outDir}/result.json"
                     def t      = result.summary_totals
                     currentBuild.description =
-                        "code=${t.code_lines}  files=${t.files_analyzed}  " +
+                        "scan=${env.SCAN_PATH}  code=${t.code_lines}  files=${t.files_analyzed}  " +
                         "comments=${t.comment_lines}  blank=${t.blank_lines}"
                     currentBuild.displayName = "#${env.BUILD_NUMBER} — ${params.SCAN_PATH}"
                 } catch (Exception ex) {

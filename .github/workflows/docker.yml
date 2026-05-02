@@ -45,6 +45,25 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
 
+      - name: Validate workspace structure
+        run: |
+          # Confirm every workspace crate directory exists and has a Cargo.toml.
+          # A missing crate here means .dockerignore or a bad merge excluded it,
+          # and the Docker build would fail with a cryptic manifest error.
+          for crate in sloc-config sloc-languages sloc-core sloc-report sloc-web sloc-cli; do
+            if [ ! -f "crates/${crate}/Cargo.toml" ]; then
+              echo "ERROR: crates/${crate}/Cargo.toml is missing — workspace is incomplete"
+              exit 1
+            fi
+          done
+          # Confirm the vendor archive and its checksum are both present.
+          if [ ! -f vendor.tar.xz ] || [ ! -f vendor.tar.xz.sha256 ]; then
+            echo "ERROR: vendor.tar.xz or vendor.tar.xz.sha256 is missing"
+            exit 1
+          fi
+          sha256sum -c vendor.tar.xz.sha256
+          echo "Workspace structure OK"
+
       - name: Build and push
         id: build-push
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0

@@ -1,22 +1,22 @@
 target/
 out/
+out.7z
 tmp-sloc/
 *.log
 *.tmp
 .git/
 .vscode/
 .idea/
-# Uncompressed vendor tree — Docker always extracts from vendor.tar.xz instead,
-# so the directory must be excluded to prevent COPY from shadowing the archive.
+# Uncompressed vendor tree — the Dockerfile verifies vendor.tar.xz with sha256sum
+# and extracts it at build time, so the pre-expanded directory is never needed.
 vendor/
-# Large binary artifacts not needed at image build time.
-# rust-toolchain.toml is NOT excluded — Dockerfile.agent COPYs it.
-vendor.tar.xz
-vendor.tar.xz.sha256
+# rust-toolchain-bundle is only used by the Jenkins offline agent image.
 rust-toolchain-bundle.tar.xz
 rust-toolchain-bundle.tar.xz.sha256
-crates/
-tests/
-docs/
-scripts/
-Cargo.lock
+# dist/ and deploy/ are runtime-deployment artifacts, not needed to compile.
+dist/
+deploy/
+# Local editor / IDE state.
+.claude/
+images/
+examples/

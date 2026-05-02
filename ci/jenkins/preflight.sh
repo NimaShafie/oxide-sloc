@@ -18,6 +18,13 @@
 
 set -euo pipefail
 
+# Allow operators to keep credentials outside the working tree (e.g. ~/.config/oxide-sloc/jenkins.env).
+# Set OXIDE_SLOC_ENV_FILE in your shell profile or invoke as:
+#     OXIDE_SLOC_ENV_FILE=~/.config/oxide-sloc/jenkins.env bash ci/jenkins/preflight.sh
+if [ -n "${OXIDE_SLOC_ENV_FILE:-}" ] && [ -f "${OXIDE_SLOC_ENV_FILE}" ]; then
+    set -a; . "${OXIDE_SLOC_ENV_FILE}"; set +a
+fi
+
 ANY_FAIL=0
 
 ok()   { printf '[ok]   %s\n' "$*"; }
@@ -156,7 +163,10 @@ fi
 CSP=$(curl -sS -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
     "${JENKINS_URL}/scriptText" --data-urlencode 'script=println(System.getProperty("hudson.model.DirectoryBrowserSupport.CSP"))' 2>/dev/null || true)
 if [ -z "$CSP" ] || [ "$CSP" = "null" ]; then
-    printf '[info] hudson.model.DirectoryBrowserSupport.CSP is at default — HTML reports may render unstyled. See "Setting the artifact-viewer CSP".\n'
+    echo "[info] hudson.model.DirectoryBrowserSupport.CSP is at default — HTML reports may render unstyled."
+    echo "       Fix (Docker): docker cp ci/jenkins/init.groovy.d/relax-csp.groovy <container>:/var/jenkins_home/init.groovy.d/relax-csp.groovy && docker restart <container>"
+    echo "       Fix (native): cp ci/jenkins/init.groovy.d/relax-csp.groovy \$JENKINS_HOME/init.groovy.d/ && systemctl restart jenkins"
+    echo "       See docs/ci-integrations.md § Setting the artifact-viewer CSP."
 fi
 
 # ── Check g: agent system libraries for cargo --all-features ───────────────

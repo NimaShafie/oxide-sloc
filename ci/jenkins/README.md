@@ -32,6 +32,14 @@ docker exec <container-name-or-id> cat /var/jenkins_home/secrets/initialAdminPas
 
 Paste this password into the Jenkins setup wizard at `http://<host>:8080/`.
 
+#### If initialAdminPassword is gone
+
+After first-run setup completes, Jenkins deletes that file. If you've also lost your token (e.g. you re-cloned and `ci/jenkins/.env` is gone), use one of:
+
+- **Browser:** sign in at `http://<host>:8080/` with your admin password → click your username (top-right) → **Configure** → scroll to **API Token** → **Add new Token**. (The direct URL `/user/<id>/configure` is gone in some recent LTS builds; use the dropdown link instead.)
+- **REST (Path B below):** the same admin password works — no `initialAdminPassword` needed.
+- **Reset admin password (last resort):** `docker exec -u root <container> bash -c 'echo "admin:NEW" | chpasswd'` does NOT work for Jenkins — the password lives in `/var/jenkins_home/users/admin_*/config.xml` as a hashed `passwordHash`. To reset it, edit that file with a known hash (or run Jenkins with `-Djenkins.install.runSetupWizard=true` and reuse `initialAdminPassword`). Avoid this unless the password is genuinely lost.
+
 ### Minting a long-lived API token
 
 After the initial setup wizard is complete:

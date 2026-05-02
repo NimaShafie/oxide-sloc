@@ -12,6 +12,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY . .
+
+# Verify the vendor archive integrity and extract it.
+# This must happen before `cargo build` because .cargo/config.toml points cargo
+# at the vendor/ directory as the sole crate source (no network access).
+RUN sha256sum -c vendor.tar.xz.sha256 \
+    && tar -xJf vendor.tar.xz \
+    && rm vendor.tar.xz
+
+# Pre-flight: confirm the workspace source tree is actually present in the build
+# context. If crates/ is accidentally re-added to .dockerignore this produces a
+# clear, actionable error instead of a cryptic Cargo manifest failure.
+RUN test -d crates/sloc-config \
+    || { echo "ERROR: crates/sloc-config is missing from the Docker build context. Check .dockerignore — crates/ must not be excluded."; exit 1; }
+
 RUN cargo build --release -p oxide-sloc
 
 # Stage 2: minimal runtime image

@@ -10,6 +10,25 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.3.7] — 2026-05-02
+
+### Changed
+
+- **CLI output helpers**: Extracted `log_written()` helper in `write_outputs()` to eliminate
+  repeated quiet-flag checks across all five artifact types (JSON, HTML, PDF, CSV, XLSX).
+- **Language analyzer refactoring**: Extracted `step_through_block_comment()`,
+  `try_open_block_comment()`, `process_physical_line()`, `track_active_docstring()`,
+  `try_record_docstring_if_context()`, `mark_unclosed_docstring_lines()`, and
+  `classify_ts_line()` from the generic and Python docstring scanners; removes the
+  remaining `#[allow(clippy::too_many_lines)]` attributes on those paths.
+- **Web handler refactoring**: Extracted `validate_locate_request()`, `locate_path_hint()`,
+  `apply_form_to_config()`, `spawn_pdf_background()`, `sum_added_code_lines()`,
+  `sum_removed_code_lines()`, and `build_submodule_row()` from `analyze_handler` and
+  `locate_report_handler`; removes the `#[allow(clippy::too_many_lines)]` attribute on
+  `analyze_handler`.
+
+---
+
 ## [1.3.6] — 2026-05-02
 
 ### Fixed

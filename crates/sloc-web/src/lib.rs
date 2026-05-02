@@ -959,43 +959,77 @@ fn registry_entry_from_run(
     }
 }
 
-async fn locate_report_handler(
-    State(state): State<AppState>,
-    axum::extract::Extension(CspNonce(csp_nonce)): axum::extract::Extension<CspNonce>,
-    Form(form): Form<LocateReportForm>,
-) -> impl IntoResponse {
-    let file_ext = Path::new(&form.file_path)
+/// Validate the locate-report form: check extension, resolve the canonical path, enforce
+/// server-mode root restriction, and extract the parent directory.
+///
+/// Returns `Ok((html_path, parent))` or an error `Response` ready to return to the client.
+#[allow(clippy::result_large_err)]
+fn validate_locate_request(
+    state: &AppState,
+    file_path: &str,
+    csp_nonce: &str,
+) -> Result<(PathBuf, PathBuf), Response> {
+    let file_ext = Path::new(file_path)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
     if file_ext != "html" {
-        return locate_report_error(
+        return Err(locate_report_error(
             "Only .html report files can be located via this form.",
-            &csp_nonce,
-        );
+            csp_nonce,
+        ));
     }
-    let html_path = match fs::canonicalize(PathBuf::from(&form.file_path)) {
+    let html_path = match fs::canonicalize(PathBuf::from(file_path)) {
         Ok(p) => strip_unc_prefix(p),
         Err(_) => {
-            return locate_report_error("Report file not found or path is invalid.", &csp_nonce);
+            return Err(locate_report_error(
+                "Report file not found or path is invalid.",
+                csp_nonce,
+            ));
         }
     };
-    // In server mode, only accept reports within the configured output directory.
     if state.server_mode {
         let output_root = resolve_output_root(None);
         let canonical_root = fs::canonicalize(&output_root).unwrap_or(output_root);
         if !html_path.starts_with(&canonical_root) {
-            return locate_report_error(
+            return Err(locate_report_error(
                 "Report file must be within the configured output directory.",
-                &csp_nonce,
-            );
+                csp_nonce,
+            ));
         }
     }
     let parent = match html_path.parent() {
         Some(p) => p.to_path_buf(),
-        None => return locate_report_error("Report file has no parent directory.", &csp_nonce),
+        None => {
+            return Err(locate_report_error(
+                "Report file has no parent directory.",
+                csp_nonce,
+            ));
+        }
     };
+    Ok((html_path, parent))
+}
+
+/// Return a non-sensitive path hint for error messages (empty in server mode).
+fn locate_path_hint(server_mode: bool, path: &Path) -> String {
+    if server_mode {
+        String::new()
+    } else {
+        format!("\n\nFile: {}", path.display())
+    }
+}
+
+async fn locate_report_handler(
+    State(state): State<AppState>,
+    axum::extract::Extension(CspNonce(csp_nonce)): axum::extract::Extension<CspNonce>,
+    Form(form): Form<LocateReportForm>,
+) -> impl IntoResponse {
+    let (html_path, parent) = match validate_locate_request(&state, &form.file_path, &csp_nonce) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+
     let json_candidate = parent.join("result.json");
     let mut reg = state.registry.lock().await;
     // Find an existing entry whose output directory matches the selected file's parent.
@@ -1027,16 +1061,18 @@ async fn locate_report_handler(
                 return axum::response::Redirect::to("/view-reports?linked=1").into_response();
             }
             Err(e) => {
-                let file_hint = if state.server_mode {
+                let file_hint = locate_path_hint(state.server_mode, &json_candidate);
+                let err_detail = if state.server_mode {
                     String::new()
                 } else {
-                    format!("\n\nFile: {}\n\nError: {e}", json_candidate.display())
+                    format!("\n\nError: {e}")
                 };
                 return locate_report_error(
                     format!(
                         "Could not link this report.\n\nA 'result.json' was found but could not \
                          be parsed — it may have been saved by an older version of OxideSLOC. \
-                         Re-running the analysis will create a fresh, compatible record.{file_hint}"
+                         Re-running the analysis will create a fresh, compatible \
+                         record.{file_hint}{err_detail}"
                     ),
                     &csp_nonce,
                 );
@@ -1044,11 +1080,7 @@ async fn locate_report_handler(
         }
     }
     drop(reg);
-    let file_hint = if state.server_mode {
-        String::new()
-    } else {
-        format!("\n\nFile: {}", html_path.display())
-    };
+    let file_hint = locate_path_hint(state.server_mode, &html_path);
     locate_report_error(
         format!(
             "Could not link this report.\n\nNo matching scan record was found, and no \
@@ -1356,8 +1388,118 @@ fn build_scan_config_from_form(form: &AnalyzeForm, run: &AnalysisRun) -> ScanCon
     }
 }
 
+/// Map `AnalyzeForm` fields onto `config`, covering all options visible in the web form.
+fn apply_form_to_config(config: &mut sloc_config::AppConfig, form: &AnalyzeForm) {
+    if let Some(policy) = form.mixed_line_policy {
+        config.analysis.mixed_line_policy = policy;
+    }
+    config.analysis.python_docstrings_as_comments = form.python_docstrings_as_comments.is_some();
+    config.analysis.generated_file_detection =
+        form.generated_file_detection.as_deref() != Some("disabled");
+    config.analysis.minified_file_detection =
+        form.minified_file_detection.as_deref() != Some("disabled");
+    config.analysis.vendor_directory_detection =
+        form.vendor_directory_detection.as_deref() != Some("disabled");
+    config.analysis.include_lockfiles = form.include_lockfiles.as_deref() == Some("enabled");
+    if let Some(binary_behavior) = form.binary_file_behavior {
+        config.analysis.binary_file_behavior = binary_behavior;
+    }
+    if let Some(report_title) = form.report_title.as_deref() {
+        let trimmed = report_title.trim();
+        if !trimmed.is_empty() {
+            config.reporting.report_title = trimmed.to_string();
+        }
+    }
+    config.discovery.include_globs = split_patterns(form.include_globs.as_deref());
+    config.discovery.exclude_globs = split_patterns(form.exclude_globs.as_deref());
+    config.discovery.submodule_breakdown = form.submodule_breakdown.as_deref() == Some("enabled");
+}
+
+/// Fire-and-forget: generate the PDF in a background task if one is pending.
+fn spawn_pdf_background(pending_pdf: PendingPdf) {
+    if let Some((pdf_src, pdf_dst, cleanup_src)) = pending_pdf {
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                let r = write_pdf_from_html(&pdf_src, &pdf_dst);
+                if cleanup_src {
+                    let _ = fs::remove_file(&pdf_src);
+                }
+                r
+            })
+            .await;
+            match result {
+                Ok(Err(err)) => eprintln!("[oxide-sloc][pdf] background PDF failed: {err}"),
+                Err(err) => eprintln!("[oxide-sloc][pdf] background PDF task panicked: {err}"),
+                Ok(Ok(())) => {}
+            }
+        });
+    }
+}
+
+/// Sum the code lines added in this comparison (new + grown files).
+fn sum_added_code_lines(cmp: &sloc_core::ScanComparison) -> i64 {
+    cmp.file_deltas
+        .iter()
+        .map(|f| match f.status {
+            FileChangeStatus::Added => f.current_code,
+            FileChangeStatus::Modified => f.code_delta.max(0),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// Sum the code lines removed in this comparison (deleted + shrunk files).
+fn sum_removed_code_lines(cmp: &sloc_core::ScanComparison) -> i64 {
+    cmp.file_deltas
+        .iter()
+        .map(|f| match f.status {
+            FileChangeStatus::Removed => f.baseline_code,
+            FileChangeStatus::Modified => (-f.code_delta).max(0),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// Build one `SubmoduleRow`, optionally generating and persisting a sub-report HTML file.
+fn build_submodule_row(
+    s: &sloc_core::SubmoduleSummary,
+    run: &AnalysisRun,
+    run_id: &str,
+    run_dir: &Path,
+    generate_html: bool,
+) -> SubmoduleRow {
+    let safe = sanitize_project_label(&s.name);
+    let artifact_key = format!("sub_{safe}");
+    let html_url = if run.effective_configuration.discovery.submodule_breakdown && generate_html {
+        let parent_path = run
+            .input_roots
+            .first()
+            .map_or("", std::string::String::as_str);
+        let sub_run = build_sub_run(run, s, parent_path);
+        render_sub_report_html(&sub_run).ok().and_then(|sub_html| {
+            let path = run_dir.join(format!("{artifact_key}.html"));
+            if fs::write(&path, sub_html.as_bytes()).is_ok() {
+                Some(format!("/runs/{run_id}/{artifact_key}"))
+            } else {
+                None
+            }
+        })
+    } else {
+        None
+    };
+    SubmoduleRow {
+        name: s.name.clone(),
+        relative_path: s.relative_path.clone(),
+        files_analyzed: s.files_analyzed,
+        code_lines: s.code_lines,
+        comment_lines: s.comment_lines,
+        blank_lines: s.blank_lines,
+        total_physical_lines: s.total_physical_lines,
+        html_url,
+    }
+}
+
 #[allow(clippy::similar_names)]
-#[allow(clippy::too_many_lines)]
 async fn analyze_handler(
     State(state): State<AppState>,
     axum::extract::Extension(CspNonce(csp_nonce)): axum::extract::Extension<CspNonce>,
@@ -1392,34 +1534,7 @@ async fn analyze_handler(
     }
     config.discovery.root_paths = vec![resolved_path];
 
-    if let Some(policy) = form.mixed_line_policy {
-        config.analysis.mixed_line_policy = policy;
-    }
-
-    config.analysis.python_docstrings_as_comments = form.python_docstrings_as_comments.is_some();
-    config.analysis.generated_file_detection =
-        form.generated_file_detection.as_deref() != Some("disabled");
-    config.analysis.minified_file_detection =
-        form.minified_file_detection.as_deref() != Some("disabled");
-    config.analysis.vendor_directory_detection =
-        form.vendor_directory_detection.as_deref() != Some("disabled");
-    config.analysis.include_lockfiles = form.include_lockfiles.as_deref() == Some("enabled");
-
-    if let Some(binary_behavior) = form.binary_file_behavior {
-        config.analysis.binary_file_behavior = binary_behavior;
-    }
-
-    if let Some(report_title) = form.report_title.as_deref() {
-        let trimmed = report_title.trim();
-        if !trimmed.is_empty() {
-            config.reporting.report_title = trimmed.to_string();
-        }
-    }
-
-    config.discovery.include_globs = split_patterns(form.include_globs.as_deref());
-    config.discovery.exclude_globs = split_patterns(form.exclude_globs.as_deref());
-    config.discovery.submodule_breakdown = form.submodule_breakdown.as_deref() == Some("enabled");
-
+    apply_form_to_config(&mut config, &form);
     // Auto-exclude the output directory so scan artifacts never appear in counts.
     apply_output_dir_exclusions(
         &mut config,
@@ -1545,23 +1660,7 @@ async fn analyze_handler(
         }
     }
 
-    if let Some((pdf_src, pdf_dst, cleanup_src)) = pending_pdf {
-        tokio::spawn(async move {
-            let result = tokio::task::spawn_blocking(move || {
-                let r = write_pdf_from_html(&pdf_src, &pdf_dst);
-                if cleanup_src {
-                    let _ = fs::remove_file(&pdf_src);
-                }
-                r
-            })
-            .await;
-            match result {
-                Ok(Err(err)) => eprintln!("[oxide-sloc][pdf] background PDF failed: {err}"),
-                Err(err) => eprintln!("[oxide-sloc][pdf] background PDF task panicked: {err}"),
-                Ok(Ok(())) => {}
-            }
-        });
-    }
+    spawn_pdf_background(pending_pdf);
 
     let language_rows = run
         .totals_by_language
@@ -1622,26 +1721,8 @@ async fn analyze_handler(
     let delta_bl_class = delta_bl_class.to_string();
 
     // Pre-compute line-level deltas for the line change summary.
-    let delta_lines_added: Option<i64> = scan_delta.as_ref().map(|d| {
-        d.file_deltas
-            .iter()
-            .map(|f| match f.status {
-                sloc_core::FileChangeStatus::Added => f.current_code,
-                sloc_core::FileChangeStatus::Modified => f.code_delta.max(0),
-                _ => 0,
-            })
-            .sum()
-    });
-    let delta_lines_removed: Option<i64> = scan_delta.as_ref().map(|d| {
-        d.file_deltas
-            .iter()
-            .map(|f| match f.status {
-                sloc_core::FileChangeStatus::Removed => f.baseline_code,
-                sloc_core::FileChangeStatus::Modified => (-f.code_delta).max(0),
-                _ => 0,
-            })
-            .sum()
-    });
+    let delta_lines_added: Option<i64> = scan_delta.as_ref().map(sum_added_code_lines);
+    let delta_lines_removed: Option<i64> = scan_delta.as_ref().map(sum_removed_code_lines);
     let (delta_lines_net_str, delta_lines_net_class) =
         match (delta_lines_added, delta_lines_removed) {
             (Some(a), Some(r)) => {
@@ -1744,39 +1825,7 @@ async fn analyze_handler(
         submodule_rows: run
             .submodule_summaries
             .iter()
-            .map(|s| {
-                let safe = sanitize_project_label(&s.name);
-                let artifact_key = format!("sub_{safe}");
-                let html_url = if run.effective_configuration.discovery.submodule_breakdown
-                    && form.generate_html.is_some()
-                {
-                    let parent_path = run
-                        .input_roots
-                        .first()
-                        .map_or("", std::string::String::as_str);
-                    let sub_run = build_sub_run(&run, s, parent_path);
-                    render_sub_report_html(&sub_run).ok().and_then(|sub_html| {
-                        let path = run_dir.join(format!("{artifact_key}.html"));
-                        if fs::write(&path, sub_html.as_bytes()).is_ok() {
-                            Some(format!("/runs/{run_id}/{artifact_key}"))
-                        } else {
-                            None
-                        }
-                    })
-                } else {
-                    None
-                };
-                SubmoduleRow {
-                    name: s.name.clone(),
-                    relative_path: s.relative_path.clone(),
-                    files_analyzed: s.files_analyzed,
-                    code_lines: s.code_lines,
-                    comment_lines: s.comment_lines,
-                    blank_lines: s.blank_lines,
-                    total_physical_lines: s.total_physical_lines,
-                    html_url,
-                }
-            })
+            .map(|s| build_submodule_row(s, &run, &run_id, &run_dir, form.generate_html.is_some()))
             .collect(),
         scan_config_url: format!("/runs/{run_id}/scan-config"),
         csp_nonce,

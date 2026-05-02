@@ -1162,7 +1162,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "oxide-sloc"
-version = "1.3.5"
+version = "1.3.7"
 dependencies = [
  "anyhow",
  "clap",
@@ -1725,7 +1725,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "sloc-config"
-version = "1.3.5"
+version = "1.3.7"
 dependencies = [
  "anyhow",
  "clap",
@@ -1735,7 +1735,7 @@ dependencies = [
 
 [[package]]
 name = "sloc-core"
-version = "1.3.5"
+version = "1.3.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1751,7 +1751,7 @@ dependencies = [
 
 [[package]]
 name = "sloc-languages"
-version = "1.3.5"
+version = "1.3.7"
 dependencies = [
  "serde",
  "tree-sitter",
@@ -1761,7 +1761,7 @@ dependencies = [
 
 [[package]]
 name = "sloc-report"
-version = "1.3.5"
+version = "1.3.7"
 dependencies = [
  "anyhow",
  "askama",
@@ -1773,7 +1773,7 @@ dependencies = [
 
 [[package]]
 name = "sloc-web"
-version = "1.3.5"
+version = "1.3.7"
 dependencies = [
  "anyhow",
  "askama",

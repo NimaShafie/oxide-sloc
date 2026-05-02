@@ -341,20 +341,22 @@ async fn main() -> Result<()> {
 
 // ── analyze handler ───────────────────────────────────────────────────────────
 
+fn log_written(path: &Path, quiet: bool) {
+    if !quiet {
+        eprintln!("wrote {}", path.display());
+    }
+}
+
 /// Write all requested output artifacts and print paths when not quiet.
 fn write_outputs(run: &AnalysisRun, args: &AnalyzeArgs, quiet: bool) -> Result<()> {
     if let Some(path) = &args.json_out {
         write_json(run, path)?;
-        if !quiet {
-            eprintln!("wrote {}", path.display());
-        }
+        log_written(path, quiet);
     }
 
     if let Some(path) = &args.html_out {
         write_html(run, path)?;
-        if !quiet {
-            eprintln!("wrote {}", path.display());
-        }
+        log_written(path, quiet);
         if args.open {
             open_path(path);
         }
@@ -363,23 +365,17 @@ fn write_outputs(run: &AnalysisRun, args: &AnalyzeArgs, quiet: bool) -> Result<(
     if let Some(path) = &args.pdf_out {
         let html_for_pdf = ensure_html_for_pdf(run, args.html_out.as_deref(), path)?;
         write_pdf_from_html(&html_for_pdf, path)?;
-        if !quiet {
-            eprintln!("wrote {}", path.display());
-        }
+        log_written(path, quiet);
     }
 
     if let Some(path) = &args.csv_out {
         write_csv(run, path)?;
-        if !quiet {
-            eprintln!("wrote {}", path.display());
-        }
+        log_written(path, quiet);
     }
 
     if let Some(path) = &args.xlsx_out {
         write_xlsx(run, path)?;
-        if !quiet {
-            eprintln!("wrote {}", path.display());
-        }
+        log_written(path, quiet);
     }
 
     Ok(())

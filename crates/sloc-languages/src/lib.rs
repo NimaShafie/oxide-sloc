@@ -1651,6 +1651,36 @@ fn try_open_string(chars: &[char], i: usize, config: &ScanConfig) -> Option<(Str
     None
 }
 
+/// Advance past one character position while inside a block comment.
+///
+/// Updates `in_block_comment` if the closing delimiter is found and returns the
+/// number of characters consumed. Returns 0 when no block-comment config is set
+/// (preserving the caller's `continue`-without-advance behaviour for that impossible state).
+fn step_through_block_comment(
+    chars: &[char],
+    i: usize,
+    block_comment: Option<(&'static str, &'static str)>,
+    in_block_comment: &mut bool,
+) -> usize {
+    if let Some((_, close)) = block_comment {
+        let (still_in, advance) = process_block_comment_char(chars, i, close);
+        *in_block_comment = still_in;
+        return advance;
+    }
+    0
+}
+
+/// If the character at `i` starts a block comment, return the length of the opening
+/// delimiter so the caller can advance past it. Returns `None` if no match.
+fn try_open_block_comment(
+    chars: &[char],
+    i: usize,
+    block_comment: Option<(&'static str, &'static str)>,
+) -> Option<usize> {
+    let (open, _) = block_comment?;
+    starts_with(chars, i, open).then_some(open.len())
+}
+
 /// Scan a single physical line and update `facts`, `in_block_comment`, and `string_state`.
 ///
 /// Returns `true` when the caller should break out of the per-line loop early (line comment hit).
@@ -1675,11 +1705,7 @@ fn scan_line(
         // Inside a block comment — advance until the closing delimiter.
         if *in_block_comment {
             facts.has_multi_comment = true;
-            if let Some((_, close)) = config.block_comment {
-                let (still_in, advance) = process_block_comment_char(chars, i, close);
-                *in_block_comment = still_in;
-                i += advance;
-            }
+            i += step_through_block_comment(chars, i, config.block_comment, in_block_comment);
             continue;
         }
 
@@ -1698,13 +1724,11 @@ fn scan_line(
         }
 
         // Attempt to open a block comment.
-        if let Some((open, _)) = config.block_comment {
-            if starts_with(chars, i, open) {
-                facts.has_multi_comment = true;
-                *in_block_comment = true;
-                i += open.len();
-                continue;
-            }
+        if let Some(advance) = try_open_block_comment(chars, i, config.block_comment) {
+            facts.has_multi_comment = true;
+            *in_block_comment = true;
+            i += advance;
+            continue;
         }
 
         // Line comment — rest of the line is a comment; stop scanning.
@@ -1778,21 +1802,69 @@ fn finalize_line_facts(
     Some(emit)
 }
 
+/// Scan and classify one physical line, updating all running state in place.
+///
+/// Pre-classified lines (present in `config.skip_lines`) are counted as docstring-comment
+/// lines and returned early without further analysis.
 #[allow(clippy::needless_pass_by_value)]
-#[allow(clippy::too_many_lines)]
-fn analyze_generic(text: &str, config: ScanConfig, ieee: IeeeFlags) -> RawFileAnalysis {
-    // NOSONAR
-    let normalized = if text.is_empty() {
-        String::new()
-    } else {
-        text.replace("\r\n", "\n").replace('\r', "\n")
+#[allow(clippy::too_many_arguments)]
+fn process_physical_line(
+    line: &str,
+    line_idx: usize,
+    config: &ScanConfig,
+    raw: &mut RawLineCounts,
+    in_block_comment: &mut bool,
+    string_state: &mut Option<StringState>,
+    pending_continuation: &mut Option<LineFacts>,
+    ieee: IeeeFlags,
+) {
+    raw.total_physical_lines += 1;
+
+    if config.skip_lines.contains(&line_idx) {
+        raw.docstring_comment_lines += 1;
+        return;
+    }
+
+    let trimmed = line.trim();
+    let mut facts = LineFacts::default();
+
+    // IEEE 1045-1992: blank lines inside block comments are comment lines by default.
+    // When blank_in_block_comment_as_comment is false, blank lines keep their blank
+    // classification even while inside a block comment.
+    if *in_block_comment && (ieee.blank_in_block_comment_as_comment || !trimmed.is_empty()) {
+        facts.has_multi_comment = true;
+    }
+
+    let chars: Vec<char> = line.chars().collect();
+    scan_line(&chars, config, &mut facts, in_block_comment, string_state);
+
+    let Some(emit) = finalize_line_facts(
+        facts,
+        trimmed,
+        raw,
+        ieee,
+        *in_block_comment,
+        *string_state,
+        pending_continuation,
+    ) else {
+        return;
     };
 
-    let lines: Vec<&str> = if normalized.is_empty() {
-        Vec::new()
-    } else {
-        normalized.split_terminator('\n').collect()
-    };
+    classify_line(raw, &emit, trimmed);
+
+    if emit.has_code {
+        let (f, c, v, i) = count_symbols(&config.symbol_patterns, trimmed);
+        raw.functions += f;
+        raw.classes += c;
+        raw.variables += v;
+        raw.imports += i;
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn analyze_generic(text: &str, config: ScanConfig, ieee: IeeeFlags) -> RawFileAnalysis {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<&str> = normalized.split_terminator('\n').collect();
 
     let mut raw = RawLineCounts::default();
     let mut warnings = Vec::new();
@@ -1803,56 +1875,16 @@ fn analyze_generic(text: &str, config: ScanConfig, ieee: IeeeFlags) -> RawFileAn
     let mut pending_continuation: Option<LineFacts> = None;
 
     for (line_idx, line) in lines.iter().enumerate() {
-        raw.total_physical_lines += 1;
-
-        if config.skip_lines.contains(&line_idx) {
-            raw.docstring_comment_lines += 1;
-            continue;
-        }
-
-        let mut facts = LineFacts::default();
-        let trimmed = line.trim();
-
-        // IEEE 1045-1992: blank lines inside block comments are comment lines by default.
-        // When blank_in_block_comment_as_comment is false, blank lines keep their blank
-        // classification even while inside a block comment.
-        if in_block_comment && (ieee.blank_in_block_comment_as_comment || !trimmed.is_empty()) {
-            facts.has_multi_comment = true;
-        }
-
-        // Skip this line if it was pre-classified (e.g. Python docstring skip_lines guard).
-        if !config.skip_lines.contains(&line_idx) {
-            let chars: Vec<char> = line.chars().collect();
-            scan_line(
-                &chars,
-                &config,
-                &mut facts,
-                &mut in_block_comment,
-                &mut string_state,
-            );
-        }
-
-        let Some(emit) = finalize_line_facts(
-            facts,
-            trimmed,
+        process_physical_line(
+            line,
+            line_idx,
+            &config,
             &mut raw,
-            ieee,
-            in_block_comment,
-            string_state,
+            &mut in_block_comment,
+            &mut string_state,
             &mut pending_continuation,
-        ) else {
-            continue;
-        };
-
-        classify_line(&mut raw, &emit, trimmed);
-
-        if emit.has_code {
-            let (f, c, v, i) = count_symbols(&config.symbol_patterns, trimmed);
-            raw.functions += f;
-            raw.classes += c;
-            raw.variables += v;
-            raw.imports += i;
-        }
+            ieee,
+        );
     }
 
     // Flush any pending continuation that reaches end-of-file without a closing line.
@@ -1981,19 +2013,56 @@ fn py_try_record_docstring(
     false
 }
 
-#[allow(clippy::too_many_lines)]
-fn detect_python_docstring_lines(text: &str) -> HashSet<usize> {
-    let normalized = if text.is_empty() {
-        String::new()
-    } else {
-        text.replace("\r\n", "\n").replace('\r', "\n")
+/// Advance through an active multi-line docstring: marks the current line and clears
+/// `active_docstring` when the closing delimiter is found. Returns `true` when the caller
+/// should `continue` to the next line (i.e. we were inside a docstring).
+fn track_active_docstring(
+    active_docstring: &mut Option<(&'static str, usize)>,
+    docstring_lines: &mut HashSet<usize>,
+    idx: usize,
+    trimmed: &str,
+) -> bool {
+    let Some((delim, start_line)) = *active_docstring else {
+        return false;
     };
+    docstring_lines.insert(idx);
+    if closes_triple_docstring(trimmed, delim, idx == start_line) {
+        *active_docstring = None;
+    }
+    true
+}
 
-    let lines: Vec<&str> = if normalized.is_empty() {
-        Vec::new()
-    } else {
-        normalized.split_terminator('\n').collect()
+/// Attempt to record a docstring opener using the top of the context stack.
+/// Returns `true` when the caller should `continue` to the next line.
+fn try_record_docstring_if_context(
+    contexts: &mut [PyContext],
+    trimmed: &str,
+    idx: usize,
+    docstring_lines: &mut HashSet<usize>,
+    active_docstring: &mut Option<(&'static str, usize)>,
+) -> bool {
+    let Some(ctx) = contexts.last_mut() else {
+        return false;
     };
+    py_try_record_docstring(ctx, trimmed, idx, docstring_lines, active_docstring)
+}
+
+/// If an unclosed docstring is still active at end-of-file, mark all remaining lines.
+fn mark_unclosed_docstring_lines(
+    active_docstring: &Option<(&'static str, usize)>,
+    docstring_lines: &mut HashSet<usize>,
+    num_lines: usize,
+) {
+    if let Some((_, start_line)) = *active_docstring {
+        for idx in start_line..num_lines {
+            docstring_lines.insert(idx);
+        }
+    }
+}
+
+fn detect_python_docstring_lines(text: &str) -> HashSet<usize> {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<&str> = normalized.split_terminator('\n').collect();
 
     let mut docstring_lines = HashSet::new();
     let mut contexts = vec![PyContext {
@@ -2007,12 +2076,7 @@ fn detect_python_docstring_lines(text: &str) -> HashSet<usize> {
         let trimmed = line.trim();
         let indent = leading_indent(line);
 
-        // Inside a multi-line docstring: mark this line and check for close.
-        if let Some((delim, start_line)) = active_docstring {
-            docstring_lines.insert(idx);
-            if closes_triple_docstring(trimmed, delim, idx == start_line) {
-                active_docstring = None;
-            }
+        if track_active_docstring(&mut active_docstring, &mut docstring_lines, idx, trimmed) {
             continue;
         }
 
@@ -2024,17 +2088,14 @@ fn detect_python_docstring_lines(text: &str) -> HashSet<usize> {
         py_pop_outdented_contexts(&mut contexts, indent);
         py_handle_pending_indent(&mut pending_block_indent, &mut contexts, indent, trimmed);
 
-        // Try to record this line as a docstring opener.
-        if let Some(ctx) = contexts.last_mut() {
-            if py_try_record_docstring(
-                ctx,
-                trimmed,
-                idx,
-                &mut docstring_lines,
-                &mut active_docstring,
-            ) {
-                continue;
-            }
+        if try_record_docstring_if_context(
+            &mut contexts,
+            trimmed,
+            idx,
+            &mut docstring_lines,
+            &mut active_docstring,
+        ) {
+            continue;
         }
 
         if is_python_block_header(trimmed) {
@@ -2042,12 +2103,7 @@ fn detect_python_docstring_lines(text: &str) -> HashSet<usize> {
         }
     }
 
-    // If a docstring was opened but never closed, mark all remaining lines.
-    if let Some((_, start_line)) = active_docstring {
-        for idx in start_line..lines.len() {
-            docstring_lines.insert(idx);
-        }
-    }
+    mark_unclosed_docstring_lines(&active_docstring, &mut docstring_lines, lines.len());
 
     docstring_lines
 }
@@ -2160,6 +2216,37 @@ pub mod ts {
         })
     }
 
+    /// Classify a single tree-sitter-annotated line and accumulate into `raw`.
+    fn classify_ts_line(
+        trimmed: &str,
+        has_code: bool,
+        has_comment: bool,
+        comment_is_block: bool,
+        has_docstring: bool,
+        raw: &mut RawLineCounts,
+    ) {
+        if trimmed.is_empty() {
+            raw.blank_only_lines += 1;
+        } else if has_docstring && !has_code {
+            raw.docstring_comment_lines += 1;
+        } else if has_code && has_comment {
+            // Classify the mixed line as single or multi based on what kind of comment is on it.
+            if comment_is_block {
+                raw.mixed_code_multi_comment_lines += 1;
+            } else {
+                raw.mixed_code_single_comment_lines += 1;
+            }
+        } else if has_comment {
+            if comment_is_block {
+                raw.multi_comment_only_lines += 1;
+            } else {
+                raw.single_comment_only_lines += 1;
+            }
+        } else {
+            raw.code_only_lines += 1;
+        }
+    }
+
     /// Classify each tree-sitter-annotated line and accumulate counts into `raw`.
     fn classify_ts_lines(
         lines: &[&str],
@@ -2171,27 +2258,14 @@ pub mod ts {
     ) {
         for i in 0..lines.len() {
             raw.total_physical_lines += 1;
-            let trimmed = lines[i].trim();
-            if trimmed.is_empty() {
-                raw.blank_only_lines += 1;
-            } else if has_docstring[i] && !has_code[i] {
-                raw.docstring_comment_lines += 1;
-            } else if has_code[i] && has_comment[i] {
-                // Classify the mixed line as single or multi based on what kind of comment is on it.
-                if comment_is_block[i] {
-                    raw.mixed_code_multi_comment_lines += 1;
-                } else {
-                    raw.mixed_code_single_comment_lines += 1;
-                }
-            } else if has_comment[i] {
-                if comment_is_block[i] {
-                    raw.multi_comment_only_lines += 1;
-                } else {
-                    raw.single_comment_only_lines += 1;
-                }
-            } else {
-                raw.code_only_lines += 1;
-            }
+            classify_ts_line(
+                lines[i].trim(),
+                has_code[i],
+                has_comment[i],
+                comment_is_block[i],
+                has_docstring[i],
+                raw,
+            );
         }
     }
 

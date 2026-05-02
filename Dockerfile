@@ -1,7 +1,7 @@
 # Stage 1: build the release binary
 # Pin builder to digest so the toolchain cannot change silently under CI.
 # To refresh: docker pull rust:slim && docker inspect --format '{{index .RepoDigests 0}}' rust:slim
-FROM rust:slim@sha256:715efd1ccdc4a63bd6a6e2f54387fff73f904b70e610d41b4d9d74ff38e13ad3 AS builder
+FROM rust@sha256:715efd1ccdc4a63bd6a6e2f54387fff73f904b70e610d41b4d9d74ff38e13ad3 AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
@@ -25,14 +25,18 @@ RUN sha256sum -c vendor.tar.xz.sha256 \
 # context. If crates/ is accidentally re-added to .dockerignore this produces a
 # clear, actionable error instead of a cryptic Cargo manifest failure.
 RUN test -d crates/sloc-config \
-    || { echo "ERROR: crates/sloc-config is missing from the Docker build context. Check .dockerignore — crates/ must not be excluded."; exit 1; }
+    || { \
+         echo "ERROR: crates/sloc-config is missing from the Docker build context." >&2; \
+         echo "Check .dockerignore — crates/ must not be excluded." >&2; \
+         exit 1; \
+       }
 
 RUN cargo build --release -p oxide-sloc
 
 # Stage 2: minimal runtime image
 # Pin to a specific digest to prevent silent base-image substitution (FIND-006).
 # To update: docker pull debian:bookworm-slim && docker inspect --format '{{index .RepoDigests 0}}' debian:bookworm-slim
-FROM debian:bookworm-slim@sha256:f9c6a2fd2ddbc23e336b6257a5245e31f996953ef06cd13a59fa0a1df2d5c252
+FROM debian@sha256:f9c6a2fd2ddbc23e336b6257a5245e31f996953ef06cd13a59fa0a1df2d5c252
 
 # Install Chromium for PDF export (headless).
 # For a fully air-gapped Docker host, build this layer from a pre-populated

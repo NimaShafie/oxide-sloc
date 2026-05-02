@@ -3,8 +3,11 @@
 # Extends jenkins/jenkins:lts with everything the Jenkinsfile needs:
 #   - python3          Extract plot data stage (summary.csv / per_language.csv)
 #   - build-essential  Native libs required by some Rust crates
-#   - pkg-config       Required by openssl-sys and similar crates
+#   - pkg-config       Required by openssl-sys, wayland-sys, gtk-sys, etc.
 #   - libssl-dev       TLS support for Rust HTTP clients
+#   - libwayland-dev   Required by `rfd` crate (activated by --all-features)
+#   - libgtk-3-dev     Required by `rfd` crate (activated by --all-features)
+#   - libxdo-dev       Required by `rfd` crate (activated by --all-features)
 #   - xz-utils         tar -xJf decompression of vendor.tar.xz
 #   - curl             rustup installer fallback + web UI health check
 #
@@ -44,12 +47,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     pkg-config \
     libssl-dev \
+    libwayland-dev \
+    libgtk-3-dev \
+    libxdo-dev \
     curl \
     xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Pre-create the persistent Rust cache directory so the Jenkins user can write
-# to it without requiring root on first use.
+# Pre-create the persistent Rust+vendor cache directory so the Jenkins user can
+# write to it without requiring root on first use.
+# For air-gapped operation, pre-stage vendor.tar.xz here before starting the container:
+#   bash ci/jenkins/install-vendor-cache.sh /path/to/vendor.tar.xz
+# The Jenkinsfile Setup stage reads from this location when the archive is not
+# present in the checked-out workspace.
 RUN mkdir -p /var/jenkins_home/.rust-cache && \
     chown -R jenkins:jenkins /var/jenkins_home/.rust-cache
 

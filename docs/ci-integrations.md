@@ -185,6 +185,17 @@ docker exec -u root <container> chown jenkins:jenkins /var/jenkins_home/init.gro
 docker restart <container>
 ```
 
+#### Rebuilding the agent image
+
+The agent image at `ci/jenkins/Dockerfile.agent` includes the system libraries `oxide-sloc`'s build needs (`libwayland-dev`, `libgtk-3-dev`, `libxdo-dev` for the optional `rfd` crate; `libssl-dev` for HTTP clients; `pkg-config`/`build-essential` for native build steps). When the package list changes, rebuild and redeploy:
+
+```bash
+docker build -t jenkins-oxide-sloc:latest -f ci/jenkins/Dockerfile.agent .
+docker compose down && docker compose up -d
+```
+
+If your Jenkins is not container-managed, install the equivalent packages directly on the agent host (e.g. `apt-get install -y libwayland-dev libgtk-3-dev libxdo-dev`) and restart the agent.
+
 ### Basic pipeline
 
 The `Jenkinsfile` shipped at the repo root is a ready-to-use, fully-parameterized pipeline covering setup, quality gates, analysis, web UI health check, optional delivery (webhook/email), and artifact publishing with build-over-build trend charts.

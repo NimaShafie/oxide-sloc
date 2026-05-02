@@ -1,10 +1,14 @@
 name: Update dist bundles
 
 # Run manually from the Actions tab, or automatically after every release tag.
-# Builds fresh platform binaries, packages them as zip / tar.gz, and commits
-# them to dist/ so the repo is always ready for air-gapped / offline deployment.
+# Builds fresh platform binaries, packages them as zip / tar.gz, and uploads
+# them as assets on the corresponding GitHub release.
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to upload assets to (e.g. v1.3.1)'
+        required: true
   push:
     tags:
       - 'v*'
@@ -48,27 +52,18 @@ jobs:
         with:
           key: dist-${{ matrix.target }}
 
-      - name: Install musl tools (Linux only)
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: sudo apt-get install -y musl-tools
+      - name: Install musl tools and rfd system deps (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            musl-tools \
+            libwayland-dev \
+            libgtk-3-dev \
+            libxdo-dev
 
       - name: Add cross-compilation target
         run: rustup target add ${{ matrix.target }}
-
-      - name: Extract vendor archive (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sha256sum -c vendor.tar.xz.sha256
-          tar -xJf vendor.tar.xz
-
-      - name: Extract vendor archive (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $expected = (Get-Content vendor.tar.xz.sha256 -Raw).Trim().Split()[0]
-          $actual   = (Get-FileHash vendor.tar.xz -Algorithm SHA256).Hash.ToLower()
-          if ($actual -ne $expected) { Write-Error "SHA-256 mismatch: expected $expected got $actual"; exit 1 }
-          tar -xJf vendor.tar.xz
 
       - name: Build
         run: cargo build --release -p oxide-sloc --target ${{ matrix.target }}
@@ -92,16 +87,12 @@ jobs:
           name: ${{ matrix.bundle }}
           path: ${{ matrix.bundle }}
 
-  # ── Commit both bundles into dist/ ────────────────────────────────────────
-  commit-dist:
-    name: Commit dist bundles
+  # ── Attach both bundles to the GitHub release ─────────────────────────────
+  upload-release-assets:
+    name: Upload release assets
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          ref: main
-
       - name: Download Linux bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
@@ -114,11 +105,13 @@ jobs:
           name: oxide-sloc-windows-x64.zip
           path: dist/
 
-      - name: Commit and push
+      - name: Upload to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add dist/oxide-sloc-linux-x86_64.tar.gz dist/oxide-sloc-windows-x64.zip
-          git diff --cached --quiet && echo "dist already up to date" && exit 0
-          git commit -m "chore: refresh dist bundles [skip ci]"
-          git push origin HEAD:main
+          TAG=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+          gh release upload "$TAG" \
+            dist/oxide-sloc-linux-x86_64.tar.gz \
+            dist/oxide-sloc-windows-x64.zip \
+            --clobber \
+            --repo ${{ github.repository }}

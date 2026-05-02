@@ -123,3 +123,33 @@ jobs:
           name: ci-reports-${{ github.run_number }}
           path: ci-out/
           if-no-files-found: ignore
+
+  vendor-sync:
+    name: Verify vendor archive is current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
+        with:
+          toolchain: stable
+
+      - name: Verify committed archive checksum
+        run: sha256sum -c vendor.tar.xz.sha256
+
+      - name: Extract committed vendor archive
+        run: tar -xJf vendor.tar.xz
+
+      - name: Re-vendor from current Cargo.lock
+        run: cargo vendor vendor-expected/
+
+      - name: Compare vendor directories
+        run: |
+          if ! diff -rq vendor/ vendor-expected/ > /dev/null 2>&1; then
+            echo "vendor.tar.xz is out of sync with Cargo.lock." >&2
+            echo "Run 'bash scripts/update-vendor.sh' and commit both updated files." >&2
+            diff -rq vendor/ vendor-expected/ >&2 || true
+            exit 1
+          fi
+          echo "vendor.tar.xz matches Cargo.lock — OK"

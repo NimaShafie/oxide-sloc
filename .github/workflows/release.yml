@@ -277,7 +277,16 @@ jobs:
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
         run: |
-          echo "$GPG_PRIVATE_KEY" | base64 --decode | gpg --batch --import
+          # Write the raw armored key to a temp file and import from there.
+          # This avoids all echo/printf newline edge cases and is tolerant of
+          # CRLF line endings (GPG's armored-format parser accepts both LF and CRLF).
+          # The secret must be the raw armored output of:
+          #   gpg --export-secret-key --armor <key-id>
+          # It must NOT be base64-encoded — store the armor text directly.
+          GPG_KEY_FILE="$(mktemp)"
+          printf '%s' "$GPG_PRIVATE_KEY" > "$GPG_KEY_FILE"
+          gpg --batch --import "$GPG_KEY_FILE"
+          rm -f "$GPG_KEY_FILE"
 
       - name: GPG sign binaries
         if: steps.gpg_check.outputs.available == 'true'

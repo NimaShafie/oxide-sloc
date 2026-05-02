@@ -693,23 +693,30 @@ struct PreviewQuery {
     exclude_globs: Option<String>,
 }
 
+#[cfg(feature = "native-dialog")]
 #[derive(Debug, Deserialize)]
 struct PickDirectoryQuery {
     kind: Option<String>,
     current: Option<String>,
 }
 
+#[cfg(not(feature = "native-dialog"))]
+#[derive(Debug, Deserialize)]
+struct PickDirectoryQuery {}
+
 #[derive(Debug, Deserialize, Default)]
 struct ArtifactQuery {
     download: Option<String>,
 }
 
+#[cfg(feature = "native-dialog")]
 #[derive(Debug, Serialize)]
 struct PickDirectoryResponse {
     selected_path: Option<String>,
     cancelled: bool,
 }
 
+#[cfg(feature = "native-dialog")]
 async fn pick_directory_handler(
     State(state): State<AppState>,
     Query(query): Query<PickDirectoryQuery>,
@@ -745,6 +752,15 @@ async fn pick_directory_handler(
     .into_response()
 }
 
+#[cfg(not(feature = "native-dialog"))]
+async fn pick_directory_handler(
+    State(_state): State<AppState>,
+    Query(_query): Query<PickDirectoryQuery>,
+) -> Response {
+    StatusCode::NOT_FOUND.into_response()
+}
+
+#[cfg(feature = "native-dialog")]
 async fn pick_file_handler(State(state): State<AppState>) -> Response {
     if state.server_mode {
         return StatusCode::NOT_FOUND.into_response();
@@ -758,6 +774,11 @@ async fn pick_file_handler(State(state): State<AppState>) -> Response {
         cancelled: picked.is_none(),
     })
     .into_response()
+}
+
+#[cfg(not(feature = "native-dialog"))]
+async fn pick_file_handler(State(_state): State<AppState>) -> Response {
+    StatusCode::NOT_FOUND.into_response()
 }
 
 #[derive(Deserialize)]

@@ -5,9 +5,17 @@ set -euo pipefail
 
 TARGET="${1:-}"
 
+# Cross-compiled Linux targets (musl, aarch64) have no sysroot for wayland-client
+# or GTK, and they run as headless servers, so disable the native file-dialog feature.
+EXTRA_FLAGS=""
+if [[ "$TARGET" == *"-unknown-linux-musl"* || "$TARGET" == "aarch64-unknown-linux-gnu" ]]; then
+    EXTRA_FLAGS="--no-default-features"
+fi
+
 if [ -n "$TARGET" ]; then
     echo "==> Release build (target: $TARGET)"
-    cargo build --release --target "$TARGET" -p oxide-sloc
+    # shellcheck disable=SC2086
+    cargo build --release --target "$TARGET" -p oxide-sloc $EXTRA_FLAGS
 else
     echo "==> Release build (host target)"
     cargo build --release -p oxide-sloc

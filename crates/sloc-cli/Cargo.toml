@@ -17,6 +17,10 @@ categories.workspace = true
 name = "oxide-sloc"
 path = "src/main.rs"
 
+[features]
+default = ["native-dialog"]
+native-dialog = ["sloc-web/native-dialog"]
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true

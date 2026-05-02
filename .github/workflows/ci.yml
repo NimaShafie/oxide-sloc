@@ -29,6 +29,14 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
 
+      - name: Install system dependencies (rfd / native file dialog)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libwayland-dev \
+            libgtk-3-dev \
+            libxdo-dev
+
       - name: Lint
         run: bash ci/lint.sh
 
@@ -54,6 +62,14 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
           prefix-key: "v1-smoke"
+
+      - name: Install system dependencies (rfd / native file dialog)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libwayland-dev \
+            libgtk-3-dev \
+            libxdo-dev
 
       - name: Build release binary
         run: bash ci/release.sh

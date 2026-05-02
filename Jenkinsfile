@@ -156,6 +156,12 @@ pipeline {
                           'Use on agents without loopback access or where port 4317 is unavailable.'
         )
 
+        booleanParam(
+            name:         'SKIP_SONAR',
+            defaultValue: false,
+            description:  'Skip the SonarQube scan stage. Use on agents without Docker access or when the SonarQube server is unavailable.'
+        )
+
         // ── Delivery / notifications ───────────────────────────────────────────
         string(
             name:         'WEBHOOK_URL',
@@ -316,7 +322,15 @@ CARGOEOF
                             steps { sh 'cargo fmt --all -- --check' }
                         }
                         stage('Lint') {
-                            steps { sh 'cargo clippy --workspace --all-targets --all-features -- -D warnings' }
+                            steps {
+                                sh '''
+                                    cargo clippy --workspace --all-targets --all-features \
+                                        -- -D warnings \
+                                           -W clippy::pedantic \
+                                           -W clippy::nursery \
+                                           -A clippy::multiple_crate_versions
+                                '''
+                            }
                         }
                     }
                 }
@@ -469,7 +483,40 @@ CARGOEOF
             }
         }
 
-        // ── 5. Web UI health check ─────────────────────────────────────────────
+        // ── 5. SonarQube scan ──────────────────────────────────────────────────
+        // Runs cargo clippy in JSON mode, converts to SonarQube generic-issue
+        // format via scripts/clippy_to_sonar.py, then launches the scanner
+        // container. Results appear in the SonarQube dashboard at http://10.0.0.8:9000
+        //
+        // Prerequisite: add a Jenkins credential named 'sonarqube-oxide-sloc-token'
+        // (Kind: Secret text) containing the SonarQube analysis token.
+        stage('SonarQube scan') {
+            when { expression { !params.SKIP_SONAR } }
+            environment {
+                SONAR_TOKEN = credentials('sonarqube-oxide-sloc-token')
+            }
+            steps {
+                sh '''
+                    # Produce clippy JSON for SonarQube external-issue import.
+                    cargo clippy --workspace --all-targets --all-features \
+                        --message-format=json --offline \
+                        -- -W clippy::pedantic -W clippy::nursery \
+                           -A clippy::multiple_crate_versions \
+                        > clippy.json 2> clippy.stderr || true
+
+                    python3 scripts/clippy_to_sonar.py \
+                        clippy.json clippy-sonar.json "$WORKSPACE"
+
+                    docker run --rm --network host \
+                        -e SONAR_TOKEN \
+                        -v "$WORKSPACE":/usr/src -w /usr/src \
+                        sonarsource/sonar-scanner-cli:latest \
+                        sonar-scanner -Dsonar.host.url=http://10.0.0.8:9000
+                '''
+            }
+        }
+
+        // ── 6. Web UI health check ─────────────────────────────────────────────
         stage('Web UI health check') {
             when { expression { !params.SKIP_WEB_CHECK } }
             steps {

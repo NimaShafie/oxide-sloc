@@ -46,8 +46,10 @@ JENKINS_URL="${JENKINS_URL%/}"
 # A 200 or 403 means Jenkins is up. Connection refused / DNS failure is fatal.
 
 HTTP_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "${JENKINS_URL}/" 2>&1) || true
-if [[ "$HTTP_STATUS" == "200" || "$HTTP_STATUS" == "403" ]]; then
-    ok "Jenkins is reachable at ${JENKINS_URL}/ (HTTP ${HTTP_STATUS})"
+if [[ "$HTTP_STATUS" == "200" ]]; then
+    ok "Jenkins is reachable at ${JENKINS_URL}/ (HTTP 200)"
+elif [[ "$HTTP_STATUS" == "403" ]]; then
+    ok "Jenkins is reachable at ${JENKINS_URL}/ (HTTP 403 — anonymous access denied, expected)"
 else
     fail "Jenkins not reachable at ${JENKINS_URL}/ — got HTTP ${HTTP_STATUS} (expected 200 or 403). Check JENKINS_URL and that Jenkins is running."
 fi

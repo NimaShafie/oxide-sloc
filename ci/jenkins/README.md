@@ -4,7 +4,7 @@
 
 1. `cp ci/jenkins/.env.example ci/jenkins/.env` — fill in `JENKINS_TOKEN`
 2. _(Recommended)_ Pre-populate the agent rust-cache: run `bash ci/jenkins/install-rust-cache.sh` or build the Docker agent image from `ci/jenkins/Dockerfile.agent`. On air-gapped agents this step is required; on network-connected agents Rust downloads at runtime.
-3. `source ci/jenkins/.env && bash ci/jenkins/preflight.sh` — all checks must pass
+3. `set -a; source ci/jenkins/.env; set +a && bash ci/jenkins/preflight.sh` — all checks must pass
 4. Run the `createItem` curl (Step 1 below)
 5. Run the seed-build curl (Step 2 below)
 
@@ -49,7 +49,9 @@ If you prefer not to use the GUI, you can mint the token via the Jenkins REST AP
 # Pre-req: the admin password (initialAdminPassword or the configured one).
 JENKINS_URL=http://10.0.0.8:8080
 JENKINS_USER=admin
-JENKINS_PASS=...   # the admin password, NOT a token
+read -rsp "Jenkins admin password: " JENKINS_PASS
+echo
+# Read at the prompt — keeps the password out of shell history.
 
 cookies=$(mktemp)
 crumb=$(curl -sS -c "$cookies" -u "$JENKINS_USER:$JENKINS_PASS" \
@@ -82,7 +84,7 @@ cp ci/jenkins/.env.example ci/jenkins/.env
 Run this before the `createItem` call. It verifies reachability, authentication, plugin presence, and that no conflicting job exists:
 
 ```bash
-source ci/jenkins/.env && bash ci/jenkins/preflight.sh
+set -a; source ci/jenkins/.env; set +a && bash ci/jenkins/preflight.sh
 ```
 
 All lines must print `[ok]`. Fix any `[fail]` before continuing.
@@ -91,7 +93,23 @@ All lines must print `[ok]`. Fix any `[fail]` before continuing.
 
 ## Installing plugins
 
-All 7 required plugins are listed in `ci/jenkins/plugins.txt`.
+Required plugins are listed in `ci/jenkins/plugins.txt`. The full set includes:
+
+| Plugin | Purpose |
+|--------|---------|
+| `workflow-aggregator` | Declarative Pipeline syntax |
+| `pipeline-utility-steps` | `readJSON` in `post { success }` |
+| `git` | SCM checkout |
+| `ws-cleanup` | `cleanWs()` in `post { cleanup }` |
+| `credentials-binding` | SMTP / webhook credential bindings |
+| `htmlpublisher` | "SLOC Report" sidebar link |
+| `plot` | Build-over-build trend charts |
+| `pipeline-stage-view` | Stage view in the job UI |
+| `timestamper` | Timestamps on console output |
+| `copyartifact` | Copy artifacts to/from downstream jobs |
+| `bitbucket` | Bitbucket Branch Source (optional) |
+| `bitbucket-build-status-notifier` | Bitbucket build status (optional) |
+| `ansicolor` | ANSI color in Rust compiler output |
 
 ### Path 1 — Docker (online)
 
@@ -123,7 +141,7 @@ Alternatively: **Manage Jenkins → Plugins → Advanced → Deploy Plugin → U
 Use this when Jenkins runs directly on the host (not in Docker):
 
 ```bash
-source ci/jenkins/.env
+set -a; source ci/jenkins/.env; set +a
 curl -sS -o jenkins-cli.jar "${JENKINS_URL}/jnlpJars/jenkins-cli.jar"
 java -jar jenkins-cli.jar -s "${JENKINS_URL}" -auth "${JENKINS_USER}:${JENKINS_TOKEN}" \
     install-plugin $(grep -Ev '^#|^$' ci/jenkins/plugins.txt | awk '{print $1}')
@@ -137,7 +155,7 @@ Wait ~30 seconds for Jenkins to come back up, then re-run `preflight.sh` (check 
 `ci/jenkins/preflight.sh` check (c) queries the plugin manager and prints `[ok]` / `[fail]` per plugin. Run it after any plugin install before proceeding. You can also verify manually:
 
 ```bash
-source ci/jenkins/.env
+set -a; source ci/jenkins/.env; set +a
 curl -su "${JENKINS_USER}:${JENKINS_TOKEN}" \
     "${JENKINS_URL}/pluginManager/api/json?depth=1" \
   | python3 -c "
@@ -168,14 +186,17 @@ See `ci/jenkins/seed-job.groovy`.
 ### Step 1 — Create the job
 
 ```bash
-source ci/jenkins/.env
+set -a; source ci/jenkins/.env; set +a
+
+# Render the job XML with your REPO_URL substituted
+bash ci/jenkins/render-job-config.sh   # writes /tmp/job-config.xml
 
 CRUMB=$(curl -sS -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
     "${JENKINS_URL}/crumbIssuer/api/xml?xpath=concat(//crumbRequestField,\":\",//crumb)")
 
 curl -sS -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
     -H "${CRUMB}" -H "Content-Type: application/xml" \
-    --data-binary @ci/jenkins/job-config.xml \
+    --data-binary @/tmp/job-config.xml \
     "${JENKINS_URL}/createItem?name=${JOB_NAME}"
 ```
 
@@ -192,12 +213,56 @@ The first build runs with no parameters — Jenkins uses it to discover the `par
 
 ---
 
-## One-time admin script approval
+## Setting the artifact-viewer CSP
 
-The pipeline relaxes the artifact-viewer CSP via `System.setProperty(...)` so the HTML report renders with inline styles. The first build logs `WARNING: CSP relaxation skipped` until the signature is approved. To grant approval:
+The HTML report requires the Jenkins artifact viewer to allow inline styles. The recommended approach is to drop `ci/jenkins/init.groovy.d/relax-csp.groovy` into `$JENKINS_HOME/init.groovy.d/` before starting Jenkins:
 
-1. Go to **Manage Jenkins → In-process Script Approval**.
-2. Approve the pending `staticMethod java.lang.System setProperty java.lang.String java.lang.String` signature.
-3. Re-run the build.
+```bash
+cp ci/jenkins/init.groovy.d/relax-csp.groovy $JENKINS_HOME/init.groovy.d/
+# Then restart Jenkins.
+```
 
-If you cannot grant approval (locked-down instance), serve the HTML from an external origin (GitHub Pages, S3) where you control CSP headers directly.
+This sets the CSP property at startup without requiring in-process script approval. For external origins (GitHub Pages, S3), control the `Content-Security-Policy` response header directly on that service instead.
+
+---
+
+## Bitbucket integration
+
+### Required plugins
+
+- **Bitbucket Branch Source** (`bitbucket`) — enables Bitbucket multibranch projects
+- **Bitbucket Build Status Notifier** (`bitbucket-build-status-notifier`) — posts commit statuses to Bitbucket
+
+### Webhook URL
+
+Configure a webhook in Bitbucket pointing to:
+```
+<JENKINS_URL>/bitbucket-hook/
+```
+
+For Bitbucket Server (Data Center), navigate to **Repository Settings → Webhooks → Add webhook** and set the URL above. For Bitbucket Cloud, use **Repository Settings → Webhooks**.
+
+### Environment variables
+
+Set these in `ci/jenkins/.env` (see `.env.example`):
+
+```bash
+export BITBUCKET_URL=https://bitbucket.example.com   # Server/Data Center URL
+export BITBUCKET_PROJECT=OXIDE                        # Project key
+export BITBUCKET_REPO=oxide-sloc                      # Repository slug
+```
+
+### Using Bitbucket as the SCM source
+
+In `ci/jenkins/seed-job.groovy`, uncomment and fill in the `bitbucketServer { }` block:
+
+```groovy
+bitbucketServer {
+    serverUrl(System.getenv('BITBUCKET_URL') ?: 'https://bitbucket.example.com')
+    credentialsId('bitbucket-credentials')
+    projectKey(System.getenv('BITBUCKET_PROJECT') ?: 'OXIDE')
+    repositoryName(System.getenv('BITBUCKET_REPO') ?: 'oxide-sloc')
+}
+```
+
+Add a credential with ID `bitbucket-credentials` (username + password or SSH key) via **Manage Jenkins → Credentials**.

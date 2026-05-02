@@ -17,8 +17,11 @@ This document covers how to wire oxide-sloc into your CI/CD pipelines and how to
      - [CLI bootstrap](#option-b----cli-bootstrap-one-command)
      - [First-build trigger](#first-build-trigger)
      - [Build parameters](#build-parameters)
+     - [Path B — mint via REST](#path-b--mint-via-rest)
+     - [Optional — registering Secret Text credentials](#optional--registering-secret-text-credentials)
      - [Required plugins](#required-plugins)
      - [Trend charts](#trend-charts-plot-plugin)
+     - [Setting the artifact-viewer CSP](#setting-the-artifact-viewer-csp)
 3. [GitHub Actions](#github-actions)
 4. [GitLab CI](#gitlab-ci)
 5. [Environment variables reference](#environment-variables-reference)
@@ -98,7 +101,9 @@ If you prefer not to use the GUI, the token can be minted via the Jenkins REST A
 # Pre-req: the admin password (initialAdminPassword or the configured one).
 JENKINS_URL=http://10.0.0.8:8080
 JENKINS_USER=admin
-JENKINS_PASS=...   # the admin password, NOT a token
+read -rsp "Jenkins admin password: " JENKINS_PASS
+echo
+# Read at the prompt — keeps the password out of shell history.
 
 cookies=$(mktemp)
 crumb=$(curl -sS -c "$cookies" -u "$JENKINS_USER:$JENKINS_PASS" \
@@ -129,7 +134,7 @@ cp ci/jenkins/.env.example ci/jenkins/.env
 Run this before `createItem`. It verifies reachability, authentication, plugin presence, and that no conflicting job exists:
 
 ```bash
-source ci/jenkins/.env && bash ci/jenkins/preflight.sh
+set -a; source ci/jenkins/.env; set +a && bash ci/jenkins/preflight.sh
 ```
 
 All lines must print `[ok]`. Fix any `[fail]` before continuing.
@@ -148,7 +153,7 @@ docker exec -u root <container> jenkins-plugin-cli \
 
 **Path 3 — Native / systemd install (Jenkins CLI jar):**
 ```bash
-source ci/jenkins/.env
+set -a; source ci/jenkins/.env; set +a
 curl -sS -o jenkins-cli.jar "${JENKINS_URL}/jnlpJars/jenkins-cli.jar"
 java -jar jenkins-cli.jar -s "${JENKINS_URL}" -auth "${JENKINS_USER}:${JENKINS_TOKEN}" \
     install-plugin $(grep -Ev '^#|^$' ci/jenkins/plugins.txt | awk '{print $1}')
@@ -172,7 +177,10 @@ The `Jenkinsfile` shipped at the repo root is a ready-to-use, fully-parameterize
 Use the importable job definition at `ci/jenkins/job-config.xml`. Source your credentials file first (see [Local credential storage](#local-credential-storage)):
 
 ```bash
-source ci/jenkins/.env
+set -a; source ci/jenkins/.env; set +a
+
+# 0. Render the job XML with your REPO_URL substituted
+bash ci/jenkins/render-job-config.sh   # writes /tmp/job-config.xml
 
 # 1. Obtain a CSRF crumb
 CRUMB=$(curl -sS -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
@@ -181,7 +189,7 @@ CRUMB=$(curl -sS -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
 # 2. Create the job
 curl -sS -u "${JENKINS_USER}:${JENKINS_TOKEN}" \
     -H "${CRUMB}" -H "Content-Type: application/xml" \
-    --data-binary @ci/jenkins/job-config.xml \
+    --data-binary @/tmp/job-config.xml \
     "${JENKINS_URL}/createItem?name=${JOB_NAME}"
 ```
 
@@ -240,7 +248,7 @@ The pipeline's webhook and email delivery features read credentials from the Jen
 To create a credential via the REST API (repeat for each ID, substituting the correct `id` and `secret`):
 
 ```bash
-source ci/jenkins/.env
+set -a; source ci/jenkins/.env; set +a
 crumb=$(curl -sS -u "$JENKINS_USER:$JENKINS_TOKEN" \
   "$JENKINS_URL/crumbIssuer/api/xml?xpath=concat(//crumbRequestField,\":\",//crumb)")
 
@@ -283,15 +291,16 @@ After at least two successful builds, the job page shows two charts under **SLOC
 
 The build description on each run is also set automatically, e.g.: `code=4821  files=38  comments=312  blank=890`
 
-#### One-time admin script approval
+#### Setting the artifact-viewer CSP
 
-The pipeline relaxes the artifact-viewer CSP via `System.setProperty(...)` so the HTML report renders with inline styles. The first build logs `WARNING: CSP relaxation skipped` until the signature is approved. To grant approval:
+The HTML report requires the Jenkins artifact viewer to allow inline styles. The recommended approach is to drop `ci/jenkins/init.groovy.d/relax-csp.groovy` into `$JENKINS_HOME/init.groovy.d/` before starting Jenkins:
 
-1. Go to **Manage Jenkins → In-process Script Approval**.
-2. Approve the pending `staticMethod java.lang.System setProperty java.lang.String java.lang.String` signature.
-3. Re-run the build.
+```bash
+cp ci/jenkins/init.groovy.d/relax-csp.groovy $JENKINS_HOME/init.groovy.d/
+# Then restart Jenkins.
+```
 
-If you cannot grant approval (locked-down instance), serve the HTML from an external origin (GitHub Pages, S3) where you control CSP headers directly.
+This sets the CSP property at startup without requiring in-process script approval. For external origins (GitHub Pages, S3), control the `Content-Security-Policy` response header directly on that service instead.
 
 #### Adapting to your own project
 

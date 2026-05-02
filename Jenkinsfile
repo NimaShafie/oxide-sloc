@@ -1,10 +1,23 @@
+/*
+ * Pipeline-of-Pipelines usage:
+ *   From an orchestrator pipeline, trigger this job with:
+ *     build job: 'oxide-sloc', parameters: [
+ *       string(name: 'REPO_URL',        value: 'https://...'),
+ *       string(name: 'DOWNSTREAM_JOB',  value: 'next-pipeline'),
+ *       string(name: 'ARTIFACT_PATH',   value: '')
+ *     ], wait: true
+ *   This pipeline will trigger DOWNSTREAM_JOB on success, passing back
+ *   UPSTREAM_JOB, UPSTREAM_BUILD, and ARTIFACT_PATH.
+ */
 pipeline {
     agent any
 
     options {
         skipDefaultCheckout(true)
-        buildDiscarder(logRotator(numToKeepStr: '25', artifactNumToKeepStr: '10'))
+        buildDiscarder(logRotator(numToKeepStr: '20', artifactNumToKeepStr: '5'))
         timestamps()
+        timeout(time: 60, unit: 'MINUTES')
+        ansiColor('xterm')
     }
 
     // ── Build parameters ──────────────────────────────────────────────────────
@@ -14,6 +27,11 @@ pipeline {
     // Run the first build with no arguments to seed the form; from build #2
     // onward, "Build with Parameters" in the sidebar shows the full form.
     parameters {
+
+        // ── Pipeline-of-Pipelines chaining ─────────────────────────────────────
+        string(name: 'UPSTREAM_JOB',   defaultValue: '', description: 'Name of the upstream pipeline that triggered this build (for chaining)')
+        string(name: 'UPSTREAM_BUILD', defaultValue: '', description: 'Build number of the upstream job')
+        string(name: 'DOWNSTREAM_JOB', defaultValue: '', description: 'Pipeline job to trigger on success (leave empty to disable)')
 
         // ── Source repository ──────────────────────────────────────────────────
         string(
@@ -161,8 +179,17 @@ pipeline {
         CARGO_HOME  = '/var/jenkins_home/.rust-cache/cargo'
         RUSTUP_HOME = '/var/jenkins_home/.rust-cache/rustup'
         PATH        = '/var/jenkins_home/.rust-cache/cargo/bin:/usr/local/bin:/usr/bin:/bin'
-        BINARY      = "${WORKSPACE}/target/release/oxide-sloc"
-        RUST_LOG    = 'warn'
+        // WORKSPACE is set when the agent is acquired, before any stage runs — safe to reference here.
+        BINARY        = "${WORKSPACE}/target/release/oxide-sloc"
+        // ARTIFACT_PATH exposes the binary location to downstream chained jobs.
+        ARTIFACT_PATH = "${WORKSPACE}/target/release/oxide-sloc"
+        RUST_LOG      = 'warn'
+    }
+
+    triggers {
+        // Bitbucket Cloud/Server webhook — requires Bitbucket Branch Source plugin.
+        // Configure webhook in Bitbucket to POST to <JENKINS_URL>/bitbucket-hook/
+        // For pull requests: install the "Bitbucket Pull Request Builder" plugin.
     }
 
     stages {
@@ -220,16 +247,20 @@ pipeline {
         }
 
         // ── 2. Quality Gates ───────────────────────────────────────────────────
-        // Three child stages run sequentially; all skipped when SKIP_QUALITY_GATES
-        // is checked for faster scan-only runs.
+        // Format and Lint run in parallel; Unit tests follow.
+        // All skipped when SKIP_QUALITY_GATES is checked for faster scan-only runs.
         stage('Quality Gates') {
             when { expression { !params.SKIP_QUALITY_GATES } }
             stages {
-                stage('Format') {
-                    steps { sh 'cargo fmt --all -- --check' }
-                }
-                stage('Lint') {
-                    steps { sh 'cargo clippy --workspace --all-targets --all-features -- -D warnings' }
+                stage('fmt + clippy (parallel)') {
+                    parallel {
+                        stage('Format') {
+                            steps { sh 'cargo fmt --all -- --check' }
+                        }
+                        stage('Lint') {
+                            steps { sh 'cargo clippy --workspace --all-targets --all-features -- -D warnings' }
+                        }
+                    }
                 }
                 stage('Unit tests') {
                     steps { sh 'cargo test --workspace' }
@@ -239,7 +270,10 @@ pipeline {
 
         // ── 3. Build ───────────────────────────────────────────────────────────
         stage('Build') {
-            steps { sh 'cargo build --release -p oxide-sloc' }
+            steps {
+                // retry once on transient network or registry errors
+                retry(2) { sh 'cargo build --release -p oxide-sloc' }
+            }
         }
 
         // ── 4. Analyze ─────────────────────────────────────────────────────────
@@ -252,25 +286,7 @@ pipeline {
         stage('Analyze') {
             steps {
                 script {
-                    // Relax the Jenkins artifact viewer CSP so the oxide-sloc HTML report
-                    // renders with inline styles.  Requires one-time admin script approval:
-                    //   Manage Jenkins → In-process Script Approval → approve setProperty.
-                    // Without approval this silently no-ops and the report still loads
-                    // but inline styles are stripped by the browser.
-                    //
-                    // For high-assurance environments, serve the HTML from a separate origin
-                    // (e.g. GitHub Pages, S3) where you control the CSP response header
-                    // without touching Jenkins' global policy.
-                    try {
-                        System.setProperty(
-                            'hudson.model.DirectoryBrowserSupport.CSP',
-                            "default-src 'self'; style-src 'self' 'unsafe-inline'; " +
-                            "img-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; font-src 'self' data:;"
-                        )
-                        echo 'CSP relaxed — HTML artifacts will render with full styling.'
-                    } catch (Exception ex) {
-                        echo "WARNING: CSP relaxation skipped (needs admin script approval): ${ex.message}"
-                    }
+                    // CSP is set via ci/jenkins/init.groovy.d/relax-csp.groovy (drop into $JENKINS_HOME/init.groovy.d/)
 
                     // Input validation — allowlist-check choice and free-text parameters.
                     // Free-text values are always passed to the shell via withEnv (environment
@@ -402,10 +418,17 @@ pipeline {
                 sh '''
                     "${BINARY}" serve &
                     SERVER_PID=$!
-                    sleep 4
-                    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:4317/ || echo "000")
+
+                    HTTP_CODE="000"
+                    for _ in $(seq 1 30); do
+                        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:4317/ 2>/dev/null || echo "000")
+                        [ "${HTTP_CODE}" = "200" ] && break
+                        sleep 1
+                    done
+
                     kill "${SERVER_PID}" 2>/dev/null || true
                     wait "${SERVER_PID}" 2>/dev/null || true
+
                     if [ "${HTTP_CODE}" != "200" ]; then
                         echo "Web UI returned HTTP ${HTTP_CODE} — expected 200"
                         exit 1
@@ -550,12 +573,44 @@ PYEOF"""
                     echo "Could not set build metadata: ${ex.message}"
                 }
                 echo 'All stages passed. Artifacts and reports archived.'
+
+                // Pipeline-of-Pipelines: trigger downstream job if configured.
+                script {
+                    if (params.DOWNSTREAM_JOB?.trim()) {
+                        build job: params.DOWNSTREAM_JOB,
+                              parameters: [
+                                  string(name: 'UPSTREAM_JOB',   value: env.JOB_NAME),
+                                  string(name: 'UPSTREAM_BUILD',  value: env.BUILD_NUMBER),
+                                  string(name: 'ARTIFACT_PATH',   value: env.ARTIFACT_PATH ?: '')
+                              ],
+                              wait: false,
+                              propagate: false
+                    }
+                }
             }
         }
         failure {
             echo 'Build failed — review the stage output above for details.'
         }
         always {
+            // Bitbucket build status notification (no-op when plugin is absent).
+            script {
+                if (env.BITBUCKET_SOURCE_BRANCH || env.GIT_COMMIT) {
+                    def state = currentBuild.result == 'SUCCESS' ? 'SUCCESSFUL' :
+                                currentBuild.result == 'FAILURE'  ? 'FAILED' : 'STOPPED'
+                    // Requires Bitbucket Build Status Notifier plugin
+                    try {
+                        bitbucketStatusNotify(
+                            buildState: state,
+                            buildKey:   env.JOB_NAME,
+                            buildName:  "oxide-sloc CI #${env.BUILD_NUMBER}",
+                            buildUrl:   env.BUILD_URL
+                        )
+                    } catch (e) {
+                        echo "Bitbucket status notify skipped (plugin not installed): ${e.message}"
+                    }
+                }
+            }
             // Plot plugin trend charts — install the "plot" plugin to activate.
             // Each call is individually guarded; a missing plugin or missing CSV silently no-ops.
             //
@@ -596,9 +651,10 @@ PYEOF"""
         cleanup {
             // cleanup runs LAST — after success/failure/always — guaranteeing that
             // post { success } can still read result.json before the workspace is wiped.
+            // cleanWs() removes the entire workspace so agents don't accumulate stale workspaces.
             script {
                 try {
-                    cleanWs(patterns: [[pattern: "${params.OUTPUT_SUBDIR}/**", type: 'INCLUDE']])
+                    cleanWs()
                 } catch (Exception ex) {
                     echo "cleanWs skipped: ${ex.message}"
                 }

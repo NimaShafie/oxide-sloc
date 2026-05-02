@@ -18,8 +18,14 @@
 //   - Job DSL seed job: add a String parameter named JOB_NAME to the seed job.
 //   - Script Console: pass a binding variable, e.g. -DJOB_NAME=oxide-sloc-manual.
 //   Use 'oxide-sloc-manual' if 'oxide-sloc' already exists in this Jenkins instance.
+//
+// Repo URL: defaults to the upstream GitHub repo. Override by setting REPO_URL:
+//   - Job DSL seed job: add a String parameter named REPO_URL to the seed job.
+//   - Script Console: set an env var or pass a binding variable.
 
 def jobName = (binding.hasVariable('JOB_NAME') ? JOB_NAME : System.getenv('JOB_NAME')) ?: 'oxide-sloc'
+def repoUrl = (binding.hasVariable('REPO_URL') ? REPO_URL : System.getenv('REPO_URL')) \
+              ?: 'https://github.com/oxide-sloc/oxide-sloc.git'
 
 pipelineJob(jobName) {
     description('oxide-sloc SLOC analysis pipeline. ' +
@@ -36,7 +42,7 @@ pipelineJob(jobName) {
             scm {
                 git {
                     remote {
-                        url('https://github.com/oxide-sloc/oxide-sloc.git')
+                        url(repoUrl)
                     }
                     branch('*/main')
                     extensions {
@@ -46,6 +52,15 @@ pipelineJob(jobName) {
                         }
                     }
                 }
+
+                // Bitbucket Server alternative — uncomment and set env vars to use:
+                // bitbucketServer {
+                //     serverUrl(System.getenv('BITBUCKET_URL') ?: 'https://bitbucket.example.com')
+                //     credentialsId('bitbucket-credentials')
+                //     projectKey(System.getenv('BITBUCKET_PROJECT') ?: 'OXIDE')
+                //     repositoryName(System.getenv('BITBUCKET_REPO') ?: 'oxide-sloc')
+                //     traits { ... }
+                // }
             }
             scriptPath('Jenkinsfile')
             lightweight(true)

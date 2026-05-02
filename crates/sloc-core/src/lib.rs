@@ -28,6 +28,16 @@ use sloc_languages::{
     RawLineCounts,
 };
 
+/// Three-way outcome for metadata-level policy checks.
+enum MetadataPolicyOutcome {
+    /// Skip this file — include the record in output.
+    Skip(Box<FileRecord>),
+    /// Exclude this file entirely — no record in output (include-glob miss).
+    Exclude,
+    /// Continue to content checks.
+    Continue,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileStatus {
@@ -446,10 +456,8 @@ fn push_record(
 }
 
 /// Apply metadata-level policy checks (symlink, name, dir exclusion, size, globs, lockfile).
-/// Returns `Ok(Some(record))` to skip, `Ok(None)` to continue, or an early `Ok(None)` to
-/// exclude from output entirely (include-glob miss).
-///
-/// Returns `Err` only on internal I/O errors that should propagate.
+/// Returns `Skip(record)` to skip, `Exclude` to omit from output entirely (include-glob miss),
+/// or `Continue` to proceed to content checks.
 #[allow(clippy::too_many_arguments)]
 fn check_metadata_policy(
     path: &Path,
@@ -459,43 +467,39 @@ fn check_metadata_policy(
     config: &AppConfig,
     include_globs: Option<&GlobSet>,
     exclude_globs: Option<&GlobSet>,
-) -> Result<Option<Option<FileRecord>>> {
-    // Returns Ok(Some(Some(record))) → skip with this record
-    //         Ok(Some(None))         → exclude silently (include-glob miss)
-    //         Ok(None)               → continue to content checks
-
+) -> MetadataPolicyOutcome {
     if metadata.file_type().is_symlink() && !config.discovery.follow_symlinks {
-        return Ok(Some(Some(skipped_record(
+        return MetadataPolicyOutcome::Skip(Box::new(skipped_record(
             path,
             root,
             metadata.len(),
             FileStatus::SkippedByPolicy,
             vec!["symlink skipped by policy".into()],
-        ))));
+        )));
     }
 
     if file_name_eq(path, ".gitignore") {
-        return Ok(Some(Some(skipped_record(
+        return MetadataPolicyOutcome::Skip(Box::new(skipped_record(
             path,
             root,
             metadata.len(),
             FileStatus::SkippedByPolicy,
             vec![".gitignore is always excluded".into()],
-        ))));
+        )));
     }
 
     if is_excluded_dir_path(path, &config.discovery.excluded_directories) {
-        return Ok(Some(Some(skipped_record(
+        return MetadataPolicyOutcome::Skip(Box::new(skipped_record(
             path,
             root,
             metadata.len(),
             FileStatus::SkippedByPolicy,
             vec!["path matched excluded directory setting".into()],
-        ))));
+        )));
     }
 
     if metadata.len() > config.discovery.max_file_size_bytes {
-        return Ok(Some(Some(skipped_record(
+        return MetadataPolicyOutcome::Skip(Box::new(skipped_record(
             path,
             root,
             metadata.len(),
@@ -504,52 +508,53 @@ fn check_metadata_policy(
                 "file exceeded max_file_size_bytes ({})",
                 config.discovery.max_file_size_bytes
             )],
-        ))));
+        )));
     }
 
     if let Some(globs) = include_globs {
         if !globs.is_match(Path::new(relative_path)) && !globs.is_match(path) {
-            return Ok(Some(None));
+            return MetadataPolicyOutcome::Exclude;
         }
     }
 
     if let Some(globs) = exclude_globs {
         if globs.is_match(Path::new(relative_path)) || globs.is_match(path) {
-            return Ok(Some(Some(skipped_record(
+            return MetadataPolicyOutcome::Skip(Box::new(skipped_record(
                 path,
                 root,
                 metadata.len(),
                 FileStatus::SkippedByPolicy,
                 vec!["path matched exclude glob".into()],
-            ))));
+            )));
         }
     }
 
     if is_known_lockfile(path) && !config.analysis.include_lockfiles {
-        return Ok(Some(Some(skipped_record(
+        return MetadataPolicyOutcome::Skip(Box::new(skipped_record(
             path,
             root,
             metadata.len(),
             FileStatus::SkippedByPolicy,
             vec!["lockfile skipped by default policy".into()],
-        ))));
+        )));
     }
 
-    Ok(None)
+    MetadataPolicyOutcome::Continue
 }
 
 /// Apply content-level policy checks (vendor, generated, minified, binary).
-/// Returns `Ok(Some(record))` to skip, `Ok(None)` to continue.
+/// Returns `(vendor, generated, minified, skip_record)` where `skip_record` is `Some` when
+/// the file should be skipped.
 fn check_content_policy(
     path: &Path,
     root: &Path,
     size_bytes: u64,
     bytes: &[u8],
     config: &AppConfig,
-) -> Result<(bool, bool, bool, Option<FileRecord>)> {
+) -> (bool, bool, bool, Option<FileRecord>) {
     let vendor = is_vendor_path(path);
     if vendor && config.analysis.vendor_directory_detection {
-        return Ok((
+        return (
             vendor,
             false,
             false,
@@ -560,12 +565,12 @@ fn check_content_policy(
                 FileStatus::SkippedByPolicy,
                 vec!["vendor file skipped by policy".into()],
             )),
-        ));
+        );
     }
 
     let generated = config.analysis.generated_file_detection && looks_generated(path, bytes);
     if generated {
-        return Ok((
+        return (
             vendor,
             generated,
             false,
@@ -576,12 +581,12 @@ fn check_content_policy(
                 FileStatus::SkippedByPolicy,
                 vec!["generated file skipped by policy".into()],
             )),
-        ));
+        );
     }
 
     let minified = config.analysis.minified_file_detection && looks_minified(path, bytes);
     if minified {
-        return Ok((
+        return (
             vendor,
             generated,
             minified,
@@ -592,10 +597,10 @@ fn check_content_policy(
                 FileStatus::SkippedByPolicy,
                 vec!["minified file skipped by policy".into()],
             )),
-        ));
+        );
     }
 
-    Ok((vendor, generated, minified, None))
+    (vendor, generated, minified, None)
 }
 
 /// Decode file bytes to a UTF-8 string, handling binary detection and decode failures.
@@ -665,10 +670,10 @@ fn analyze_candidate_file(
         config,
         include_globs,
         exclude_globs,
-    )? {
-        Some(Some(record)) => return Ok(Some(record)),
-        Some(None) => return Ok(None),
-        None => {}
+    ) {
+        MetadataPolicyOutcome::Skip(record) => return Ok(Some(*record)),
+        MetadataPolicyOutcome::Exclude => return Ok(None),
+        MetadataPolicyOutcome::Continue => {}
     }
 
     let bytes = match fs::read(path) {
@@ -686,7 +691,7 @@ fn analyze_candidate_file(
 
     // Content-level policy checks (vendor, generated, minified).
     let (vendor, generated, minified, skip_record) =
-        check_content_policy(path, root, metadata.len(), &bytes, config)?;
+        check_content_policy(path, root, metadata.len(), &bytes, config);
     if let Some(record) = skip_record {
         return Ok(Some(record));
     }

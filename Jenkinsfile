@@ -624,7 +624,7 @@ PYEOF"""
                     def result = readJSON file: "${outDir}/result.json"
                     def t      = result.summary_totals
                     currentBuild.description =
-                        "scan=${env.SCAN_PATH}  code=${t.code_lines}  files=${t.files_analyzed}  " +
+                        "scan=${params.SCAN_PATH}  code=${t.code_lines}  files=${t.files_analyzed}  " +
                         "comments=${t.comment_lines}  blank=${t.blank_lines}"
                     currentBuild.displayName = "#${env.BUILD_NUMBER} — ${params.SCAN_PATH}"
                 } catch (Exception ex) {

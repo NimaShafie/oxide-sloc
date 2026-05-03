@@ -7,6 +7,9 @@ services:
     restart: unless-stopped
     environment:
       - SLOC_BROWSER=/usr/bin/chromium
+      # cap_drop: ALL prevents the kernel-namespace sandbox from working.
+      # Set to 0 (or remove) only when running with --cap-add=SYS_ADMIN.
+      - SLOC_BROWSER_NOSANDBOX=1
       - RUST_LOG=info
       # Required — generate with: export SLOC_API_KEY=$(openssl rand -hex 32)
       - SLOC_API_KEY=${SLOC_API_KEY:?SLOC_API_KEY must be set — run: export SLOC_API_KEY=$(openssl rand -hex 32)}

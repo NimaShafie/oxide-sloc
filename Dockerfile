@@ -34,7 +34,7 @@ RUN test -d crates/sloc-config \
 RUN cargo build --release -p oxide-sloc
 
 # Stage 2: minimal runtime image
-# Pin to a specific digest to prevent silent base-image substitution (FIND-006).
+# Pin to a specific digest to prevent silent base-image substitution.
 # To update: docker pull debian:bookworm-slim && docker inspect --format '{{index .RepoDigests 0}}' debian:bookworm-slim
 FROM debian@sha256:f9c6a2fd2ddbc23e336b6257a5245e31f996953ef06cd13a59fa0a1df2d5c252
 
@@ -67,19 +67,17 @@ ENV OXIDE_SLOC_ROOT=/app
 
 # Point oxide-sloc at the system Chromium
 ENV SLOC_BROWSER=/usr/bin/chromium
-# Enable --no-sandbox for Chromium inside Docker (FIND-024).
-# Chrome's kernel-namespace sandbox is unavailable in most container runtimes
-# unless the container has SYS_ADMIN capability. Set this to 0 (or unset it)
-# when running with --cap-add=SYS_ADMIN and a seccomp profile that permits
-# the relevant syscalls, in which case the sandbox can be enabled for stronger
-# isolation.
-ENV SLOC_BROWSER_NOSANDBOX=1
+# SLOC_BROWSER_NOSANDBOX is intentionally NOT set here.
+# Pass -e SLOC_BROWSER_NOSANDBOX=1 at runtime when running in a container
+# runtime that does not grant SYS_ADMIN (most runtimes, and required when
+# cap_drop: ALL is set). With SYS_ADMIN and a permissive seccomp profile the
+# sandbox can be enabled by leaving this unset.
 
 EXPOSE 4317
 
 USER 1001
 
-# HEALTHCHECK verifies the /healthz endpoint is responsive (FIND-009).
+# HEALTHCHECK verifies the /healthz endpoint is responsive.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD oxide-sloc healthz 2>/dev/null || exit 1
 

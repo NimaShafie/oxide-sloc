@@ -16,7 +16,9 @@ COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 # .cargo/config.toml is gitignored (written by local airgap scripts / Jenkinsfile),
 # so it is never present in the build context. Create it inline to redirect cargo
 # to the vendored sources extracted from vendor.tar.xz below.
-RUN mkdir -p .cargo && printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "vendor"\n' > .cargo/config.toml
+RUN mkdir -p .cargo \
+    && printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "vendor"\n' \
+    > .cargo/config.toml
 COPY crates/ crates/
 COPY docs/assets/ docs/assets/
 COPY vendor.tar.xz vendor.tar.xz.sha256 ./

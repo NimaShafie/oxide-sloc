@@ -16,8 +16,8 @@ use sloc_core::{AnalysisRun, FileRecord};
 // Embed logo images at compile time so every generated HTML report is fully
 // self-contained.  Server-relative paths like /images/logo/... break when the
 // HTML is rendered by Chrome via file:// (PDF export) or opened from disk.
-static LOGO_TEXT_PNG: &[u8] = include_bytes!("../../../docs/assets/logo/logo-text.png");
-static SMALL_LOGO_PNG: &[u8] = include_bytes!("../../../docs/assets/logo/small-logo.png");
+static LOGO_TEXT_PNG: &[u8] = include_bytes!("../assets/logo/logo-text.png");
+static SMALL_LOGO_PNG: &[u8] = include_bytes!("../assets/logo/small-logo.png");
 
 fn png_data_uri(bytes: &[u8]) -> String {
     format!("data:image/png;base64,{}", base64_encode(bytes))

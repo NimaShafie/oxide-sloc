@@ -20,7 +20,9 @@ echo "Removing old vendor directory..."
 rm -rf vendor/
 
 echo "Running cargo vendor..."
-cargo vendor vendor/
+# --sync ci/tools/Cargo.toml pulls CI tooling (cargo-llvm-cov, etc.) into the
+# vendor archive so they can be installed offline on air-gapped agents.
+cargo vendor --sync ci/tools/Cargo.toml vendor/
 
 echo "Packing ${ARCHIVE} (xz compression, deterministic sort)..."
 # Use LC_ALL=C + sorted find output for a reproducible archive on any OS.

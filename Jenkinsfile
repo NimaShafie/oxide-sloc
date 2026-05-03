@@ -161,6 +161,14 @@ pipeline {
             defaultValue: false,
             description:  'Skip the SonarQube scan stage. Use on agents without Docker access or when the SonarQube server is unavailable.'
         )
+        booleanParam(
+            name:         'GENERATE_COVERAGE',
+            defaultValue: false,
+            description:  'Run ci/sonar/generate-coverage.sh before the SonarQube scan to include test coverage in the report. ' +
+                          'Requires cargo-llvm-cov (cargo install cargo-llvm-cov; rustup component add llvm-tools-preview) ' +
+                          'or cargo-tarpaulin (cargo install cargo-tarpaulin) pre-installed on the agent. ' +
+                          'Skipped automatically when SKIP_SONAR is checked.'
+        )
 
         // ── Delivery / notifications ───────────────────────────────────────────
         string(
@@ -485,8 +493,11 @@ CARGOEOF
 
         // ── 5. SonarQube scan ──────────────────────────────────────────────────
         // Runs cargo clippy in JSON mode, converts to SonarQube generic-issue
-        // format via scripts/clippy_to_sonar.py, then launches the scanner
+        // format via scripts/clippy_to_sonar.py, optionally generates test
+        // coverage via ci/sonar/generate-coverage.sh, then launches the scanner
         // container. Results appear in the SonarQube dashboard at http://10.0.0.8:9000
+        //
+        // Project config lives in ci/sonar/sonar-project.properties.
         //
         // Prerequisite: add a Jenkins credential named 'sonarqube-oxide-sloc-token'
         // (Kind: Secret text) containing the SonarQube analysis token.
@@ -506,12 +517,32 @@ CARGOEOF
 
                     python3 scripts/clippy_to_sonar.py \
                         clippy.json clippy-sonar.json "$WORKSPACE"
+                '''
 
+                script {
+                    if (params.GENERATE_COVERAGE) {
+                        sh '''
+                            # Install cargo-llvm-cov from the vendored source tree.
+                            # The .cargo/config.toml written in the Setup stage redirects
+                            # crates-io to vendor/, so --offline resolves entirely from disk.
+                            # Skip if already cached in CARGO_HOME from a prior build.
+                            if ! cargo llvm-cov --version >/dev/null 2>&1; then
+                                echo "Installing cargo-llvm-cov from vendor..."
+                                cargo install --offline cargo-llvm-cov
+                            fi
+                            bash ci/sonar/generate-coverage.sh coverage
+                        '''
+                    }
+                }
+
+                sh '''
                     docker run --rm --network host \
                         -e SONAR_TOKEN \
                         -v "$WORKSPACE":/usr/src -w /usr/src \
                         sonarsource/sonar-scanner-cli:latest \
-                        sonar-scanner -Dsonar.host.url=http://10.0.0.8:9000
+                        sonar-scanner \
+                            -Dsonar.host.url=http://10.0.0.8:9000 \
+                            -Dproject.settings=ci/sonar/sonar-project.properties
                 '''
             }
         }

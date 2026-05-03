@@ -10,6 +10,44 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.4.0] — 2026-05-03
+
+### Added
+
+- **Automated scanning via webhooks**: New `/webhook-setup` UI and `/webhooks/{github,gitlab,bitbucket}`
+  receivers. Each schedule gets a unique HMAC-SHA256 secret; incoming push events are verified and
+  trigger an automatic clone + scan without any manual action.
+- **Polling-based scheduled scans**: Schedules can run on a configurable interval (seconds). The
+  server compares the current HEAD SHA against the last-scanned SHA and only runs a scan when the
+  branch has advanced. Poll tasks are restarted automatically on server boot from persisted state.
+- **Git browser UI** (`/git-browser`): Browse branches, tags, and recent commits of any remote
+  repository from the web UI. Each row has a **Scan** button; selecting two rows triggers a
+  side-by-side SLOC comparison.
+- **Point-in-time comparison across CLI, web, and Jenkins**:
+  - CLI: `oxide-sloc git-scan <repo> <ref>` and `oxide-sloc git-compare <repo> <baseline> <current>`
+  - CLI: `oxide-sloc watch <repo> <branch> --interval <secs>` for continuous local polling
+  - Jenkins: `GIT_REF`, `COMPARE_TO_REF`, and `COMPARE_TO_PREV_TAG` parameters; new
+    "Git-Ref Scan" and "Git-Ref Compare" stages produce `ref-scan.json`, `diff.json`, `diff.csv`
+- **`sloc-git` crate** (new, first published to crates.io): git CLI wrappers
+  (`clone_or_fetch`, `list_refs`, `create_worktree`, `destroy_worktree`, `get_sha`, `list_commits`),
+  HMAC-SHA256 webhook verification via `ring`, and a JSON-persisted `ScheduleStore`.
+- **SonarQube CI integration**: `clippy_to_sonar.py` converts Clippy JSON output to the
+  SonarQube Generic Issue format; Jenkins pipeline now includes a SonarQube scan stage with
+  coverage upload via `cargo-llvm-cov`.
+- **`cargo-llvm-cov` vendored** for air-gapped coverage generation.
+
+### Fixed
+
+- **Docker hardening**: Multiple Dockerfile findings resolved — replaced `COPY . .` with explicit
+  file copies, inlined `.cargo/config.toml` via `RUN`, split overlong `RUN` lines, and corrected
+  Python security hotspot.
+- **crates.io packaging**: Logo assets (`logo-text.png`, `small-logo.png`) moved into
+  `sloc-report/assets/logo/` so the crate compiles correctly when installed via `cargo install`.
+- **`sloc-git` metadata**: Added missing `description`, `homepage`, `documentation`, `keywords`,
+  and `categories` fields required by crates.io.
+
+---
+
 ## [1.3.7] — 2026-05-02
 
 ### Changed

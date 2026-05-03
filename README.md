@@ -34,7 +34,7 @@ For air-gapped setup, CI, and Docker, see [`docs/airgap.md`](./docs/airgap.md).
 
 ## Features
 
-- **CLI** — `analyze / report / diff / serve / send / init` with a full flag set
+- **CLI** — `analyze / report / diff / serve / send / init / git-scan / git-compare / watch` with a full flag set
 - **Localhost web UI** — guided 4-step flow with light/dark theme, auto browser-open
 - **Quick Scan** — one-click scan from step 1 using all defaults
 - **Server mode** — `--server` binds to `0.0.0.0`, suppresses browser auto-open
@@ -45,12 +45,16 @@ For air-gapped setup, CI, and Docker, see [`docs/airgap.md`](./docs/airgap.md).
 - **CSV / Excel export** — from CLI flags or the report nav bar (4-sheet workbook)
 - **Scan history & delta tracking** — every run is saved; re-scan to see lines added/removed
 - **Side-by-side diff view** — compare any two scans with 4 chart types at `/compare`
+- **Git browser UI** — browse branches, tags, and commits of any remote repo; one-click scan or two-ref comparison at `/git-browser`
+- **Automated scanning** — attach GitHub, GitLab, or Bitbucket webhooks to trigger scans on push; or configure interval-based polling at `/webhook-setup`
+- **Point-in-time comparison** — `git-scan` and `git-compare` CLI commands check out any ref via git worktree and produce delta reports (JSON / CSV)
+- **Jenkins Git-Ref stages** — `GIT_REF`, `COMPARE_TO_REF`, `COMPARE_TO_PREV_TAG` parameters with dedicated scan and compare stages
 - **Git submodule support** — per-submodule HTML sub-reports
 - **Metrics API** — JSON endpoints for CI/CD dashboards
 - **SVG badge endpoint** — embed live code-line counts in READMEs or Confluence
 - **Embeddable summary widget** — `<iframe>` drop-in for internal wikis
 - **Report delivery** — `send` command: SMTP email or JSON webhook POST
-- **CI/CD ready** — Jenkinsfile, GitHub Actions, GitLab CI included
+- **CI/CD ready** — Jenkinsfile, GitHub Actions, GitLab CI included; SonarQube integration via `clippy_to_sonar.py`
 - **Docker image** — auto-published to GHCR on `main` and release tags
 - **Air-gap / offline** — all crate dependencies vendored; Chart.js compiled in; no CDN calls
 - **Confluence integration** — push HTML reports via REST API

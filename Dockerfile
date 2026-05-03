@@ -17,8 +17,11 @@ COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 # so it is never present in the build context. Create it inline to redirect cargo
 # to the vendored sources extracted from vendor.tar.xz below.
 RUN mkdir -p .cargo \
-    && printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "vendor"\n' \
-    > .cargo/config.toml
+    && echo '[source.crates-io]' > .cargo/config.toml \
+    && echo 'replace-with = "vendored-sources"' >> .cargo/config.toml \
+    && echo '' >> .cargo/config.toml \
+    && echo '[source.vendored-sources]' >> .cargo/config.toml \
+    && echo 'directory = "vendor"' >> .cargo/config.toml
 COPY crates/ crates/
 COPY docs/assets/ docs/assets/
 COPY vendor.tar.xz vendor.tar.xz.sha256 ./

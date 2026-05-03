@@ -4,6 +4,7 @@ members = [
   "crates/sloc-languages",
   "crates/sloc-core",
   "crates/sloc-report",
+  "crates/sloc-git",
   "crates/sloc-web",
   "crates/sloc-cli",
 ]
@@ -25,6 +26,7 @@ rust-version = "1.95"
 
 [workspace.dependencies]
 anyhow = "1"
+ring = { version = "0.17", default-features = false }
 askama = "0.16"
 axum = { version = "0.8", features = ["form", "json", "macros"] }
 chrono = { version = "0.4", features = ["serde", "clock"] }

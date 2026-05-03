@@ -170,6 +170,29 @@ pipeline {
                           'Skipped automatically when SKIP_SONAR is checked.'
         )
 
+        // ── Git-ref comparison ─────────────────────────────────────────────────
+        string(
+            name:         'GIT_REF',
+            defaultValue: '',
+            description:  'Scan the repository at this specific git ref (branch, tag, or commit SHA). ' +
+                          'Leave empty to scan HEAD (the checked-out commit). ' +
+                          'When set, oxide-sloc creates a temporary worktree, scans it, then removes it. ' +
+                          'Example: v1.4.0  or  refs/tags/v1.4.0  or  a3f9d2c'
+        )
+        string(
+            name:         'COMPARE_TO_REF',
+            defaultValue: '',
+            description:  'Compare the GIT_REF scan against this baseline ref. ' +
+                          'Produces a JSON/HTML diff report alongside the normal scan output. ' +
+                          'Leave empty to skip comparison. Example: v1.3.7'
+        )
+        booleanParam(
+            name:         'COMPARE_TO_PREV_TAG',
+            defaultValue: false,
+            description:  'Automatically detect the previous release tag (the one before GIT_REF or HEAD) ' +
+                          'and use it as the baseline for comparison. Overrides COMPARE_TO_REF when set.'
+        )
+
         // ── Delivery / notifications ───────────────────────────────────────────
         string(
             name:         'WEBHOOK_URL',
@@ -687,6 +710,96 @@ PYEOF"""
                         ])
                     }
                 }
+            }
+        }
+
+        // ── Git-ref scan ──────────────────────────────────────────────────────
+        // When GIT_REF is set, scan that specific commit/tag/branch in addition
+        // to the standard scan.  A temporary git worktree is used so the main
+        // workspace stays clean.
+        stage('Git-Ref Scan') {
+            when {
+                expression { return params.GIT_REF?.trim() != '' }
+            }
+            steps {
+                sh '''
+                    REF="${GIT_REF:-}"
+                    OUT="${WORKSPACE}/${OUTPUT_SUBDIR}"
+                    WT="${WORKSPACE}/.wt-ref-scan"
+
+                    echo "=== Git-Ref Scan: ${REF} ==="
+                    git worktree add --detach "${WT}" "${REF}"
+
+                    "${BINARY}" analyze "${WT}" \
+                        --json-out  "${OUT}/ref-scan.json" \
+                        --html-out  "${OUT}/ref-scan.html" \
+                        --csv-out   "${OUT}/ref-scan-summary.csv" \
+                        --report-title "Ref scan: ${REF}" \
+                        --plain
+
+                    git worktree remove --force "${WT}" || true
+                '''
+            }
+        }
+
+        // ── Git-ref comparison ─────────────────────────────────────────────────
+        // Compare two refs using oxide-sloc diff.  The baseline is resolved from
+        // COMPARE_TO_PREV_TAG (auto-detect), COMPARE_TO_REF, or skipped if empty.
+        stage('Git-Ref Compare') {
+            when {
+                expression {
+                    return params.COMPARE_TO_REF?.trim() != '' || params.COMPARE_TO_PREV_TAG
+                }
+            }
+            steps {
+                sh '''
+                    OUT="${WORKSPACE}/${OUTPUT_SUBDIR}"
+                    BINARY="${WORKSPACE}/target/release/oxide-sloc"
+
+                    # Resolve baseline ref
+                    if [ "${COMPARE_TO_PREV_TAG:-false}" = "true" ]; then
+                        CURRENT_TAG=$(git tag --sort=-version:refname | head -1)
+                        BASELINE_TAG=$(git tag --sort=-version:refname | grep -v "^${CURRENT_TAG}$" | head -1)
+                        BASELINE_REF="${BASELINE_TAG}"
+                        echo "Auto-detected previous tag: ${BASELINE_REF} (current: ${CURRENT_TAG})"
+                    else
+                        BASELINE_REF="${COMPARE_TO_REF}"
+                    fi
+
+                    if [ -z "${BASELINE_REF}" ]; then
+                        echo "No baseline ref found — skipping comparison."
+                        exit 0
+                    fi
+
+                    # Determine what was scanned as "current"
+                    CURRENT_JSON="${OUT}/ref-scan.json"
+                    if [ ! -f "${CURRENT_JSON}" ]; then
+                        CURRENT_JSON="${OUT}/result.json"
+                    fi
+                    if [ ! -f "${CURRENT_JSON}" ]; then
+                        echo "No current scan JSON found — cannot compare."
+                        exit 1
+                    fi
+
+                    echo "=== Scanning baseline: ${BASELINE_REF} ==="
+                    WT_BASE="${WORKSPACE}/.wt-baseline"
+                    git worktree add --detach "${WT_BASE}" "${BASELINE_REF}"
+
+                    "${BINARY}" analyze "${WT_BASE}" \
+                        --json-out  "${OUT}/baseline-scan.json" \
+                        --report-title "Baseline: ${BASELINE_REF}" \
+                        --plain
+
+                    git worktree remove --force "${WT_BASE}" || true
+
+                    echo "=== Computing diff ==="
+                    "${BINARY}" diff \
+                        "${OUT}/baseline-scan.json" \
+                        "${CURRENT_JSON}" \
+                        --json-out "${OUT}/diff.json" \
+                        --csv-out  "${OUT}/diff.csv" \
+                        --plain
+                '''
             }
         }
 

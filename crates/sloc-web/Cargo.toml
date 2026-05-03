@@ -37,4 +37,5 @@ tracing.workspace = true
 uuid = { workspace = true }
 sloc-config = { path = "../sloc-config", version = "1.3.0" }
 sloc-core = { path = "../sloc-core", version = "1.3.0" }
+sloc-git = { path = "../sloc-git", version = "1.3.0" }
 sloc-report = { path = "../sloc-report", version = "1.3.0" }

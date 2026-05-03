@@ -1165,16 +1165,19 @@ name = "oxide-sloc"
 version = "1.3.7"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "lettre",
  "reqwest",
  "serde_json",
  "sloc-config",
  "sloc-core",
+ "sloc-git",
  "sloc-report",
  "sloc-web",
  "tokio",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -1750,6 +1753,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sloc-git"
+version = "1.3.7"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "ring",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "sloc-languages"
 version = "1.3.7"
 dependencies = [
@@ -1788,6 +1804,7 @@ dependencies = [
  "serde_json",
  "sloc-config",
  "sloc-core",
+ "sloc-git",
  "sloc-report",
  "subtle",
  "tokio",

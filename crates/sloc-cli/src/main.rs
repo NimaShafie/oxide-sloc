@@ -16,6 +16,7 @@ use tracing_subscriber::EnvFilter;
 
 use sloc_config::{AppConfig, BlankInBlockCommentPolicy, ContinuationLinePolicy, MixedLinePolicy};
 use sloc_core::{analyze, compute_delta, read_json, write_json, AnalysisRun, ScanComparison};
+use sloc_git::{clone_or_fetch, create_worktree, destroy_worktree, get_sha};
 use sloc_report::{
     render_html, write_csv, write_diff_csv, write_html, write_pdf_from_html, write_xlsx,
 };
@@ -67,6 +68,12 @@ enum Commands {
     Validate(ValidateArgs),
     /// Deliver a saved report via SMTP or webhook
     Send(SendArgs),
+    /// Clone a repository and scan it at a specific branch, tag, or commit SHA
+    GitScan(GitScanArgs),
+    /// Scan two git refs and emit a comparison (diff) report
+    GitCompare(GitCompareArgs),
+    /// Poll a repository branch for changes and scan on every new commit
+    Watch(WatchArgs),
 }
 
 // ── analyze ───────────────────────────────────────────────────────────────────
@@ -312,6 +319,109 @@ struct SendArgs {
     webhook_token: Option<String>,
 }
 
+// ── git-scan ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Args)]
+struct GitScanArgs {
+    /// Repository URL or local path
+    #[arg(value_name = "REPO")]
+    repo: String,
+
+    /// Branch, tag, or commit SHA to scan (default: HEAD / default branch)
+    #[arg(long, default_value = "HEAD", value_name = "REF")]
+    git_ref: String,
+
+    /// Directory to cache cloned repositories
+    #[arg(long, value_name = "DIR")]
+    clones_dir: Option<PathBuf>,
+
+    /// Write JSON result to this path
+    #[arg(long, short = 'j', value_name = "PATH")]
+    json_out: Option<PathBuf>,
+
+    /// Write HTML report to this path
+    #[arg(long, short = 'H', value_name = "PATH")]
+    html_out: Option<PathBuf>,
+
+    /// Write CSV summary to this path
+    #[arg(long, short = 'c', value_name = "PATH")]
+    csv_out: Option<PathBuf>,
+
+    /// Machine-readable key=value terminal output
+    #[arg(long)]
+    plain: bool,
+
+    /// Suppress all output except errors
+    #[arg(long, short = 'q')]
+    quiet: bool,
+}
+
+// ── git-compare ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Args)]
+struct GitCompareArgs {
+    /// Repository URL or local path
+    #[arg(value_name = "REPO")]
+    repo: String,
+
+    /// Baseline (older) ref — branch, tag, or commit SHA
+    #[arg(value_name = "BASELINE_REF")]
+    baseline_ref: String,
+
+    /// Current (newer) ref — branch, tag, or commit SHA
+    #[arg(value_name = "CURRENT_REF")]
+    current_ref: String,
+
+    /// Directory to cache cloned repositories
+    #[arg(long, value_name = "DIR")]
+    clones_dir: Option<PathBuf>,
+
+    /// Write delta JSON to this path
+    #[arg(long, short = 'j', value_name = "PATH")]
+    json_out: Option<PathBuf>,
+
+    /// Write delta CSV to this path
+    #[arg(long, short = 'c', value_name = "PATH")]
+    csv_out: Option<PathBuf>,
+
+    /// Machine-readable key=value terminal output
+    #[arg(long)]
+    plain: bool,
+
+    /// Suppress all output except errors
+    #[arg(long, short = 'q')]
+    quiet: bool,
+}
+
+// ── watch ─────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Args)]
+struct WatchArgs {
+    /// Repository URL or local path to monitor
+    #[arg(value_name = "REPO")]
+    repo: String,
+
+    /// Branch to watch for new commits
+    #[arg(long, default_value = "main", value_name = "BRANCH")]
+    branch: String,
+
+    /// Poll interval in seconds (minimum 60)
+    #[arg(long, default_value = "300", value_name = "SECS")]
+    interval: u64,
+
+    /// Directory to cache cloned repositories
+    #[arg(long, value_name = "DIR")]
+    clones_dir: Option<PathBuf>,
+
+    /// Write each scan's JSON result to this directory
+    #[arg(long, value_name = "DIR")]
+    output_dir: Option<PathBuf>,
+
+    /// Suppress non-error output
+    #[arg(long, short = 'q')]
+    quiet: bool,
+}
+
 // ── entry point ───────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -336,6 +446,9 @@ async fn main() -> Result<()> {
         Commands::Init(args) => run_init(&args),
         Commands::Validate(args) => run_validate(&args),
         Commands::Send(args) => run_send(args).await,
+        Commands::GitScan(args) => run_git_scan(args).await,
+        Commands::GitCompare(args) => run_git_compare(args).await,
+        Commands::Watch(args) => run_watch(args).await,
     }
 }
 
@@ -1070,4 +1183,226 @@ fn open_path(path: &Path) {
 // Write diff as XLSX — thin wrapper delegating to sloc_report
 fn write_diff_xlsx(cmp: &ScanComparison, path: &Path) -> Result<()> {
     sloc_report::write_diff_xlsx(cmp, path)
+}
+
+// ── git-scan handler ──────────────────────────────────────────────────────────
+
+async fn run_git_scan(args: GitScanArgs) -> Result<()> {
+    let clones_dir = resolve_clones_dir(args.clones_dir.as_deref());
+    let quiet = args.quiet;
+
+    if !quiet {
+        eprintln!("Cloning / fetching {}…", args.repo);
+    }
+    let dest = git_clone_path(&args.repo, &clones_dir);
+    clone_or_fetch(&args.repo, &dest)?;
+
+    let wt_path = clones_dir.join(format!("wt-cli-{}", uuid_simple()));
+    create_worktree(&dest, &args.git_ref, &wt_path)?;
+
+    let config = build_git_scan_config(&wt_path);
+    if !quiet {
+        eprintln!("Scanning {} at {}…", args.repo, args.git_ref);
+    }
+    let run_result = tokio::task::spawn_blocking(move || analyze(&config, "git-scan")).await;
+    let _ = destroy_worktree(&dest, &wt_path);
+    let run = run_result.context("analysis task failed")??;
+
+    if !quiet {
+        print_summary(&run, false, args.plain);
+    }
+    write_git_scan_outputs(
+        &run,
+        args.json_out.as_deref(),
+        args.html_out.as_deref(),
+        args.csv_out.as_deref(),
+        quiet,
+    )?;
+    Ok(())
+}
+
+fn build_git_scan_config(path: &Path) -> AppConfig {
+    let mut config = AppConfig::default();
+    config.discovery.root_paths = vec![path.to_path_buf()];
+    config
+}
+
+fn write_git_scan_outputs(
+    run: &AnalysisRun,
+    json_out: Option<&Path>,
+    html_out: Option<&Path>,
+    csv_out: Option<&Path>,
+    quiet: bool,
+) -> Result<()> {
+    if let Some(p) = json_out {
+        write_json(run, p)?;
+        log_written(p, quiet);
+    }
+    if let Some(p) = html_out {
+        write_html(run, p)?;
+        log_written(p, quiet);
+    }
+    if let Some(p) = csv_out {
+        write_csv(run, p)?;
+        log_written(p, quiet);
+    }
+    Ok(())
+}
+
+// ── git-compare handler ───────────────────────────────────────────────────────
+
+async fn run_git_compare(args: GitCompareArgs) -> Result<()> {
+    let clones_dir = resolve_clones_dir(args.clones_dir.as_deref());
+    let quiet = args.quiet;
+    let dest = git_clone_path(&args.repo, &clones_dir);
+    clone_or_fetch(&args.repo, &dest)?;
+
+    let baseline_run = scan_at_ref(&dest, &args.baseline_ref, &clones_dir, quiet)?;
+    let current_run = scan_at_ref(&dest, &args.current_ref, &clones_dir, quiet)?;
+
+    let comparison = compute_delta(&baseline_run, &current_run);
+    if !quiet {
+        print_diff_summary(&comparison, args.plain);
+    }
+    write_compare_outputs(
+        &comparison,
+        args.json_out.as_deref(),
+        args.csv_out.as_deref(),
+        quiet,
+    )?;
+    Ok(())
+}
+
+fn scan_at_ref(dest: &Path, ref_name: &str, clones_dir: &Path, quiet: bool) -> Result<AnalysisRun> {
+    let wt = clones_dir.join(format!("wt-cli-{}", uuid_simple()));
+    create_worktree(dest, ref_name, &wt)?;
+    if !quiet {
+        eprintln!("Scanning ref {ref_name}…");
+    }
+    let config = build_git_scan_config(&wt);
+    let run = analyze(&config, "git-compare")?;
+    let _ = destroy_worktree(dest, &wt);
+    Ok(run)
+}
+
+fn write_compare_outputs(
+    cmp: &ScanComparison,
+    json_out: Option<&Path>,
+    csv_out: Option<&Path>,
+    quiet: bool,
+) -> Result<()> {
+    if let Some(p) = json_out {
+        let json = serde_json::to_string_pretty(cmp)?;
+        std::fs::write(p, json)?;
+        log_written(p, quiet);
+    }
+    if let Some(p) = csv_out {
+        write_diff_csv(cmp, p)?;
+        log_written(p, quiet);
+    }
+    Ok(())
+}
+
+// ── watch handler ─────────────────────────────────────────────────────────────
+
+async fn run_watch(args: WatchArgs) -> Result<()> {
+    let clones_dir = resolve_clones_dir(args.clones_dir.as_deref());
+    let quiet = args.quiet;
+    let interval = args.interval.max(60);
+
+    if !quiet {
+        eprintln!(
+            "Watching {} ({}) — polling every {}s. Ctrl-C to stop.",
+            args.repo, args.branch, interval
+        );
+    }
+    let dest = git_clone_path(&args.repo, &clones_dir);
+    clone_or_fetch(&args.repo, &dest)?;
+
+    let mut last_sha = get_sha(&dest, &format!("origin/{}", args.branch)).unwrap_or_default();
+
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+
+        clone_or_fetch(&args.repo, &dest)?;
+        let sha = match get_sha(&dest, &format!("origin/{}", args.branch)) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[watch] resolve failed: {e}");
+                continue;
+            }
+        };
+
+        if sha == last_sha {
+            continue;
+        }
+        last_sha = sha.clone();
+        if !quiet {
+            eprintln!("[watch] new commit {sha} — scanning…");
+        }
+        run_watch_scan(&dest, &sha, &clones_dir, args.output_dir.as_deref(), quiet);
+    }
+}
+
+fn run_watch_scan(
+    dest: &Path,
+    sha: &str,
+    clones_dir: &Path,
+    output_dir: Option<&Path>,
+    quiet: bool,
+) {
+    let wt = clones_dir.join(format!("wt-watch-{}", uuid_simple()));
+    if let Err(e) = create_worktree(dest, sha, &wt) {
+        eprintln!("[watch] worktree error: {e}");
+        return;
+    }
+    let config = build_git_scan_config(&wt);
+    match analyze(&config, "watch") {
+        Ok(run) => {
+            if !quiet {
+                print_summary(&run, false, false);
+            }
+            write_watch_output(&run, output_dir, sha, quiet);
+        }
+        Err(e) => eprintln!("[watch] scan error: {e:#}"),
+    }
+    let _ = destroy_worktree(dest, &wt);
+}
+
+fn write_watch_output(run: &AnalysisRun, output_dir: Option<&Path>, sha: &str, quiet: bool) {
+    let Some(dir) = output_dir else { return };
+    let path = dir.join(format!("{}.json", &sha[..sha.len().min(8)]));
+    if let Err(e) = write_json(run, &path) {
+        eprintln!("[watch] write failed: {e}");
+    } else {
+        log_written(&path, quiet);
+    }
+}
+
+// ── git helpers ───────────────────────────────────────────────────────────────
+
+fn resolve_clones_dir(override_path: Option<&Path>) -> PathBuf {
+    override_path
+        .map(PathBuf::from)
+        .or_else(|| std::env::var("SLOC_GIT_CLONES_DIR").ok().map(PathBuf::from))
+        .unwrap_or_else(|| std::env::temp_dir().join("sloc-git-clones"))
+}
+
+fn git_clone_path(repo_url: &str, clones_dir: &Path) -> PathBuf {
+    let safe: String = repo_url
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(80)
+        .collect();
+    clones_dir.join(safe)
+}
+
+fn uuid_simple() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
 }

@@ -2,6 +2,9 @@
 // Copyright (C) 2026 Nima Shafie <nimzshafie@gmail.com>
 #![allow(clippy::multiple_crate_versions)]
 
+pub(crate) mod git_browser;
+pub(crate) mod git_webhook;
+
 use std::{
     collections::{HashMap, VecDeque},
     fmt::Write,
@@ -29,6 +32,7 @@ use tokio::sync::Mutex;
 use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 
 use sloc_config::{AppConfig, BinaryFileBehavior, MixedLinePolicy};
+use sloc_git::ScheduleStore;
 
 #[derive(Clone)]
 struct CspNonce(String);
@@ -133,6 +137,11 @@ struct AppState {
     api_keys: Vec<secrecy::Secret<String>>,
     rate_limiter: Arc<IpRateLimiter>,
     trust_proxy: bool,
+    /// Directory where remote repositories are cloned for git-browser scans.
+    git_clones_dir: PathBuf,
+    /// Persisted list of webhook / poll schedules.
+    schedules: Arc<Mutex<ScheduleStore>>,
+    schedules_path: PathBuf,
 }
 
 type PendingPdf = Option<(PathBuf, PathBuf, bool)>;
@@ -210,6 +219,11 @@ pub async fn serve(config: AppConfig) -> Result<()> {
     // 60 req/min per IP across all routes.
     let rate_limiter = Arc::new(IpRateLimiter::new(Duration::from_mins(1), 60));
 
+    let git_clones_dir = resolve_git_clones_dir(&output_root);
+    let schedules_path = std::env::var("SLOC_SCHEDULES_PATH")
+        .map_or_else(|_| output_root.join("schedules.json"), PathBuf::from);
+    let schedules = ScheduleStore::load(&schedules_path);
+
     let state = AppState {
         base_config: config,
         artifacts: Arc::new(Mutex::new(HashMap::new())),
@@ -221,7 +235,12 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         api_keys,
         rate_limiter,
         trust_proxy,
+        git_clones_dir,
+        schedules: Arc::new(Mutex::new(schedules)),
+        schedules_path,
     };
+
+    restart_poll_schedules(&state).await;
 
     let protected = Router::new()
         .route("/", get(splash))
@@ -242,6 +261,19 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         .route("/api/metrics/{run_id}", get(api_metrics_run_handler))
         .route("/api/project-history", get(project_history_handler))
         .route("/embed/summary", get(embed_handler))
+        // ── Git browser ────────────────────────────────────────────────────────
+        .route("/git-browser", get(git_browser::git_browser_handler))
+        .route("/api/git/refs", get(git_browser::api_list_refs))
+        .route("/api/git/scan-ref", get(git_browser::api_scan_ref))
+        .route("/api/git/compare-refs", get(git_browser::api_compare_refs))
+        // ── Webhook + schedule management ──────────────────────────────────────
+        .route("/webhook-setup", get(git_webhook::webhook_setup_handler))
+        .route("/api/schedules", get(git_webhook::api_list_schedules))
+        .route("/api/schedules", post(git_webhook::api_create_schedule))
+        .route(
+            "/api/schedules",
+            axum::routing::delete(git_webhook::api_delete_schedule),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_api_key,
@@ -251,6 +283,13 @@ pub async fn serve(config: AppConfig) -> Result<()> {
         .route("/healthz", get(healthz))
         .route("/badge/{metric}", get(badge_handler))
         .route("/static/chart.js", get(chart_js_handler))
+        // Webhook receivers are public (no API-key auth) — they use per-schedule HMAC secrets.
+        .route("/webhooks/github", post(git_webhook::handle_github_webhook))
+        .route("/webhooks/gitlab", post(git_webhook::handle_gitlab_webhook))
+        .route(
+            "/webhooks/bitbucket",
+            post(git_webhook::handle_bitbucket_webhook),
+        )
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -3102,6 +3141,66 @@ fn resolve_output_root(raw: Option<&str>) -> PathBuf {
         path
     } else {
         workspace_root().join(path)
+    }
+}
+
+/// Derive the directory that holds remote-repo clones from the output root.
+fn resolve_git_clones_dir(output_root: &Path) -> PathBuf {
+    std::env::var("SLOC_GIT_CLONES_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| output_root.join("git-clones"))
+}
+
+/// Build a deterministic filesystem path for a cloned remote repository.
+/// Keeps only filename-safe characters and caps at 80 chars to avoid path-length issues.
+pub(crate) fn git_clone_dest(repo_url: &str, clones_dir: &Path) -> PathBuf {
+    let safe: String = repo_url
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(80)
+        .collect();
+    clones_dir.join(safe)
+}
+
+/// Run a scan on `scan_path`, persist HTML + JSON artifacts, and return the run ID.
+/// Runs synchronously — call from `tokio::task::spawn_blocking`.
+pub(crate) fn scan_path_to_artifacts(
+    scan_path: &Path,
+    base_config: &AppConfig,
+    label: &str,
+) -> Result<String> {
+    let mut config = base_config.clone();
+    config.discovery.root_paths = vec![scan_path.to_path_buf()];
+    config.reporting.report_title = label.to_owned();
+    let run = analyze(&config, "git")?;
+    let html = render_html(&run)?;
+    let run_id = run.tool.run_id.clone();
+    let project_label = sanitize_project_label(label);
+    let output_dir = resolve_output_root(None).join(format!("{project_label}_{run_id}"));
+    persist_run_artifacts(&run, &html, &output_dir, true, true, false, label)?;
+    Ok(run_id)
+}
+
+/// Re-spawn background poll tasks for any polling schedules saved to disk.
+async fn restart_poll_schedules(state: &AppState) {
+    let store = state.schedules.lock().await;
+    let poll_schedules: Vec<_> = store
+        .schedules
+        .iter()
+        .filter(|s| s.kind == sloc_git::ScanScheduleKind::Poll && s.enabled)
+        .cloned()
+        .collect();
+    drop(store);
+    for schedule in poll_schedules {
+        let interval = schedule.interval_secs.unwrap_or(300);
+        let st = state.clone();
+        tokio::spawn(async move { git_webhook::poll_loop(st, schedule, interval).await });
     }
 }
 

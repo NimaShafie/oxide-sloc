@@ -209,12 +209,35 @@ CLI flags always override config file values.
 
 ## Scan history and delta tracking
 
-Every web UI scan is recorded in `out/web/registry.json`. Re-running the same project path shows an inline delta:
-
-- **Lines added / removed / unchanged**
-- **Files modified / added / removed**
+Every web UI scan is recorded in `out/web/registry.json`. Re-running the same project path shows an inline delta — the same data the `diff` command writes to JSON/CSV/Excel.
 
 Navigate to `/history` to browse past scans, or `/compare?a=<run_id>&b=<run_id>` for a side-by-side file-level diff with four chart types.
+
+### Comparison metrics
+
+When two scans of the same project are compared (different commits, branches, or dates), oxide-sloc surfaces the following metrics at both the project level and per-language:
+
+| Metric | What it measures |
+|---|---|
+| **SLOC** | Effective source lines of code after policy application — the primary size signal |
+| **Added** | Lines present in the new scan that did not exist in the baseline |
+| **Removed** | Lines present in the baseline that are gone in the new scan |
+| **Modified** | Lines that changed in files present in both scans (content diff, not just count) |
+| **Unmodified** | Lines carried over from the baseline with no change |
+
+These five values satisfy the identity: `SLOC (new) = Unmodified + Modified + Added`.
+
+**CLI diff output:**
+
+```bash
+# Print delta to terminal
+oxide-sloc diff baseline.json current.json
+
+# Export delta to all formats
+oxide-sloc diff baseline.json current.json -j delta.json -c delta.csv -x delta.xlsx
+```
+
+**Web UI:** navigate to `/compare?a=<run_id>&b=<run_id>` — the comparison view renders all five metrics with bar charts, a per-file breakdown table, and filter controls.
 
 ---
 

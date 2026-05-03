@@ -142,7 +142,7 @@ jobs:
         run: tar -xJf vendor.tar.xz
 
       - name: Re-vendor from current Cargo.lock
-        run: cargo vendor vendor-expected/
+        run: cargo vendor --sync ci/tools/Cargo.toml vendor-expected/
 
       - name: Compare vendor directories
         run: |
